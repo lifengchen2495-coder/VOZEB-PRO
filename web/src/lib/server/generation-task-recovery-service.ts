@@ -21,6 +21,8 @@ import { refundTextTask } from "@/lib/server/text-task-refund";
 import { refundVideoTask } from "@/lib/server/video-task-refund";
 import { toSafeGenerationReviewReason } from "@/lib/server/generation-errors";
 import { getAuthSettings } from "@/lib/auth/store";
+import { getRemakeAnalysisTask } from "@/lib/server/remake-analysis-task-store";
+import { runRemakeAnalysisTask } from "@/lib/server/remake-analysis-runtime";
 
 type RecoveryResult = "pending" | "result_ready" | "completed" | "failed" | "needs_review" | "deferred";
 
@@ -34,11 +36,13 @@ export async function runGenerationTaskRecoveryBatch(input: { origin: string; pu
         void renewGenerationTaskLeases(workerId, taskIds, 90_000).catch((error) => console.error("Generation worker lease heartbeat failed", { workerId, error }));
     }, 25_000);
     try {
-        const persistence = leases.filter(needsPersistence);
-        const queries = leases.filter((lease) => !needsPersistence(lease));
+        const remakes = leases.filter((lease) => lease.type === "remake");
+        const persistence = leases.filter((lease) => lease.type !== "remake" && needsPersistence(lease));
+        const queries = leases.filter((lease) => lease.type !== "remake" && !needsPersistence(lease));
         const results = [
             ...(await runWithConcurrency(queries, 20, (lease) => processGenerationTaskLease(lease, workerId, input.origin, input.publicOrigin || input.origin, input.cookie || "", input.userRequested === true))),
             ...(await runWithConcurrency(persistence, 4, (lease) => processGenerationTaskLease(lease, workerId, input.origin, input.publicOrigin || input.origin, input.cookie || "", input.userRequested === true))),
+            ...(await runWithConcurrency(remakes, 2, (lease) => processGenerationTaskLease(lease, workerId, input.origin, input.publicOrigin || input.origin, input.cookie || "", input.userRequested === true))),
         ];
         return summarize(results);
     } finally {
@@ -52,11 +56,41 @@ async function processGenerationTaskLease(lease: GenerationTaskLease, workerId: 
     if (lease.type === "image") return processImageLease(lease, workerId, origin, publicOrigin, cookie, userRequested);
     if (lease.type === "audio") return processAudioLease(lease, workerId, origin, cookie, userRequested);
     if (lease.type === "agent") return processAgentLease(lease, workerId, origin, cookie);
+    if (lease.type === "remake") return processRemakeLease(lease, workerId, origin, cookie);
     if (lease.type !== "video") {
         await releaseGenerationTaskLease(lease.type, lease.id, workerId, { executionPhase: "needs_review", nextPollAt: undefined, lastUpstreamStatus: "worker_handler_missing" });
         return "needs_review";
     }
     return processVideoLease(lease, workerId, origin, cookie, userRequested);
+}
+
+async function processRemakeLease(lease: GenerationTaskLease, workerId: string, origin: string, cookie: string): Promise<RecoveryResult> {
+    const task = await getRemakeAnalysisTask(lease.id);
+    if (!task) {
+        await releaseGenerationTaskLease("remake", lease.id, workerId, { executionPhase: "completed", nextPollAt: undefined, lastUpstreamStatus: "missing" });
+        return "failed";
+    }
+    if (!matchesRemakeLeaseIdentity(lease, task)) {
+        await releaseGenerationTaskLease("remake", lease.id, workerId, { executionPhase: "completed", nextPollAt: undefined, lastUpstreamStatus: "identity_mismatch" });
+        return "failed";
+    }
+    if (task.status === "success" || task.status === "error") {
+        await releaseGenerationTaskLease("remake", lease.id, workerId, { executionPhase: "completed", nextPollAt: undefined, lastUpstreamStatus: task.status });
+        return task.status === "success" ? "completed" : "failed";
+    }
+    const result = await runRemakeAnalysisTask({ task, origin, cookie });
+    await releaseGenerationTaskLease("remake", lease.id, workerId, {
+        executionPhase: "completed",
+        nextPollAt: undefined,
+        lastPollAt: Date.now(),
+        lastUpstreamStatus: result.status,
+    });
+    return result.status === "completed" ? "completed" : "failed";
+}
+
+function matchesRemakeLeaseIdentity(lease: GenerationTaskLease, task: { id: string; userId: string; projectId: string }) {
+    const payload = lease.payload;
+    return Boolean(task.id && task.userId && task.projectId && task.id === lease.id && task.userId === lease.userId && payload.id === lease.id && payload.userId === lease.userId && payload.projectId === task.projectId);
 }
 
 async function processCancelledLease(lease: GenerationTaskLease, workerId: string, origin: string): Promise<RecoveryResult> {

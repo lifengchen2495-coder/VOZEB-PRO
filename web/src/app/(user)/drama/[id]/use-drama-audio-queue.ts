@@ -40,9 +40,7 @@ export function useDramaAudioQueue(project: DramaProject, episode: DramaEpisode,
         if (!config.audioModel.trim()) return updateShot(project.id, episode.id, next.id, { audioStatus: "error", audioError: "后台尚未配置可用的默认音频模型" });
         const prompt = (next.subtitle || next.dialogue).trim();
         if (!prompt) return updateShot(project.id, episode.id, next.id, { audioStatus: "error", audioError: "请先填写对白或字幕" });
-        const speaker = next.utterances.find((item) => item.type === "dialogue" && item.speaker.trim())?.speaker.trim();
-        const character = speaker ? project.characters.find((item) => item.name.trim().toLocaleLowerCase() === speaker.toLocaleLowerCase()) : undefined;
-        const voice = character?.voiceProfile;
+        const voice = resolveDramaShotVoiceProfile(project, next);
         startingRef.current = next.id;
         const attemptNo = next.audioAttempt || 1;
         void createAudioGenerationTask(
@@ -73,6 +71,12 @@ export function useDramaAudioQueue(project: DramaProject, episode: DramaEpisode,
                 startingRef.current = "";
             });
     }, [config, episode.id, episode.shots, project.id, updateShot]);
+}
+
+export function resolveDramaShotVoiceProfile(project: DramaProject, shot: DramaShot) {
+    const speaker = shot.utterances.find((item) => item.type === "dialogue" && item.speaker.trim())?.speaker.trim() || shot.utterances.find((item) => item.speaker.trim())?.speaker.trim();
+    if (!speaker) return undefined;
+    return project.characters.find((item) => item.name.trim().toLocaleLowerCase() === speaker.toLocaleLowerCase())?.voiceProfile;
 }
 
 export async function cancelDramaAudioTask(taskId?: string) {

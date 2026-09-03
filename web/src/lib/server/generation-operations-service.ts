@@ -98,7 +98,7 @@ function taskSummary(record: StoredGenerationTaskRecord, user?: { accountId: str
         agentFailure,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
-        canCancel: record.status === "pending" || record.status === "running" || record.status === "paused",
+        canCancel: record.type !== "remake" && (record.status === "pending" || record.status === "running" || record.status === "paused"),
         retryTaskId: record.type === "agent" ? text(failedTask?.id) || undefined : undefined,
         canReview: record.executionPhase === "needs_review" && (record.type === "text" || record.type === "image" || record.type === "video" || record.type === "audio"),
     };

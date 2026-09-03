@@ -2,11 +2,13 @@ import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { resolveGenerationWorkerOrigin } from "./generation-runtime.mjs";
+import { normalizeGenerationWorkerId } from "./generation-worker-identity.mjs";
 import { nextGenerationWorkerPollPolicy } from "./generation-worker-policy.mjs";
 
 const token = process.env.VOZEB_PRO_WORKER_TOKEN?.trim() || "";
 const origin = resolveGenerationWorkerOrigin();
-const workerId = (process.env.VOZEB_PRO_GENERATION_WORKER_ID?.trim() || `generation-worker:${hostname()}:${process.pid}:${randomUUID()}`).slice(0, 150);
+const defaultWorkerId = normalizeGenerationWorkerId(`generation-worker:${hostname()}:${process.pid}:${randomUUID()}`);
+const workerId = normalizeGenerationWorkerId(process.env.VOZEB_PRO_GENERATION_WORKER_ID) || defaultWorkerId;
 const idleDelayMs = boundedNumber(process.env.VOZEB_PRO_GENERATION_WORKER_INTERVAL_MS, 2_000, 500, 30_000);
 const lanes = boundedNumber(process.env.VOZEB_PRO_GENERATION_WORKER_LANES, 2, 1, 8);
 const heartbeatIntervalMs = boundedNumber(process.env.VOZEB_PRO_GENERATION_WORKER_HEARTBEAT_MS, 15_000, 5_000, 60_000);

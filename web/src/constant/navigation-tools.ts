@@ -1,4 +1,4 @@
-import { BookMarked, Clapperboard, Compass, FileText, GalleryVerticalEnd, Images, Maximize2, Sparkles, UserRound } from "lucide-react";
+import { BookMarked, Clapperboard, Compass, FileText, GalleryVerticalEnd, Images, Maximize2, ScanSearch, Sparkles, UserRound } from "lucide-react";
 
 export const navigationGroups = [
     { id: "create", label: "创作" },
@@ -35,6 +35,13 @@ export const navigationTools = [
         description: "剧本、分镜与成片",
         group: "projects",
         icon: Clapperboard,
+    },
+    {
+        slug: "remake",
+        label: "复刻",
+        description: "电商视频拆解与交接",
+        group: "projects",
+        icon: ScanSearch,
     },
     {
         slug: "works",

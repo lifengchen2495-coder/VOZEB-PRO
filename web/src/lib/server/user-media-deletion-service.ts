@@ -6,12 +6,14 @@ import type { GenerationLogDatabase } from "@/lib/server/generation-log-types";
 import type { StoredGenerationTaskRecord } from "@/lib/server/generation-task-store";
 import { getLocalMediaRegistrations, type LocalMediaRegistration } from "@/lib/server/local-media-registry";
 import { deleteRegisteredLocalMediaSnapshots } from "@/lib/server/local-media-storage";
+import { defaultRemakePipeline, emptyRemakeCopyState, emptyRemakeRangeGroups, isRemakeNoNarrationCopy, normalizeRemakeProjectWorkflow, type RemakeMediaAsset, type RemakePipeline, type RemakeProject } from "@/lib/server/remake-project-contract";
 import { cleanCanvasProjectMediaReferences, cleanUserMediaReferences, containsUserMediaReference } from "@/lib/server/user-media-reference-cleanup";
 
-const FILES = ["auth.json", "canvas-projects.json", "creative-runtime.json", "drama-projects.json", "generation-logs.json", "generation-tasks.json", "library-assets.json", "local-media-assets.json"] as const;
+const FILES = ["auth.json", "canvas-projects.json", "creative-runtime.json", "drama-projects.json", "remake-projects.json", "generation-logs.json", "generation-tasks.json", "library-assets.json", "local-media-assets.json"] as const;
 
 type CanvasProjectFile = { version: 1; projects: Array<{ userId: string; project: CanvasProject }> };
 type ProjectFile = { version: 1; projects: Array<{ userId: string; project: Record<string, unknown> }> };
+type RemakeProjectFile = { version: 1; projects: Array<{ userId: string; project: RemakeProject }> };
 type LibraryAssetFile = { version: 1; assets: unknown[] };
 type LocalMediaFile = { version: 1; assets: LocalMediaRegistration[] };
 
@@ -93,6 +95,7 @@ async function removePostgresReferences(client: QueryExecutor, userId: string, s
     removed += await deleteMatchingRows(client, "library_assets", "user_id = $1", matchesJsonColumns("library_assets", ["asset_json"]), userId, storageKeys);
     removed += await cleanPostgresCanvasProjects(client, userId, storageKeys);
     removed += await cleanPostgresJsonProjects(client, "drama_projects", "project_json", userId, storageKeys);
+    removed += await cleanPostgresRemakeProjects(client, userId, storageKeys);
     removed += await cleanPostgresJsonProjects(client, "drama_project_versions", "snapshot", userId, storageKeys);
 
     const logAssets = await client.query<{ generation_log_id: string }>(
@@ -187,6 +190,23 @@ async function cleanPostgresCanvasProjects(client: QueryExecutor, userId: string
     return changed;
 }
 
+async function cleanPostgresRemakeProjects(client: QueryExecutor, userId: string, storageKeys: string[]) {
+    const result = await client.query<{ id: string; project_json: RemakeProject }>(
+        `SELECT id, project_json FROM remake_projects
+         WHERE user_id = $1 AND ${matchesJsonColumns("remake_projects", ["project_json"])}
+         FOR UPDATE`,
+        [userId, storageKeys],
+    );
+    let changed = 0;
+    for (const row of result.rows) {
+        const cleaned = cleanRemakeProjectMediaReferences(row.project_json, storageKeys);
+        if (!cleaned.changed) continue;
+        await client.query("UPDATE remake_projects SET project_json = $3::jsonb, updated_at = $4 WHERE user_id = $1 AND id = $2", [userId, row.id, JSON.stringify(cleaned.value), new Date(cleaned.value.updatedAt)]);
+        changed += 1;
+    }
+    return changed;
+}
+
 async function cleanPostgresJsonProjects(client: QueryExecutor, table: "drama_projects" | "drama_project_versions", column: "project_json" | "snapshot", userId: string, storageKeys: string[]) {
     const result = await client.query<{ id: string; value: Record<string, unknown> }>(
         `SELECT id, ${column} AS value FROM ${table}
@@ -261,6 +281,16 @@ function cleanFileState(state: Awaited<ReturnType<typeof readFileState>>, userId
             return { ...record, project: withUpdatedAt(cleaned.value) };
         }),
     };
+    const remake = {
+        ...state.remake,
+        projects: state.remake.projects.map((record) => {
+            if (record.userId !== userId) return record;
+            const cleaned = cleanRemakeProjectMediaReferences(record.project, storageKeys);
+            if (!cleaned.changed) return record;
+            removedReferences += 1;
+            return { ...record, project: cleaned.value };
+        }),
+    };
     const logs = { ...state.logs, logs: state.logs.logs.map((log) => (log.userId === userId ? cleanCounted(log, storageKeys, assetIds) : log)) };
     const tasks = state.tasks.map((task) => {
         if (task.userId !== userId) return task;
@@ -278,7 +308,7 @@ function cleanFileState(state: Awaited<ReturnType<typeof readFileState>>, userId
               return cleaned.value;
           })
         : state.auth.users;
-    return { state: { ...state, runtime, library, canvas, drama, logs, tasks, auth: { ...state.auth, users } }, removedReferences };
+    return { state: { ...state, runtime, library, canvas, drama, remake, logs, tasks, auth: { ...state.auth, users } }, removedReferences };
 
     function cleanCounted<T>(value: T, keys: string[], ids: string[]) {
         const cleaned = cleanUserMediaReferences(value, keys, ids);
@@ -292,17 +322,18 @@ function ownedBy(value: unknown, userId: string) {
 }
 
 async function readFileState() {
-    const [auth, canvas, runtime, drama, logs, tasks, library, media] = await Promise.all([
+    const [auth, canvas, runtime, drama, remake, logs, tasks, library, media] = await Promise.all([
         readJsonDataFile<Record<string, unknown>>("auth.json", {}),
         readJsonDataFile<CanvasProjectFile>("canvas-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<RuntimeFileDatabase>("creative-runtime.json", { version: 1, nextEventId: 1, conversations: [], messages: [], assets: [], events: [] }),
         readJsonDataFile<ProjectFile>("drama-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<RemakeProjectFile>("remake-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<GenerationLogDatabase>("generation-logs.json", { version: 1, logs: [] }),
         readJsonDataFile<StoredGenerationTaskRecord[]>("generation-tasks.json", []),
         readJsonDataFile<LibraryAssetFile>("library-assets.json", { version: 1, assets: [] }),
         readJsonDataFile<LocalMediaFile>("local-media-assets.json", { version: 1, assets: [] }),
     ]);
-    return { auth, canvas, runtime, drama, logs, tasks, library, media };
+    return { auth, canvas, runtime, drama, remake, logs, tasks, library, media };
 }
 
 async function writeFileState(state: Awaited<ReturnType<typeof readFileState>>) {
@@ -315,6 +346,7 @@ function fileStateEntries(state: Awaited<ReturnType<typeof readFileState>>) {
         "canvas-projects.json": state.canvas,
         "creative-runtime.json": state.runtime,
         "drama-projects.json": state.drama,
+        "remake-projects.json": state.remake,
         "generation-logs.json": state.logs,
         "generation-tasks.json": state.tasks,
         "library-assets.json": state.library,
@@ -336,6 +368,101 @@ function matchesJsonColumns(alias: string, columns: string[], keyParameter = 2) 
 function withUpdatedAt<T extends Record<string, unknown>>(value: T): T & { updatedAt: string } {
     const previous = Date.parse(String(value.updatedAt || ""));
     return { ...value, updatedAt: new Date(Math.max(Date.now(), Number.isFinite(previous) ? previous + 1 : 0)).toISOString() };
+}
+
+function cleanRemakeProjectMediaReferences(project: RemakeProject, storageKeys: string[]) {
+    const normalized = normalizeRemakeProjectWorkflow(project);
+    const sourceVideoRemoved = mediaAssetDeleted(normalized.sourceVideo, storageKeys);
+    const framesRemoved = normalized.frames.some((frame) => containsUserMediaReference({ storageKey: frame.storageKey, url: frame.frameUrl }, storageKeys));
+    const characterRemoved = mediaAssetDeleted(normalized.references.character, storageKeys);
+    const characterSupplementRemoved = mediaAssetDeleted(normalized.references.characterSupplement, storageKeys);
+    const backgroundRemoved = mediaAssetDeleted(normalized.references.background, storageKeys);
+    const audioRemoved = mediaAssetDeleted(normalized.references.audio, storageKeys);
+    const narrationAudioRemoved = audioRemoved && !isRemakeNoNarrationCopy(normalized.sourceCopy);
+    const referenceInputRemoved = characterRemoved || characterSupplementRemoved || backgroundRemoved;
+    let contactSheetRemoved = false;
+    let generatedResultRemoved = false;
+    const groups = normalized.groups.map((group) => {
+        const removeContactSheet = mediaAssetDeleted(group.sourceContactSheet, storageKeys);
+        const removeResult = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        contactSheetRemoved ||= removeContactSheet;
+        generatedResultRemoved ||= removeResult;
+        if (!removeContactSheet && !removeResult && !referenceInputRemoved) return narrationAudioRemoved ? { ...group, videoPrompt: "" } : group;
+        return {
+            ...group,
+            sourceContactSheet: removeContactSheet ? undefined : group.sourceContactSheet,
+            imageGeneration: {
+                status: "idle" as const,
+                prompt: referenceInputRemoved || removeContactSheet ? "" : group.imageGeneration.prompt,
+            },
+            videoPrompt: "",
+        };
+    });
+    const changed = sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved;
+    if (!changed) return { value: project, changed: false } as const;
+
+    const references = {
+        character: characterRemoved ? undefined : normalized.references.character,
+        characterSupplement: characterSupplementRemoved ? undefined : normalized.references.characterSupplement,
+        background: backgroundRemoved ? undefined : normalized.references.background,
+        audio: audioRemoved ? undefined : normalized.references.audio,
+    };
+    const revision = Math.max(0, Number.isInteger(project.revision) ? project.revision : 0) + 1;
+    if (!sourceVideoRemoved && !framesRemoved) {
+        return {
+            value: withUpdatedAt({
+                ...normalized,
+                revision,
+                references,
+                groups,
+                pipeline: invalidateRemakeMediaPipeline(normalized.pipeline, {
+                    references: referenceInputRemoved || contactSheetRemoved,
+                    images: generatedResultRemoved || referenceInputRemoved || contactSheetRemoved,
+                    prompts: narrationAudioRemoved,
+                }),
+            }),
+            changed: true,
+        } as const;
+    }
+
+    const error = sourceVideoRemoved ? "源视频已从媒体库删除，请重新上传后分析" : "部分抽帧已从媒体库删除，请重新分析";
+    const pipeline = defaultRemakePipeline({ hasSourceVideo: !sourceVideoRemoved && Boolean(normalized.sourceVideo), analysisStatus: "error" });
+    pipeline.steps.analysis = { status: "error", error };
+    return {
+        value: withUpdatedAt({
+            ...normalized,
+            revision,
+            sourceVideo: sourceVideoRemoved ? undefined : normalized.sourceVideo,
+            sourceCopy: "",
+            frames: [],
+            copyBlocks: [],
+            references: { ...references, audio: undefined },
+            groups: emptyRemakeRangeGroups(),
+            copy: emptyRemakeCopyState(),
+            pipeline,
+            analysis: { status: "error" as const, error },
+        }),
+        changed: true,
+    } as const;
+}
+
+function mediaAssetDeleted(asset: RemakeMediaAsset | undefined, storageKeys: string[]) {
+    return Boolean(asset && containsUserMediaReference({ storageKey: asset.storageKey, url: asset.url }, storageKeys));
+}
+
+function invalidateRemakeMediaPipeline(pipeline: RemakePipeline, input: { references: boolean; images: boolean; prompts: boolean }): RemakePipeline {
+    if (!input.references && !input.images && !input.prompts) return pipeline;
+    const reset = { status: "pending" as const };
+    return {
+        ...pipeline,
+        stage: input.references ? "references" : input.images ? "images" : "prompts",
+        steps: {
+            ...pipeline.steps,
+            ...(input.references ? { references: reset } : {}),
+            ...(input.images ? { images: reset } : {}),
+            ...(input.images || input.prompts ? { prompts: reset } : {}),
+        },
+    };
 }
 
 function normalizeKeys(values: string[]) {

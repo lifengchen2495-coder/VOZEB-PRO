@@ -23,6 +23,14 @@ data/
 .codex/
 .trellis/
 .agents/
+# Local AI assistant caches and generated workflow artifacts.
+.claude/
+.lingma/
+.qoder/
+.qwen/
+.trae/
+.windsurf/
+.workflow/
 skills-lock.json
 docs/assets/
 VOZEB-PRO-审计报告.md
