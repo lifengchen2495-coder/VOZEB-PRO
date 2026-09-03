@@ -25,10 +25,10 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
 
     const settings = await getAuthSettings();
-    const model = settings.defaultModels.textModel;
+    const model = project.modelSelection.prompt || settings.defaultModels.textModel;
     const candidates = model ? rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", model)).filter((candidate) => resolveRemakeProductionVisionProtocol(candidate) !== null) : [];
-    if (!model) throw new RemakeProductionError("后台尚未配置可用的默认文本模型", 503);
-    if (!candidates.length) throw new RemakeProductionError("默认文本模型没有明确启用参考图片能力，或未使用 Chat、Responses、Gemini 多模态协议", 503);
+    if (!model) throw new RemakeProductionError("请先选择可用的 Prompt 文本模型", 503);
+    if (!candidates.length) throw new RemakeProductionError("所选 Prompt 文本模型没有启用参考图片能力，或未使用 Chat、Responses、Gemini 多模态协议", 503);
 
     let visualBoards: Awaited<ReturnType<typeof buildRemakeProductionVisualBoards>>;
     try {
@@ -37,7 +37,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
             cookie: input.cookie,
             character: project.references.character,
             characterSupplement: project.references.characterSupplement,
-            background: project.references.background!,
+            product: project.references.product!,
             redrawnContactSheets: project.groups.map((group) => ({
                 groupOrdinal: group.ordinal,
                 frameOrdinals: group.frameOrdinals,
@@ -46,7 +46,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
         });
     } catch (error) {
         if (error instanceof RemakeProductionVisionError) throw new RemakeProductionError(error.message, error.status);
-        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "人物、背景或重绘十二宫格读取失败，无法执行真实视觉规划"), 502);
+        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "人物、产品图或最终十二宫格读取失败，无法执行真实视觉规划"), 502);
     }
 
     const messages = remakeProductionMessages({
@@ -64,7 +64,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
         referenceAssets: {
             character: productionAssetMetadata(project.references.character),
             characterSupplement: productionAssetMetadata(project.references.characterSupplement),
-            background: productionAssetMetadata(project.references.background),
+            product: productionAssetMetadata(project.references.product),
             audio: productionAssetMetadata(project.references.audio),
         },
         contactSheets: project.groups.map((group) => ({
@@ -171,13 +171,13 @@ async function assertProductionReady(userId: string, project: Awaited<ReturnType
     } catch (error) {
         throw new RemakeProductionError(error instanceof Error ? error.message : "16 个文案区间未完整覆盖原文案", 409);
     }
-    if (!project.references.background) {
-        throw new RemakeProductionError("请先上传背景图", 409);
+    if (!project.references.product) {
+        throw new RemakeProductionError("请先上传新产品图", 409);
     }
     if (hasNarration && !project.references.audio) throw new RemakeProductionError("原视频音频尚未提取，请重新执行视频理解", 409);
     if (hasNarration && project.voice !== "female" && project.voice !== "male") throw new RemakeProductionError("请选择男性配音或女性配音", 409);
     if (project.groups.length !== 4 || project.groups.some((group) => !group.sourceContactSheet || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
-        throw new RemakeProductionError("请先完成四组换人物、换背景十二宫格生图", 409);
+        throw new RemakeProductionError("请先完成四组清理换人和换品十二宫格生图", 409);
     }
     await assertRemakeImageGenerationsForUser(userId, project);
 }

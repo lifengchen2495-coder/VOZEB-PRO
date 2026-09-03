@@ -4,6 +4,7 @@ export type RemakeWorkspacePatch = RemakeEditablePatch & Partial<Pick<RemakeProj
 
 export type RemakeImageTaskSnapshot = {
     groupId: string;
+    stage: "replacement" | "storyboard";
     slotId: string;
     taskId: string;
     inputVersion: string;
@@ -25,6 +26,7 @@ export function mergeEditablePatch(project: RemakeProject, patch: RemakeWorkspac
         sourceCopy: patch.sourceCopy !== undefined ? patch.sourceCopy : project.sourceCopy,
         copyStrategy: patch.copyStrategy !== undefined ? patch.copyStrategy : project.copyStrategy,
         voice: patch.voice !== undefined ? patch.voice : project.voice,
+        modelSelection: patch.modelSelection !== undefined ? patch.modelSelection : project.modelSelection,
         references: patch.references !== undefined ? patch.references : project.references,
         groups: patch.groups !== undefined ? patch.groups : project.groups,
         frames: patch.frames !== undefined ? patch.frames : project.frames,
@@ -42,6 +44,7 @@ export function mergeSavedProject(saved: RemakeProject, current: RemakeProject, 
         sourceCopy: pending.sourceCopy !== undefined ? current.sourceCopy : saved.sourceCopy,
         copyStrategy: pending.copyStrategy !== undefined ? current.copyStrategy : saved.copyStrategy,
         voice: pending.voice !== undefined ? current.voice : saved.voice,
+        modelSelection: pending.modelSelection !== undefined ? current.modelSelection : saved.modelSelection,
         references: pending.references !== undefined ? current.references : saved.references,
         groups: pending.groups !== undefined ? current.groups : saved.groups,
         frames: pending.frames !== undefined ? current.frames : saved.frames,
@@ -78,8 +81,8 @@ export function rebaseRemakeConflict(dirty: RemakeWorkspacePatch, local: RemakeP
 }
 
 export function invalidateRemakeProduction(project: RemakeProject, patch: RemakeWorkspacePatch): RemakeWorkspacePatch {
-    const groups = (patch.groups || project.groups).map((group) => ({ ...group, videoPrompt: "" }));
-    const imagesReady = groups.length === 4 && groups.every((group) => group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result?.url));
+    const groups = (patch.groups || project.groups).map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } }));
+    const imagesReady = groups.length === 4 && groups.every(groupImagesReady);
     const sourceCopyChanged = patch.sourceCopy !== undefined && patch.sourceCopy !== project.sourceCopy;
     return {
         ...patch,
@@ -124,7 +127,7 @@ export function editRemakeCopyBlock(project: RemakeProject, blockId: string, pat
     const copyBlocks = project.copyBlocks.map((block) => (block.id === blockId ? { ...block, ...patch } : block));
     const blocksByOrdinal = new Map(copyBlocks.map((block) => [block.ordinal, block]));
     const mappings = project.copy.mappings.map((mapping) => ({ ...mapping, text: blocksByOrdinal.get(mapping.blockOrdinal)?.text ?? mapping.text }));
-    const groups = project.groups.map((group) => ({ ...group, videoPrompt: "" }));
+    const groups = project.groups.map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } }));
     const copy = {
         ...project.copy,
         rawReport: "",
@@ -139,7 +142,7 @@ export function editRemakeCopyBlock(project: RemakeProject, blockId: string, pat
         error: "",
     };
     const copyReady = isRemakeCopyPlanReady({ sourceCopy: project.sourceCopy, copy, copyBlocks });
-    const imagesReady = groups.length === 4 && groups.every((group) => group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result?.url));
+    const imagesReady = groups.length === 4 && groups.every(groupImagesReady);
     return {
         copyBlocks,
         groups,
@@ -157,29 +160,30 @@ export function editRemakeCopyBlock(project: RemakeProject, blockId: string, pat
 }
 
 export function remakeReferenceVersion(references: RemakeReferenceAssets) {
-    return JSON.stringify([assetIdentity(references.character), assetIdentity(references.background)]);
+    return JSON.stringify([assetIdentity(references.product), assetIdentity(references.character)]);
 }
 
-export function remakeGroupInputVersion(group: RemakeRangeGroup, references: RemakeReferenceAssets) {
-    return JSON.stringify([assetIdentity(group.sourceContactSheet), remakeReferenceVersion(references)]);
+export function remakeGroupInputVersion(group: RemakeRangeGroup, references: RemakeReferenceAssets, stage: "replacement" | "storyboard" = "storyboard") {
+    return JSON.stringify([assetIdentity(group.sourceContactSheet), remakeReferenceVersion(references), stage === "storyboard" ? assetIdentity(group.replacementGeneration.result || undefined) : ""]);
 }
 
-export function remakeImageClientRequestId(projectId: string, group: RemakeRangeGroup, references: RemakeReferenceAssets) {
-    return `remake-image:${group.id}:${stableTextHash(`${projectId}\n${remakeGroupInputVersion(group, references)}`)}`;
+export function remakeImageClientRequestId(projectId: string, group: RemakeRangeGroup, references: RemakeReferenceAssets, stage: "replacement" | "storyboard" = "storyboard") {
+    return `remake-image:${group.id}:${stage}:${stableTextHash(`${projectId}\n${remakeGroupInputVersion(group, references, stage)}`)}`;
 }
 
-export function remakeImageGenerationSlotId(groupId: string) {
-    return `remake:${groupId}`;
+export function remakeImageGenerationSlotId(groupId: string, stage: "replacement" | "storyboard" = "storyboard") {
+    return `remake:${groupId}:${stage}`;
 }
 
 export function isRemakeImageTaskCurrent(project: Pick<RemakeProject, "groups" | "references">, snapshot: RemakeImageTaskSnapshot) {
     const group = project.groups.find((item) => item.id === snapshot.groupId);
-    return Boolean(group && snapshot.slotId === remakeImageGenerationSlotId(group.id) && group.imageGeneration.taskId === snapshot.taskId && remakeGroupInputVersion(group, project.references) === snapshot.inputVersion);
+    const generation = snapshot.stage === "replacement" ? group?.replacementGeneration : group?.imageGeneration;
+    return Boolean(group && generation && snapshot.slotId === remakeImageGenerationSlotId(group.id, snapshot.stage) && generation.taskId === snapshot.taskId && remakeGroupInputVersion(group, project.references, snapshot.stage) === snapshot.inputVersion);
 }
 
-export function isRemakeImageInputCurrent(project: Pick<RemakeProject, "groups" | "references">, groupId: string, inputVersion: string) {
+export function isRemakeImageInputCurrent(project: Pick<RemakeProject, "groups" | "references">, groupId: string, inputVersion: string, stage: "replacement" | "storyboard" = "storyboard") {
     const group = project.groups.find((item) => item.id === groupId);
-    return Boolean(group && remakeGroupInputVersion(group, project.references) === inputVersion);
+    return Boolean(group && remakeGroupInputVersion(group, project.references, stage) === inputVersion);
 }
 
 export function remakeImageCreationFailureDisposition(reason: unknown): "aborted" | "deferred" | "error" {
@@ -205,21 +209,30 @@ function mergeConflictGroups(localGroups: RemakeRangeGroup[], remoteGroups: Rema
     return remoteGroups.map((remote) => {
         const local = localById.get(remote.id);
         if (!local) return remote;
-        const localTaskId = local.imageGeneration.taskId || "";
-        const remoteTaskId = remote.imageGeneration.taskId || "";
-        if (remoteTaskId && remoteTaskId !== localTaskId) return remote;
-        if (!remoteTaskId || remoteTaskId !== localTaskId) return local;
+        const localTaskIds = groupTaskIds(local);
+        const remoteTaskIds = groupTaskIds(remote);
+        if (remoteTaskIds.some((taskId, index) => taskId && taskId !== localTaskIds[index])) return remote;
         const imageGeneration = preferredTaskState(local.imageGeneration, remote.imageGeneration);
-        return { ...local, imageGeneration };
+        const replacementGeneration = preferredTaskState(local.replacementGeneration, remote.replacementGeneration);
+        const videoGeneration = preferredTaskState(local.videoGeneration, remote.videoGeneration);
+        return { ...local, replacementGeneration, imageGeneration, videoGeneration };
     });
 }
 
-function preferredTaskState(local: RemakeRangeGroup["imageGeneration"], remote: RemakeRangeGroup["imageGeneration"]) {
+function preferredTaskState<T extends { status: RemakeRangeGroup["imageGeneration"]["status"] }>(local: T, remote: T) {
     if (remote.status === "completed") return remote;
     if (local.status === "completed") return local;
     if (remote.status === "error") return remote;
     if (local.status === "error") return local;
     return remote;
+}
+
+function groupTaskIds(group: RemakeRangeGroup) {
+    return [group.replacementGeneration.taskId || "", group.imageGeneration.taskId || "", group.videoGeneration.taskId || ""];
+}
+
+function groupImagesReady(group: RemakeRangeGroup) {
+    return Boolean(group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
 }
 
 function stableTextHash(value: string) {

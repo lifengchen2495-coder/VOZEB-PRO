@@ -9,6 +9,7 @@ import { runFfmpeg, runFfprobe } from "@/lib/server/ffmpeg";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { writeAssetBytes } from "@/lib/server/generation-log-repository";
 import { fetchInternalApi } from "@/lib/server/internal-origin";
+import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_COPY_PROMPT } from "@/lib/remake-feishu-prompts";
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "@/lib/server/logical-model-router";
 import { maintenanceWorkerContext, maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
 import { downloadMediaToFile } from "@/lib/server/media-download";
@@ -31,7 +32,6 @@ import {
 import { completeRemakeProjectAnalysis, failRemakeProjectAnalysis, markRemakeProjectAnalysisRunning, RemakeAnalysisSupersededError } from "@/lib/server/remake-project-service";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { rankTextPlanningCandidates, requestStructuredText } from "@/lib/server/text-planning-runtime";
-import { resolveTextProtocol } from "@/lib/server/text-protocol-resolver";
 import { strictJsonObjectText } from "@/lib/server/structured-model-output";
 import { deleteUserMediaAssetsCascade } from "@/lib/server/user-media-deletion-service";
 
@@ -69,6 +69,9 @@ const CONTACT_SHEET_COLUMNS = 3;
 const CONTACT_SHEET_ROWS = 4;
 const CONTACT_SHEET_WIDTH = 1_080;
 const CONTACT_SHEET_HEIGHT = 1_920;
+const DOUBAO_VIDEO_UNDERSTANDING_MODEL = "doubao-seed-2-0-pro-260215";
+const DOUBAO_FILE_POLL_INTERVAL_MS = 1_500;
+const DOUBAO_FILE_WAIT_TIMEOUT_MS = 5 * 60_000;
 
 export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; origin: string; cookie: string }) {
     const task = (await markRemakeAnalysisTaskRunning(input.task)) || input.task;
@@ -115,11 +118,11 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             bytes: inlineVideo,
             durationMs: probe.durationMs,
             candidates: models.videoCandidates,
-            model: models.model,
+            model: models.videoModel,
             origin: input.origin,
             credential,
             task,
-            onCharge: (headers) => trackAnalysisCharge(pendingRefunds, task, models.model, "video-understanding", headers),
+            onCharge: (headers) => trackAnalysisCharge(pendingRefunds, task, models.videoModel, "video-understanding", headers),
         });
 
         const existingSourceCopy = typeof project.sourceCopy === "string" ? project.sourceCopy : "";
@@ -145,11 +148,11 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             sourceCopy,
             frames,
             candidates: models.copyCandidates,
-            model: models.model,
+            model: models.copyModel,
             origin: input.origin,
             credential,
             task,
-            onCharge: (headers) => trackAnalysisCharge(pendingRefunds, task, models.model, "copy-planning", headers),
+            onCharge: (headers) => trackAnalysisCharge(pendingRefunds, task, models.copyModel, "copy-planning", headers),
         });
 
         await updateRemakeAnalysisTaskProgress(task, { stage: "saving", progress: 97 });
@@ -229,22 +232,26 @@ async function probeSourceVideo(sourcePath: string): Promise<ProbeResult> {
 
 async function resolveAnalysisModels() {
     const settings = await getAuthSettings();
-    const model = settings.defaultModels.textModel;
-    const copyCandidates = model ? rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", model)) : [];
-    if (!model || !copyCandidates.length) throw new Error("后台尚未配置可用的默认文本模型");
-    const videoCandidates = copyCandidates.filter((candidate) => candidate.capabilityProfile?.supportsReferenceVideo === true && geminiProtocol(candidate) !== null);
-    if (!videoCandidates.length) throw new Error("后台尚未配置支持 Gemini 内联视频理解的文本模型");
-    return { model, copyCandidates, videoCandidates };
-}
+    const doubaoLogicalIds = settings.logicalModels
+        .filter(
+            (logical) =>
+                logical.enabled &&
+                logical.capability === "text" &&
+                logical.bindings.some((binding) => binding.enabled && normalizedModelId(binding.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL),
+        )
+        .map((logical) => logical.id);
+    const requestedVideoModels = Array.from(new Set([settings.defaultModels.textModel, ...doubaoLogicalIds, DOUBAO_VIDEO_UNDERSTANDING_MODEL].filter(Boolean)));
+    const videoCandidates = rankTextPlanningCandidates(
+        uniqueCandidates(requestedVideoModels.flatMap((model) => resolveLogicalModelCandidates(settings, "text", model))).filter(
+            (candidate) => normalizedModelId(candidate.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL && Boolean(candidate.channel.apiKey.trim()) && Boolean(doubaoFilesBaseUrl(candidate)),
+        ),
+    );
+    if (!videoCandidates.length) throw new Error(`后台尚未配置可用的 ${DOUBAO_VIDEO_UNDERSTANDING_MODEL} 文本模型渠道`);
 
-function geminiProtocol(candidate: ResolvedLogicalModel) {
-    const protocol = resolveTextProtocol({
-        model: candidate.upstreamModel,
-        apiFormat: candidate.channel.apiFormat,
-        advancedConfig: candidate.channel.advancedConfig,
-        throughSystemProxy: true,
-    });
-    return protocol.providerKind === "gemini" ? protocol : null;
+    const copyModel = settings.defaultModels.textModel || videoCandidates[0].logicalModelId;
+    const copyCandidates = rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", copyModel));
+    if (!copyCandidates.length) throw new Error("后台尚未配置可用的 Prompt 文本模型");
+    return { copyModel, copyCandidates, videoModel: videoCandidates[0].logicalModelId, videoCandidates };
 }
 
 async function transcodeAnalysisVideo(input: { sourcePath: string; workDirectory: string; probe: ProbeResult }) {
@@ -374,7 +381,7 @@ async function understandVideo(input: {
     for (const candidate of input.candidates) {
         const idempotencyKey = systemAiIdempotencyKey("remake-video-understanding", input.task.userId, input.task.id, candidate.channelId, candidate.upstreamModel);
         try {
-            const call = await requestGeminiVideoUnderstanding({ ...input, candidate, idempotencyKey });
+            const call = await requestDoubaoVideoUnderstanding({ ...input, candidate, idempotencyKey });
             try {
                 const understanding = parseVideoUnderstanding(call.arguments, input.durationMs);
                 input.onCharge(call.headers);
@@ -390,59 +397,160 @@ async function understandVideo(input: {
     throw new Error(toSafeGenerationErrorMessage(latestError, "视频理解模型未返回完整的 48 条镜头分析"));
 }
 
-async function requestGeminiVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string }) {
-    const protocol = geminiProtocol(input.candidate);
-    if (!protocol) throw new Error("当前候选模型不是 Gemini 视频理解协议");
-    const prompt = [
-        "完整观看视频并按时间顺序严格拆解为恰好 48 个编号分镜，四部分各 12 个。",
-        "48 个分镜必须完整、连续覆盖视频：第一段从 0:00 开始，后一段的开始时间必须等于前一段的结束时间，禁止时间跳跃、重叠、重复或乱序；最后一段结束时间必须等于视频实际结尾。",
-        "每个分镜必须给出真实语义起止时间、画面可见字幕、卖点、镜头类型、画面描述、人物占比和是否包含清晰人脸。字幕和卖点优先；无字幕且无卖点的纯过渡画面应与相邻镜头合并，不得为了凑数虚构画面。",
-        "画面描述必须包含景别/构图、人物性别、动作、节奏、展示目的和环境背景。",
-        "除视频原语言字幕和 sourceCopy 外，所有分析字段必须使用简体中文。",
-        "同时按视频中的原语言逐字返回完整口播转写 sourceCopy；不得翻译、概括、改写、遗漏或重复口播。",
-        `视频实际时长为 ${formatTimestamp(input.durationMs / 1_000)}。必须调用 analyze_remake_video。`,
-    ].join("\n");
-    const body = {
-        contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "video/mp4", data: input.bytes.toString("base64") } }] }],
-        systemInstruction: {
-            parts: [
+async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string }) {
+    if (normalizedModelId(input.candidate.upstreamModel) !== DOUBAO_VIDEO_UNDERSTANDING_MODEL) throw new Error("当前候选模型不是 Doubao Seed 2.0 Pro");
+    const fileId = await uploadDoubaoVideo(input.candidate, input.bytes);
+    try {
+        await waitForDoubaoFile(input.candidate, fileId);
+        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs);
+        const body = {
+            model: input.candidate.upstreamModel,
+            input: [
                 {
-                    text: "你是电商短视频分析器和原语言口播转写器。只依据完整视频，逐字保留视频实际使用的语言，不得翻译，也不虚构未出现的字幕、商品、人物或动作。输出必须完整覆盖 1-48，时间线连续无跳跃或重叠，并调用指定函数。",
+                    role: "user",
+                    content: [
+                        { type: "input_video", file_id: fileId },
+                        { type: "input_text", text: prompt },
+                    ],
                 },
             ],
-        },
-        tools: [{ functionDeclarations: [remakeVideoTool] }],
-        toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [remakeVideoTool.name] } },
-    };
-    const headers = new Headers({
-        "Content-Type": "application/json",
-        "Idempotency-Key": input.idempotencyKey,
-        "X-Client-Request-Id": input.idempotencyKey,
-        ...systemAiBillingHeaders(input.model, input.idempotencyKey, input.candidate.upstreamModel),
-    });
-    const workerHeaders = maintenanceWorkerContextHeaders(input.credential);
-    if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
-    else if (input.credential) headers.set("cookie", input.credential);
-    const path = protocol.providerPath.trim().replace(/^\/+/, "");
-    const response = await fetchInternalApi(`${input.origin}/api/ai/system/${encodeURIComponent(input.candidate.channelId)}/${path}`, {
+            store: false,
+            max_output_tokens: 24_000,
+        };
+        const headers = new Headers({
+            "Content-Type": "application/json",
+            "Idempotency-Key": input.idempotencyKey,
+            "X-Client-Request-Id": input.idempotencyKey,
+            ...systemAiBillingHeaders(input.model, input.idempotencyKey, input.candidate.upstreamModel),
+        });
+        const workerHeaders = maintenanceWorkerContextHeaders(input.credential);
+        if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
+        else if (input.credential) headers.set("cookie", input.credential);
+        const response = await fetchInternalApi(`${input.origin}/api/ai/system/${encodeURIComponent(input.candidate.channelId)}/responses`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+            cache: "no-store",
+            signal: AbortSignal.timeout(Math.max(10 * 60_000, resolveModelRequestTimeoutMs(input.candidate, "text"))),
+        });
+        if (!response.ok) throw new Error(toSafeGenerationErrorMessage(await response.text().catch(() => ""), `Doubao 视频理解调用失败（HTTP ${response.status}）`));
+        const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+        if (!payload) {
+            await refundInvalidResponse(input.task.userId, input.model, response.headers);
+            throw new Error("Doubao 视频理解返回了无效 JSON");
+        }
+        const argumentsText = strictJsonObjectText(readDoubaoOutputText(payload));
+        if (!argumentsText) {
+            await refundInvalidResponse(input.task.userId, input.model, response.headers);
+            throw new Error("Doubao 视频理解没有返回完整的结构化分析");
+        }
+        return { arguments: argumentsText, headers: response.headers };
+    } finally {
+        await deleteDoubaoFile(input.candidate, fileId).catch(() => undefined);
+    }
+}
+
+function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
+    const runtimeContract = [
+        "## 【当前记录执行合同】",
+        "完整观看已上传的视频，并按时间顺序严格拆解为恰好 48 个编号分镜，四部分各 12 个。",
+        "48 个分镜必须完整、连续覆盖视频：第一段从 0:00 开始，后一段的开始时间必须等于前一段的结束时间，禁止时间跳跃、重叠、重复或乱序；最后一段结束时间必须等于视频实际结尾。",
+        "每个分镜必须给出真实语义起止时间、画面可见字幕、卖点、镜头类型、画面描述、人物占比和是否包含清晰人脸。无字幕且无卖点的纯过渡画面应与相邻镜头合并，不得为了凑数虚构画面。",
+        "画面描述必须包含景别或构图、人物性别、动作、节奏、展示目的和环境背景。",
+        "除视频原语言字幕和 sourceCopy 外，所有分析字段使用简体中文。sourceCopy 必须按视频中的原语言逐字返回，不得翻译、概括、改写、遗漏或重复；无口播时返回空字符串。",
+        `视频实际时长为 ${formatTimestamp(durationMs / 1_000)}。`,
+        "只输出一个 JSON 对象，不要输出 Markdown 代码围栏、解释或前后缀。JSON 必须严格符合以下 Schema：",
+        JSON.stringify(remakeVideoTool.parameters),
+    ].join("\n\n");
+    return `${REMAKE_FEISHU_ANALYSIS_PROMPT}\n\n---\n\n${runtimeContract}`;
+}
+
+async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer) {
+    const form = new FormData();
+    form.append("purpose", "user_data");
+    form.append("file", new Blob([new Uint8Array(bytes)], { type: "video/mp4" }), "remake-analysis-video.mp4");
+    const response = await fetch(doubaoEndpoint(candidate, "files"), {
         method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        cache: "no-store",
-        signal: AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text")),
+        headers: { Authorization: `Bearer ${candidate.channel.apiKey}` },
+        body: form,
+        signal: AbortSignal.timeout(10 * 60_000),
     });
-    if (!response.ok) throw new Error(toSafeGenerationErrorMessage(await response.text().catch(() => ""), `视频理解模型调用失败（HTTP ${response.status}）`));
+    const payload = await readDoubaoResponse(response, "Doubao 视频文件上传失败");
+    const fileId = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!fileId) throw new Error("Doubao 视频文件上传响应缺少 file id");
+    return fileId;
+}
+
+async function waitForDoubaoFile(candidate: ResolvedLogicalModel, fileId: string) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < DOUBAO_FILE_WAIT_TIMEOUT_MS) {
+        const response = await fetch(doubaoEndpoint(candidate, `files/${encodeURIComponent(fileId)}`), {
+            headers: { Authorization: `Bearer ${candidate.channel.apiKey}` },
+            cache: "no-store",
+            signal: AbortSignal.timeout(60_000),
+        });
+        const payload = await readDoubaoResponse(response, "Doubao 视频文件状态查询失败");
+        if (payload.status === "active") return;
+        if (payload.status === "failed") throw new Error(toSafeGenerationErrorMessage(payload.error, "Doubao 视频文件处理失败"));
+        await new Promise((resolve) => setTimeout(resolve, DOUBAO_FILE_POLL_INTERVAL_MS));
+    }
+    throw new Error("Doubao 视频文件处理超时，请稍后重试");
+}
+
+async function deleteDoubaoFile(candidate: ResolvedLogicalModel, fileId: string) {
+    const response = await fetch(doubaoEndpoint(candidate, `files/${encodeURIComponent(fileId)}`), {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${candidate.channel.apiKey}` },
+        signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) throw new Error(`Doubao 临时视频清理失败（HTTP ${response.status}）`);
+}
+
+async function readDoubaoResponse(response: Response, fallback: string) {
     const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!payload) {
-        await refundInvalidResponse(input.task.userId, input.model, response.headers);
-        throw new Error("视频理解模型返回了无效 JSON");
+    if (response.ok && payload) return payload;
+    throw new Error(toSafeGenerationErrorMessage(payload || (await response.text().catch(() => "")), `${fallback}（HTTP ${response.status}）`));
+}
+
+function readDoubaoOutputText(payload: Record<string, unknown>) {
+    const direct = typeof payload.output_text === "string" ? payload.output_text.trim() : "";
+    if (direct) return direct;
+    return records(payload.output)
+        .flatMap((item) => records(item.content))
+        .filter((item) => item.type === "output_text" || item.type === "text")
+        .map((item) => (typeof item.text === "string" ? item.text : ""))
+        .filter(Boolean)
+        .join("\n");
+}
+
+function doubaoFilesBaseUrl(candidate: ResolvedLogicalModel) {
+    try {
+        const url = new URL(candidate.channel.baseUrl);
+        if (url.protocol !== "https:" || url.username || url.password) return "";
+        return url.toString().replace(/\/+$/, "");
+    } catch {
+        return "";
     }
-    const argumentsText = readGeminiArguments(payload, remakeVideoTool.name);
-    if (!argumentsText) {
-        await refundInvalidResponse(input.task.userId, input.model, response.headers);
-        throw new Error("视频理解模型没有返回结构化分析");
-    }
-    return { arguments: argumentsText, headers: response.headers };
+}
+
+function doubaoEndpoint(candidate: ResolvedLogicalModel, path: string) {
+    const baseUrl = doubaoFilesBaseUrl(candidate);
+    if (!baseUrl) throw new Error("Doubao 渠道必须配置有效的 HTTPS Base URL");
+    return `${baseUrl}/${path.replace(/^\/+/, "")}`;
+}
+
+function normalizedModelId(value: string) {
+    return value.trim().replace(/^models\//i, "").toLowerCase();
+}
+
+function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
+    const seen = new Set<string>();
+    return candidates.filter((candidate) => {
+        const key = `${candidate.channelId}\0${normalizedModelId(candidate.upstreamModel)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
@@ -600,8 +708,12 @@ async function planSemanticCopy(input: {
                 messages: [
                     {
                         role: "system",
+                        content: REMAKE_FEISHU_COPY_PROMPT,
+                    },
+                    {
+                        role: "system",
                         content:
-                            "你是电商视频文案预处理器。先把 sourceCopy 连续切成不少于 16 个非空语义段落，再根据每 3 帧的时间、字幕、卖点、镜头类型以及场景动作，把连续段落依次映射到恰好 16 个非空区间，分别对应分镜 1-3、4-6，依此类推直到 46-48。paragraphs.sourceText 和 blocks.sourceText 必须按原语言、原顺序完整连续覆盖 sourceCopy，禁止翻译、重排、遗漏或重复任何原文字符。每个 block 还必须返回最终 text：仅可依据视频口播和可见字幕补全缺失内容、纠正明显 ASR 错字或标点，不得改变语言、品牌、商品、卖点、价格、数量、规格、事实或表达意图，不得润色和营销改写。每个段落只能归入一个区间。",
+                            "当前系统执行合同：先把 sourceCopy 连续切成不少于 16 个非空语义段落，再根据每 3 帧的时间、字幕、卖点、镜头类型以及场景动作，把连续段落依次映射到恰好 16 个非空区间，分别对应分镜 1-3、4-6，依此类推直到 46-48。paragraphs.sourceText 和 blocks.sourceText 必须按原语言、原顺序完整连续覆盖 sourceCopy，禁止翻译、重排、遗漏或重复任何原文字符。每个 block 还必须返回最终 text：仅可依据视频口播和可见字幕补全缺失内容、纠正明显 ASR 错字或标点，不得改变语言、品牌、商品、卖点、价格、数量、规格、事实或表达意图，不得润色和营销改写。每个段落只能归入一个区间。必须调用 build_remake_copy_plan。",
                     },
                     { role: "user", content: JSON.stringify(copyPlanningInput(input.sourceCopy, input.frames)) },
                 ],
@@ -898,12 +1010,6 @@ function copyStatusLabel(status: CopyBlockStatus) {
     if (status === "completed") return "补全字幕";
     if (status === "corrected") return "校对修正";
     return "字幕为空";
-}
-
-function readGeminiArguments(payload: Record<string, unknown>, toolName: string) {
-    const parts = records(object(records(payload.candidates)[0]?.content).parts);
-    const call = parts.map((part) => object(part.functionCall)).find((item) => item.name === toolName);
-    return jsonText(call?.args) || strictJsonObjectText(parts.map((part) => (typeof part.text === "string" ? part.text : "")).join(""));
 }
 
 async function refundInvalidResponse(userId: string, model: string, headers: Headers) {

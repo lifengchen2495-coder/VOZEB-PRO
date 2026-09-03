@@ -8,7 +8,7 @@ import { createZip, type ZipFile } from "@/lib/zip";
 import { isRemakeNoNarrationCopy, type RemakeMediaAsset, type RemakeProject } from "../remake-contract";
 
 type ExportManifestEntry = {
-    kind: "source-video" | "frame" | "reference" | "product-reference" | "source-contact-sheet" | "generated-contact-sheet" | "audio";
+    kind: "source-video" | "frame" | "reference" | "product-reference" | "source-contact-sheet" | "replacement-contact-sheet" | "storyboard-contact-sheet" | "generated-video" | "audio";
     name: string;
     fileName?: string;
     sourceUrl: string;
@@ -62,9 +62,14 @@ export async function downloadRemakeProductionBundle(project: RemakeProject): Pr
         { name: "分析/48镜头结构.json", data: JSON.stringify(project.frames, null, 2) },
         {
             name: "提示词/生图-全部.txt",
-            data: project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.imageGeneration.prompt}`).join("\n\n"),
+            data: project.groups
+                .map((group) => `=== 分镜 ${group.id} · 第一步：清理换人去旧产品 ===\n\n${group.replacementGeneration.prompt}\n\n=== 分镜 ${group.id} · 第二步：放入新产品 ===\n\n${group.imageGeneration.prompt}`)
+                .join("\n\n"),
         },
-        ...project.groups.map((group) => ({ name: `提示词/生图-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: group.imageGeneration.prompt })),
+        ...project.groups.flatMap((group) => [
+            { name: `提示词/生图-${String(group.ordinal).padStart(2, "0")}-${group.id}-第一步-清理换人去旧产品.txt`, data: group.replacementGeneration.prompt },
+            { name: `提示词/生图-${String(group.ordinal).padStart(2, "0")}-${group.id}-第二步-放入新产品.txt`, data: group.imageGeneration.prompt },
+        ]),
         {
             name: "提示词/Seedance-全部.txt",
             data: project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.videoPrompt}`).join("\n\n"),
@@ -82,7 +87,16 @@ export async function downloadRemakeProductionBundle(project: RemakeProject): Pr
                     exportedAt: new Date().toISOString(),
                     voice: project.voice,
                     analysis: { status: project.analysis.status, mode: project.analysis.mode, frameCount: project.frames.length, timestamps: project.analysis.timestamps },
-                    groups: project.groups.map((group, index) => ({ id: group.id, ordinal: group.ordinal, frameOrdinals: group.frameOrdinals, imageTaskId: group.imageGeneration.taskId || null, assetBindings: assetBindings[index] })),
+                    modelSelection: project.modelSelection,
+                    groups: project.groups.map((group, index) => ({
+                        id: group.id,
+                        ordinal: group.ordinal,
+                        frameOrdinals: group.frameOrdinals,
+                        replacementImageTaskId: group.replacementGeneration.taskId || null,
+                        storyboardImageTaskId: group.imageGeneration.taskId || null,
+                        videoTaskId: group.videoGeneration.taskId || null,
+                        assetBindings: assetBindings[index],
+                    })),
                     media: manifest,
                 },
                 null,
@@ -105,6 +119,7 @@ function productionMedia(project: RemakeProject): Array<{ kind: ExportManifestEn
         asset: { url: frame.frameUrl, storageKey: frame.storageKey, mimeType: "image/jpeg", originalName: `frame-${String(frame.ordinal).padStart(2, "0")}.jpg` },
     }));
     const references = [
+        project.references.product ? { kind: "product-reference" as const, name: "参考素材/新产品图", asset: project.references.product } : null,
         project.references.character ? { kind: "reference" as const, name: "参考素材/人物图", asset: project.references.character } : null,
         project.references.characterSupplement ? { kind: "reference" as const, name: "参考素材/人物补充图", asset: project.references.characterSupplement } : null,
         project.references.background ? { kind: "reference" as const, name: "参考素材/背景图", asset: project.references.background } : null,
@@ -112,8 +127,11 @@ function productionMedia(project: RemakeProject): Array<{ kind: ExportManifestEn
     ];
     const groups = project.groups.flatMap((group) => [
         group.sourceContactSheet ? { kind: "source-contact-sheet" as const, name: `十二宫格/来源-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.sourceContactSheet } : null,
-        group.imageGeneration.result ? { kind: "generated-contact-sheet" as const, name: `十二宫格/重绘-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
-        group.imageGeneration.result ? { kind: "product-reference" as const, name: `参考素材/产品图-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
+        group.replacementGeneration.result
+            ? { kind: "replacement-contact-sheet" as const, name: `十二宫格/第一步-清理换人-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.replacementGeneration.result }
+            : null,
+        group.imageGeneration.result ? { kind: "storyboard-contact-sheet" as const, name: `十二宫格/第二步-最终换品-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
+        group.videoGeneration.result ? { kind: "generated-video" as const, name: `独立视频/${String(group.ordinal).padStart(2, "0")}-${group.id}-15秒`, asset: group.videoGeneration.result } : null,
     ]);
     return [...source, ...frames, ...references, ...groups].filter((item): item is NonNullable<typeof item> => Boolean(item?.asset.url));
 }
@@ -124,8 +142,7 @@ function assertCompleteProductionBundle(project: RemakeProject) {
     if (!project.sourceVideo?.url) missing.push("原始视频");
     if (project.analysis.status !== "completed" || project.analysis.mode !== "video") missing.push("完整视频分析");
     if (project.frames.length !== 48 || project.frames.some((frame, index) => frame.ordinal !== index + 1 || frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("48 张抽帧");
-    if (!project.references.character?.url) missing.push("人物图");
-    if (!project.references.background?.url) missing.push("背景图");
+    if (!project.references.product?.url) missing.push("新产品图");
     if (!noNarration && !project.references.audio?.url) missing.push("原视频音频");
     if (!project.copy.rawReport.trim()) missing.push("文案预处理报告");
     if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (noNarration ? Boolean(block.sourceText.trim() || block.text.trim()) : !block.sourceText.trim() || !block.text.trim()))) {
@@ -134,10 +151,21 @@ function assertCompleteProductionBundle(project: RemakeProject) {
     if (
         project.groups.length !== 4 ||
         project.groups.some(
-            (group, index) => group.ordinal !== index + 1 || !group.sourceContactSheet?.url || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !group.imageGeneration.prompt.trim() || !group.videoPrompt.trim(),
+            (group, index) =>
+                group.ordinal !== index + 1 ||
+                !group.sourceContactSheet?.url ||
+                group.replacementGeneration.status !== "completed" ||
+                !group.replacementGeneration.result?.url ||
+                !group.replacementGeneration.prompt.trim() ||
+                group.imageGeneration.status !== "completed" ||
+                !group.imageGeneration.result?.url ||
+                !group.imageGeneration.prompt.trim() ||
+                !group.videoPrompt.trim() ||
+                group.videoGeneration.status !== "completed" ||
+                !group.videoGeneration.result?.url,
         )
     ) {
-        missing.push("4 组来源/重绘十二宫格与提示词");
+        missing.push("4 组来源/两步生图/视频 Prompt/独立 15 秒视频");
     }
     if (missing.length) throw new Error(`生产包不完整：缺少${Array.from(new Set(missing)).join("、")}，请补齐或重新生成后再下载`);
 }
@@ -156,15 +184,17 @@ function cachedMediaBlob(cache: Map<string, Promise<Blob>>, sourceUrl: string) {
 function seedanceAssetBindings(project: RemakeProject, manifest: ExportManifestEntry[]) {
     const exportedPath = (name: string) => manifest.find((entry) => entry.name === name && entry.status === "exported")?.fileName || null;
     const character = exportedPath("参考素材/人物图");
+    const product = exportedPath("参考素材/新产品图");
     const audio = isRemakeNoNarrationCopy(project.sourceCopy) ? null : exportedPath("参考素材/原视频音频");
     return project.groups.map((group) => {
         const suffix = `${String(group.ordinal).padStart(2, "0")}-${group.id}`;
         return {
             groupId: group.id,
             "@人物图": character,
-            "@产品图": exportedPath(`参考素材/产品图-${suffix}`),
-            "@十二宫格图": exportedPath(`十二宫格/重绘-${suffix}`),
+            "@产品图": product,
+            "@十二宫格图": exportedPath(`十二宫格/第二步-最终换品-${suffix}`),
             "@音频文件": audio,
+            "独立视频": exportedPath(`独立视频/${suffix}-15秒`),
         };
     });
 }

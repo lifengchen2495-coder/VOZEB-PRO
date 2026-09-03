@@ -1,18 +1,39 @@
 import type { ImageGenerationResult } from "@/services/api/image";
-import { REMAKE_IMAGE_PROMPT, remakeImagePromptReferences } from "@/lib/remake-image-prompt";
+import { remakeReplacementPersonPrompt, remakeReplacementPromptReferences, remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-image-prompt";
 import { parseServerMediaUrl } from "@/services/server-media-storage";
 import type { ReferenceImage } from "@/types/image";
+import type { ReferenceAudio } from "@/types/media";
 
 import { isRemakeNoNarrationCopy, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets } from "../remake-contract";
 
-export function buildRemakeImagePrompt(group: RemakeRangeGroup, references: RemakeReferenceAssets) {
-    void group;
-    void references;
-    return REMAKE_IMAGE_PROMPT;
+export function buildRemakeReplacementPrompt(project: Pick<RemakeProject, "frames" | "references">, group: RemakeRangeGroup) {
+    return remakeReplacementPersonPrompt(group.id, project.frames, Boolean(project.references.character?.url));
+}
+
+export function buildRemakeImagePrompt(project: Pick<RemakeProject, "frames">, group: RemakeRangeGroup) {
+    return remakeStoryboardPrompt(group.id, project.frames);
+}
+
+export function remakeReplacementReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
+    return remakeReplacementPromptReferences({ sourceContactSheet: group.sourceContactSheet, character: references.character }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
 }
 
 export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
-    return orderedReferenceAssets(group, references).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+    return remakeStoryboardPromptReferences({ replacementContactSheet: group.replacementGeneration.result || undefined, product: references.product }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+}
+
+export function remakeVideoReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
+    return [
+        group.imageGeneration.result ? mediaAssetReferenceImage(`${group.id}-storyboard`, `分镜 ${group.id} 最终十二宫格`, group.imageGeneration.result) : null,
+        references.product ? mediaAssetReferenceImage(`${group.id}-product`, "产品图", references.product) : null,
+        references.character ? mediaAssetReferenceImage(`${group.id}-character`, "人物图", references.character) : null,
+    ].filter((item): item is ReferenceImage => Boolean(item));
+}
+
+export function remakeVideoAudioReferences(project: Pick<RemakeProject, "references" | "sourceCopy">): ReferenceAudio[] {
+    const audio = project.references.audio;
+    if (!audio || isRemakeNoNarrationCopy(project.sourceCopy)) return [];
+    return [{ id: "remake-source-audio", name: audio.originalName || "参考音色.aac", type: audio.mimeType || "audio/aac", url: audio.url, storageKey: audio.storageKey }];
 }
 
 export function imageGenerationResultAsset(result: ImageGenerationResult): RemakeMediaAsset | undefined {
@@ -31,11 +52,15 @@ export function imageGenerationResultAsset(result: ImageGenerationResult): Remak
 }
 
 export function remakeReferencesReady(project: Pick<RemakeProject, "references">) {
-    return Boolean(project.references.background?.url);
+    return Boolean(project.references.product?.url);
 }
 
 export function remakeImagesReady(project: Pick<RemakeProject, "groups">) {
-    return project.groups.length === 4 && project.groups.every((group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+    return project.groups.length === 4 && project.groups.every((group) => group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+}
+
+export function remakeVideosReady(project: Pick<RemakeProject, "groups">) {
+    return project.groups.length === 4 && project.groups.every((group) => group.videoGeneration.status === "completed" && group.videoGeneration.result?.url);
 }
 
 export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo" | "sourceCopy" | "analysis" | "frames" | "copyBlocks" | "references" | "groups" | "copy" | "voice">) {
@@ -54,14 +79,10 @@ export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo"
         Boolean(project.copy.rawReport.trim()) &&
         project.copyBlocks.length === 16 &&
         project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));
-    const referencesReady = Boolean(project.references.background?.url && (noNarration || project.references.audio?.url));
+    const referencesReady = Boolean(project.references.product?.url && (noNarration || project.references.audio?.url));
     const promptsReady = project.groups.length === 4 && project.groups.every((group, index) => group.ordinal === index + 1 && Boolean(group.sourceContactSheet?.url && group.videoPrompt.trim()));
     const voiceReady = noNarration || project.voice === "female" || project.voice === "male";
-    return analysisReady && copyReady && referencesReady && remakeImagesReady(project) && promptsReady && voiceReady;
-}
-
-function orderedReferenceAssets(group: RemakeRangeGroup, references: RemakeReferenceAssets) {
-    return remakeImagePromptReferences({ sourceContactSheet: group.sourceContactSheet, character: references.character, background: references.background });
+    return analysisReady && copyReady && referencesReady && remakeImagesReady(project) && promptsReady && voiceReady && remakeVideosReady(project);
 }
 
 function mediaAssetReferenceImage(id: string, name: string, asset: RemakeMediaAsset): ReferenceImage {

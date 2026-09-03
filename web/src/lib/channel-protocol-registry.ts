@@ -47,6 +47,17 @@ const openAiOperations: ChannelProtocolDefinition["operations"] = {
     audio: { capability: "audio", createPath: "/audio/speech", requestTemplate: '{"model":"{{model}}","input":"{{prompt}}","voice":"alloy","response_format":"mp3"}', resultField: "binary" },
 };
 
+const geminiTextOperation: ProtocolOperation = {
+    capability: "text",
+    createPath: "/v1beta/models/:model:generateContent",
+    requestTemplate: '{"contents":[{"role":"user","parts":[{"text":"{{prompt}}"}]}]}',
+    resultField: "candidates[0].content.parts[0].text",
+    referenceRule: "支持 Gemini inlineData 图片、视频和音频输入。",
+    supportsReferenceImage: true,
+    supportsReferenceVideo: true,
+    supportsReferenceAudio: true,
+};
+
 const geminiVideoOperation: ProtocolOperation = {
     capability: "video",
     createPath: "/models/:model:predictLongRunning",
@@ -147,13 +158,13 @@ export const registeredChannelProtocolDefinitions: ChannelProtocolDefinition[] =
     {
         id: "gemini",
         label: "Google Gemini / Veo",
-        description: "Google Gemini API 的 Veo 异步视频协议，使用 predictLongRunning 与 operation 轮询。",
+        description: "Google Gemini API 的原生多模态文本与 Veo 异步视频协议。",
         apiFormat: "gemini",
         authMode: "custom-header",
         defaultBaseUrl: "https://generativelanguage.googleapis.com",
         modelCatalogPaths: ["/v1beta/models"],
-        capabilities: ["video"],
-        operations: { video: geminiVideoOperation },
+        capabilities: ["text", "video"],
+        operations: { text: geminiTextOperation, video: geminiVideoOperation },
         strict: true,
     },
     {
@@ -426,7 +437,7 @@ export function channelProtocolValidationErrors(channel: SystemModelChannel) {
     const errors: string[] = [];
     const definition = channelProtocolDefinition(advanced.protocol);
     if (definition.strict && advanced.authMode && advanced.authMode !== definition.authMode) errors.push(`${channel.name || "渠道"} 的鉴权方式必须使用 ${definition.label} 协议预设`);
-    if (advanced.authMode === "custom-header" && !isSafeAuthHeaderName(advanced.authHeader)) errors.push(`${channel.name || "渠道"} 的自定义鉴权请求头名称无效`);
+    if (advanced.authMode === "custom-header" && advanced.protocol !== "gemini" && !isSafeAuthHeaderName(advanced.authHeader)) errors.push(`${channel.name || "渠道"} 的自定义鉴权请求头名称无效`);
     for (const model of channel.models) {
         const key = normalizeModelId(model);
         const config = resolveChannelModelConfig(advanced, model);

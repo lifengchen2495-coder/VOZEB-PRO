@@ -8,7 +8,7 @@ import { useParams, useRouter } from "next/navigation";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 
 import { buildRemakeProduction, getRemakeProject, getRemakeTask, handoffRemakeProject, RemakeConflictError, saveRemakeProject, startRemakeAnalysis, uploadRemakeVideo } from "../remake-api";
-import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeFrame, type RemakeMediaAsset, type RemakeProject, type RemakeTask, type RemakeVoice } from "../remake-contract";
+import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeFrame, type RemakeMediaAsset, type RemakeModelSelection, type RemakeProject, type RemakeTask, type RemakeVoice } from "../remake-contract";
 import { RemakeAnalysisBoard, type RemakeWorkspaceTab } from "./remake-analysis-board";
 import { RemakeImageStage, type RemakeGroupPatch } from "./remake-image-stage";
 import { RemakeProductionStage } from "./remake-production-stage";
@@ -20,7 +20,7 @@ import { editRemakeCopyBlock, hasRemakePatch, invalidateRemakeProduction, isRema
 type SaveState = "saved" | "pending" | "saving" | "error" | "conflict";
 type ConflictState = { local: RemakeProject; remote: RemakeProject; dirty: RemakeWorkspacePatch };
 type RemakeFlowStage = "analysis" | "images" | "production";
-type ReferenceKey = "character" | "characterSupplement" | "background";
+type ReferenceKey = "product" | "character" | "characterSupplement" | "background";
 
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
@@ -271,8 +271,10 @@ export function RemakeWorkspace() {
             const references = { ...current.references, [key]: asset };
             const groups = current.groups.map((group) => ({
                 ...group,
-                imageGeneration: { status: "idle" as const, taskId: null, prompt: "", result: null, error: null },
+                replacementGeneration: { status: "idle" as const, taskId: null, model: null, prompt: "", result: null, error: null },
+                imageGeneration: { status: "idle" as const, taskId: null, model: null, prompt: "", result: null, error: null },
                 videoPrompt: "",
+                videoGeneration: { status: "idle" as const, taskId: null, model: null, result: null, error: null },
             }));
             queuePatch({ references, groups });
         },
@@ -288,7 +290,9 @@ export function RemakeWorkspace() {
                     ? {
                           ...group,
                           ...patch,
+                          replacementGeneration: patch.replacementGeneration ? { ...group.replacementGeneration, ...patch.replacementGeneration } : group.replacementGeneration,
                           imageGeneration: patch.imageGeneration ? { ...group.imageGeneration, ...patch.imageGeneration } : group.imageGeneration,
+                          videoGeneration: patch.videoGeneration ? { ...group.videoGeneration, ...patch.videoGeneration } : group.videoGeneration,
                       }
                     : group,
             );
@@ -301,7 +305,30 @@ export function RemakeWorkspace() {
         (voice: RemakeVoice) => {
             const current = projectRef.current;
             if (!current || current.voice === voice) return;
-            queuePatch({ voice, groups: current.groups.map((group) => ({ ...group, videoPrompt: "" })) });
+            queuePatch({ voice, groups: current.groups.map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } })) });
+        },
+        [queuePatch],
+    );
+
+    const updateModelSelection = useCallback(
+        (key: keyof RemakeModelSelection, model: string) => {
+            const current = projectRef.current;
+            if (!current || current.modelSelection[key] === model) return;
+            const modelSelection = { ...current.modelSelection, [key]: model };
+            const groups = current.groups.map((group) => {
+                if (key === "image") {
+                    return {
+                        ...group,
+                        replacementGeneration: { status: "idle" as const, prompt: "" },
+                        imageGeneration: { status: "idle" as const, prompt: "" },
+                        videoPrompt: "",
+                        videoGeneration: { status: "idle" as const },
+                    };
+                }
+                if (key === "prompt") return { ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } };
+                return { ...group, videoGeneration: { status: "idle" as const } };
+            });
+            queuePatch({ modelSelection, groups });
         },
         [queuePatch],
     );
@@ -584,9 +611,30 @@ export function RemakeWorkspace() {
                     </div>
                 ) : null}
 
-                {flowStage === "images" ? <RemakeImageStage project={project} disabled={editingLocked} onReferenceChange={updateReference} onGroupChange={updateGroup} onFlush={flushSave} onContinue={() => changeFlowStage("production")} /> : null}
+                {flowStage === "images" ? (
+                    <RemakeImageStage
+                        project={project}
+                        disabled={editingLocked}
+                        onReferenceChange={updateReference}
+                        onModelChange={(model) => updateModelSelection("image", model)}
+                        onGroupChange={updateGroup}
+                        onFlush={flushSave}
+                        onContinue={() => changeFlowStage("production")}
+                    />
+                ) : null}
 
-                {flowStage === "production" ? <RemakeProductionStage project={project} building={buildingProduction} onVoiceChange={updateVoice} onBuild={() => void buildProductionContent()} /> : null}
+                {flowStage === "production" ? (
+                    <RemakeProductionStage
+                        project={project}
+                        building={buildingProduction}
+                        onVoiceChange={updateVoice}
+                        onPromptModelChange={(model) => updateModelSelection("prompt", model)}
+                        onVideoModelChange={(model) => updateModelSelection("video", model)}
+                        onGroupChange={updateGroup}
+                        onFlush={flushSave}
+                        onBuild={() => void buildProductionContent()}
+                    />
+                ) : null}
             </div>
 
             <Modal

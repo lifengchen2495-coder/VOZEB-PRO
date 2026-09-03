@@ -8,6 +8,12 @@ export type RemakePipelineStepKey = "upload" | "analysis" | "references" | "imag
 export type RemakePipelineStepStatus = "pending" | "queued" | "running" | "completed" | "error";
 export type RemakeImageGenerationStatus = "idle" | "queued" | "running" | "completed" | "error";
 
+export type RemakeModelSelection = {
+    image: string;
+    prompt: string;
+    video: string;
+};
+
 export const REMAKE_NO_NARRATION_TEXT = "不需要人物口播";
 
 export function isRemakeNoNarrationCopy(value: unknown) {
@@ -97,6 +103,7 @@ export type RemakePipeline = {
 };
 
 export type RemakeReferenceAssets = {
+    product?: RemakeMediaAsset;
     character?: RemakeMediaAsset;
     characterSupplement?: RemakeMediaAsset;
     background?: RemakeMediaAsset;
@@ -108,14 +115,30 @@ export type RemakeRangeGroup = {
     ordinal: number;
     frameOrdinals: number[];
     sourceContactSheet?: RemakeMediaAsset;
+    replacementGeneration: {
+        status: RemakeImageGenerationStatus;
+        taskId?: string | null;
+        model?: string | null;
+        prompt: string;
+        result?: RemakeMediaAsset | null;
+        error?: string | null;
+    };
     imageGeneration: {
         status: RemakeImageGenerationStatus;
         taskId?: string | null;
+        model?: string | null;
         prompt: string;
         result?: RemakeMediaAsset | null;
         error?: string | null;
     };
     videoPrompt: string;
+    videoGeneration: {
+        status: RemakeImageGenerationStatus;
+        taskId?: string | null;
+        model?: string | null;
+        result?: RemakeMediaAsset | null;
+        error?: string | null;
+    };
 };
 
 export type RemakeSemanticCopy = {
@@ -141,6 +164,7 @@ export type RemakeProject = {
     voice: RemakeVoice;
     analysis: RemakeAnalysis;
     pipeline: RemakePipeline;
+    modelSelection: RemakeModelSelection;
     references: RemakeReferenceAssets;
     groups: RemakeRangeGroup[];
     copy: RemakeSemanticCopy;
@@ -182,7 +206,7 @@ export type RemakeTask = {
     updatedAt: string;
 };
 
-export type RemakeEditablePatch = Partial<Pick<RemakeProject, "title" | "sourceVideo" | "sourceCopy" | "copyStrategy" | "voice" | "references" | "groups" | "frames" | "copyBlocks">>;
+export type RemakeEditablePatch = Partial<Pick<RemakeProject, "title" | "sourceVideo" | "sourceCopy" | "copyStrategy" | "voice" | "modelSelection" | "references" | "groups" | "frames" | "copyBlocks">>;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -379,6 +403,7 @@ function normalizeCopyBlock(value: unknown, index: number): RemakeCopyBlock {
 function normalizeReferences(value: unknown): RemakeReferenceAssets {
     const references = record(value);
     return {
+        product: normalizeMediaAsset(firstDefined(references.product, references.productImage, references.product_image)),
         character: normalizeMediaAsset(firstDefined(references.character, references.characterImage, references.character_image)),
         characterSupplement: normalizeMediaAsset(firstDefined(references.characterSupplement, references.character_supplement, references.characterExtra, references.character_extra)),
         background: normalizeMediaAsset(firstDefined(references.background, references.backgroundImage, references.background_image)),
@@ -390,22 +415,49 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
     const incoming = arrayValue(value).map(record);
     return REMAKE_GROUP_DEFINITIONS.map((definition) => {
         const group = incoming.find((item) => stringValue(item.id) === definition.id || numberValue(item.ordinal) === definition.ordinal) || {};
+        const replacement = record(firstDefined(group.replacementGeneration, group.replacement_generation));
         const generation = record(firstDefined(group.imageGeneration, group.image_generation, group.generation));
+        const videoGeneration = record(firstDefined(group.videoGeneration, group.video_generation));
         return {
             id: definition.id,
             ordinal: definition.ordinal,
             frameOrdinals: Array.from({ length: 12 }, (_, index) => definition.start + index),
             sourceContactSheet: normalizeMediaAsset(firstDefined(group.sourceContactSheet, group.source_contact_sheet, group.sourceCollage, group.source_collage, group.contactSheet, group.contact_sheet)),
+            replacementGeneration: {
+                status: normalizeImageGenerationStatus(firstDefined(replacement.status, group.replacementStatus, group.replacement_status)),
+                taskId: stringValue(firstDefined(replacement.taskId, replacement.task_id, group.replacementTaskId, group.replacement_task_id)) || undefined,
+                model: stringValue(firstDefined(replacement.model, group.replacementModel, group.replacement_model)) || undefined,
+                prompt: stringValue(firstDefined(replacement.prompt, group.replacementPrompt, group.replacement_prompt)),
+                result: normalizeMediaAsset(firstDefined(replacement.result, replacement.output, group.replacementImage, group.replacement_image)),
+                error: stringValue(firstDefined(replacement.error, group.replacementError, group.replacement_error)) || undefined,
+            },
             imageGeneration: {
                 status: normalizeImageGenerationStatus(firstDefined(generation.status, group.imageStatus, group.image_status)),
                 taskId: stringValue(firstDefined(generation.taskId, generation.task_id, group.imageTaskId, group.image_task_id)) || undefined,
+                model: stringValue(firstDefined(generation.model, group.imageModel, group.image_model)) || undefined,
                 prompt: stringValue(firstDefined(generation.prompt, group.imagePrompt, group.image_prompt)),
                 result: normalizeMediaAsset(firstDefined(generation.result, generation.output, group.generatedImage, group.generated_image)),
                 error: stringValue(firstDefined(generation.error, group.imageError, group.image_error)) || undefined,
             },
             videoPrompt: stringValue(firstDefined(group.videoPrompt, group.video_prompt, group.seedancePrompt, group.seedance_prompt)),
+            videoGeneration: {
+                status: normalizeImageGenerationStatus(firstDefined(videoGeneration.status, group.videoStatus, group.video_status)),
+                taskId: stringValue(firstDefined(videoGeneration.taskId, videoGeneration.task_id, group.videoTaskId, group.video_task_id)) || undefined,
+                model: stringValue(firstDefined(videoGeneration.model, group.videoModel, group.video_model)) || undefined,
+                result: normalizeMediaAsset(firstDefined(videoGeneration.result, videoGeneration.output, group.generatedVideo, group.generated_video)),
+                error: stringValue(firstDefined(videoGeneration.error, group.videoError, group.video_error)) || undefined,
+            },
         };
     });
+}
+
+function normalizeModelSelection(value: unknown): RemakeModelSelection {
+    const selection = record(value);
+    return {
+        image: stringValue(firstDefined(selection.image, selection.imageModel, selection.image_model)),
+        prompt: stringValue(firstDefined(selection.prompt, selection.promptModel, selection.prompt_model, selection.textModel, selection.text_model)),
+        video: stringValue(firstDefined(selection.video, selection.videoModel, selection.video_model)),
+    };
 }
 
 function normalizeSemanticCopy(value: unknown): RemakeSemanticCopy {
@@ -450,8 +502,10 @@ function normalizeSemanticCopy(value: unknown): RemakeSemanticCopy {
 function normalizePipeline(value: unknown, input: { sourceVideo?: RemakeSourceVideo; analysis: RemakeAnalysis; references: RemakeReferenceAssets; groups: RemakeRangeGroup[]; copy: RemakeSemanticCopy }): RemakePipeline {
     const pipeline = record(value);
     const rawSteps = record(pipeline.steps);
-    const referenceReady = Boolean(input.references.background?.url);
-    const imagesReady = input.groups.every((group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+    const referenceReady = Boolean(input.references.product?.url);
+    const imagesReady = input.groups.every(
+        (group) => group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url,
+    );
     const promptsReady = input.groups.every((group) => group.videoPrompt.trim());
     const derivedStatuses: Record<RemakePipelineStepKey, RemakePipelineStepStatus> = {
         upload: input.sourceVideo?.url ? "completed" : "pending",
@@ -459,9 +513,15 @@ function normalizePipeline(value: unknown, input: { sourceVideo?: RemakeSourceVi
         references: referenceReady ? "completed" : "pending",
         images: imagesReady
             ? "completed"
-            : input.groups.some((group) => group.imageGeneration.status === "running" || group.imageGeneration.status === "queued")
+            : input.groups.some(
+                    (group) =>
+                        group.replacementGeneration.status === "running" ||
+                        group.replacementGeneration.status === "queued" ||
+                        group.imageGeneration.status === "running" ||
+                        group.imageGeneration.status === "queued",
+                )
               ? "running"
-              : input.groups.some((group) => group.imageGeneration.status === "error")
+              : input.groups.some((group) => group.replacementGeneration.status === "error" || group.imageGeneration.status === "error")
                 ? "error"
                 : "pending",
         copy: input.copy.status === "completed" ? "completed" : input.copy.status === "queued" ? "queued" : input.copy.status === "running" ? "running" : input.copy.status === "error" ? "error" : "pending",
@@ -508,6 +568,7 @@ export function normalizeRemakeProject(value: unknown): RemakeProject {
     const frames = arrayValue(firstDefined(project.frames, analysisRecord.frames, project.shots)).map(normalizeFrame);
     const copyBlocks = arrayValue(firstDefined(project.copyBlocks, project.copy_blocks, project.scriptBlocks, project.script_blocks, project.segments)).map(normalizeCopyBlock);
     const sourceVideo = normalizeSourceVideo(firstDefined(project.sourceVideo, project.source_video, project.video, project.source));
+    const modelSelection = normalizeModelSelection(firstDefined(project.modelSelection, project.model_selection, project.models));
     const references = normalizeReferences(firstDefined(project.references, project.referenceAssets, project.reference_assets));
     const groups = normalizeGroups(firstDefined(project.groups, project.rangeGroups, project.range_groups));
     const copy = normalizeSemanticCopy(firstDefined(project.copy, project.copyReport, project.copy_report));
@@ -533,6 +594,7 @@ export function normalizeRemakeProject(value: unknown): RemakeProject {
         voice: normalizeVoice(firstDefined(project.voice, project.voiceType, project.voice_type)),
         analysis,
         pipeline: normalizePipeline(firstDefined(project.pipeline, project.workflow), { sourceVideo, analysis, references, groups, copy }),
+        modelSelection,
         references,
         groups,
         copy,

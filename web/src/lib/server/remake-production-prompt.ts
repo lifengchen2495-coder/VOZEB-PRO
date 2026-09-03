@@ -1,3 +1,5 @@
+import { REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake-feishu-prompts";
+
 export const REMAKE_PRODUCTION_GROUP_COUNT = 4;
 export const REMAKE_PRODUCTION_BLOCKS_PER_GROUP = 4;
 
@@ -46,7 +48,7 @@ export type RemakeProductionAssetMetadata = {
 export type RemakeProductionReferenceContext = {
     character: RemakeProductionAssetMetadata;
     characterSupplement: RemakeProductionAssetMetadata;
-    background: RemakeProductionAssetMetadata;
+    product: RemakeProductionAssetMetadata;
     audio: RemakeProductionAssetMetadata;
 };
 
@@ -172,9 +174,13 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput) {
         ? "必须保持 16 个三帧区间中的原语言口播，禁止翻译、改写或遗漏；声音只引用用户选择的配音和原视频音频。"
         : "当前视频不需要人物口播。16 个三帧区间的 sourceText 与 text 均为空，只生成画面动作和分镜描述，禁止添加口播、配音、音频引用或字幕。";
     return [
+        ...(["1-12", "13-24", "25-36", "37-48"] as const).map((groupId) => ({
+            role: "system",
+            content: REMAKE_FEISHU_VIDEO_PROMPTS[groupId],
+        })),
         {
             role: "system",
-            content: `你是电商视频复刻导演。用户消息后会按 visualBoards 的 ordinal 顺序附带真实图片像素；必须逐张查看，并严格按照每张视觉板的 description、layout、位置标签、groupOrdinal 与 frameOrdinals 建立素材对应关系。第一张视觉板用于识别可选目标人物、可选人物补充角度和目标背景，第二张视觉板按左上、右上、左下、右下对应第 1 至第 4 组重绘十二宫格。必须结合这些真实像素、48 镜头文字解析和 16 个三帧区间生成四个 15 秒 Seedance 生产单元。${narrationRule}保持画面中的原商品、人物身份、场景、动作意图、构图和镜头顺序，禁止添加素材不存在的功效、价格、品牌、认证、促销及视觉事实。products 必须逐项列出组内每件可见产品、食材或器具，多件素材不得合并为一项。纯产品或纯手部操作组省略 person，不得凭空添加人物。每组必须恰好四个连续三帧区间，每个区间恰好三个可执行动作。必须调用 build_remake_production_plan。`,
+            content: `你是电商视频复刻导演。用户消息后会按 visualBoards 的 ordinal 顺序附带真实图片像素；必须逐张查看，并严格按照每张视觉板的 description、layout、位置标签、groupOrdinal 与 frameOrdinals 建立素材对应关系。第一张视觉板用于识别可选目标人物、可选人物补充角度和新产品，第二张视觉板按左上、右上、左下、右下对应第 1 至第 4 组最终换品十二宫格。必须结合这些真实像素、48 镜头文字解析和 16 个三帧区间生成四个 15 秒 Seedance 生产单元。${narrationRule}保持新产品身份、人物身份、场景、动作意图、构图和镜头顺序，禁止添加素材不存在的功效、价格、品牌、认证、促销及视觉事实。products 必须逐项列出组内每件可见产品、食材或器具，多件素材不得合并为一项。纯产品或纯手部操作组省略 person，不得凭空添加人物。每组必须恰好四个连续三帧区间，每个区间恰好三个可执行动作。必须调用 build_remake_production_plan。`,
         },
         {
             role: "user",

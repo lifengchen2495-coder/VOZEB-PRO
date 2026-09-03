@@ -374,34 +374,44 @@ function cleanRemakeProjectMediaReferences(project: RemakeProject, storageKeys: 
     const normalized = normalizeRemakeProjectWorkflow(project);
     const sourceVideoRemoved = mediaAssetDeleted(normalized.sourceVideo, storageKeys);
     const framesRemoved = normalized.frames.some((frame) => containsUserMediaReference({ storageKey: frame.storageKey, url: frame.frameUrl }, storageKeys));
+    const productRemoved = mediaAssetDeleted(normalized.references.product, storageKeys);
     const characterRemoved = mediaAssetDeleted(normalized.references.character, storageKeys);
     const characterSupplementRemoved = mediaAssetDeleted(normalized.references.characterSupplement, storageKeys);
     const backgroundRemoved = mediaAssetDeleted(normalized.references.background, storageKeys);
     const audioRemoved = mediaAssetDeleted(normalized.references.audio, storageKeys);
     const narrationAudioRemoved = audioRemoved && !isRemakeNoNarrationCopy(normalized.sourceCopy);
-    const referenceInputRemoved = characterRemoved || characterSupplementRemoved || backgroundRemoved;
+    const referenceInputRemoved = productRemoved || characterRemoved || characterSupplementRemoved || backgroundRemoved;
     let contactSheetRemoved = false;
-    let generatedResultRemoved = false;
+    let replacementResultRemoved = false;
+    let storyboardResultRemoved = false;
+    let videoResultRemoved = false;
     const groups = normalized.groups.map((group) => {
         const removeContactSheet = mediaAssetDeleted(group.sourceContactSheet, storageKeys);
-        const removeResult = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        const removeReplacement = mediaAssetDeleted(group.replacementGeneration.result, storageKeys);
+        const removeStoryboard = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        const removeVideo = mediaAssetDeleted(group.videoGeneration.result, storageKeys);
         contactSheetRemoved ||= removeContactSheet;
-        generatedResultRemoved ||= removeResult;
-        if (!removeContactSheet && !removeResult && !referenceInputRemoved) return narrationAudioRemoved ? { ...group, videoPrompt: "" } : group;
+        replacementResultRemoved ||= removeReplacement;
+        storyboardResultRemoved ||= removeStoryboard;
+        videoResultRemoved ||= removeVideo;
+        const replacementInvalid = removeContactSheet || removeReplacement || referenceInputRemoved;
+        const storyboardInvalid = replacementInvalid || removeStoryboard;
+        if (!replacementInvalid && !storyboardInvalid && !narrationAudioRemoved && !removeVideo) return group;
         return {
             ...group,
             sourceContactSheet: removeContactSheet ? undefined : group.sourceContactSheet,
-            imageGeneration: {
-                status: "idle" as const,
-                prompt: referenceInputRemoved || removeContactSheet ? "" : group.imageGeneration.prompt,
-            },
-            videoPrompt: "",
+            replacementGeneration: replacementInvalid ? { status: "idle" as const, prompt: "" } : group.replacementGeneration,
+            imageGeneration: storyboardInvalid ? { status: "idle" as const, prompt: "" } : group.imageGeneration,
+            videoPrompt: storyboardInvalid || narrationAudioRemoved ? "" : group.videoPrompt,
+            videoGeneration: storyboardInvalid || narrationAudioRemoved || removeVideo ? { status: "idle" as const } : group.videoGeneration,
         };
     });
-    const changed = sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved;
+    const generatedResultRemoved = replacementResultRemoved || storyboardResultRemoved;
+    const changed = sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved || videoResultRemoved;
     if (!changed) return { value: project, changed: false } as const;
 
     const references = {
+        product: productRemoved ? undefined : normalized.references.product,
         character: characterRemoved ? undefined : normalized.references.character,
         characterSupplement: characterSupplementRemoved ? undefined : normalized.references.characterSupplement,
         background: backgroundRemoved ? undefined : normalized.references.background,

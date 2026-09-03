@@ -34,7 +34,7 @@ export type RemakeProductionVisionAsset = {
 
 export type RemakeProductionVisualBoardLayoutItem = {
     order: number;
-    role: "character" | "character-supplement" | "background" | "redrawn-contact-sheet";
+    role: "character" | "character-supplement" | "product" | "redrawn-contact-sheet";
     label: string;
     position: string;
     provided: boolean;
@@ -113,7 +113,7 @@ export async function buildRemakeProductionVisualBoards(input: {
     cookie: string;
     character?: RemakeProductionVisionAsset;
     characterSupplement?: RemakeProductionVisionAsset;
-    background: RemakeProductionVisionAsset;
+    product: RemakeProductionVisionAsset;
     redrawnContactSheets: Array<{ groupOrdinal: number; frameOrdinals: number[]; asset: RemakeProductionVisionAsset }>;
 }): Promise<RemakeProductionVisualBoard[]> {
     const groups = [...input.redrawnContactSheets].sort((left, right) => left.groupOrdinal - right.groupOrdinal);
@@ -124,7 +124,7 @@ export async function buildRemakeProductionVisualBoards(input: {
     const budget = { remaining: REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES };
     const character = input.character ? await readProductionImage(input.character, "人物图", input.origin, input.cookie, budget) : undefined;
     const characterSupplement = input.characterSupplement ? await readProductionImage(input.characterSupplement, "人物补充图", input.origin, input.cookie, budget) : undefined;
-    const background = await readProductionImage(input.background, "背景图", input.origin, input.cookie, budget);
+    const product = await readProductionImage(input.product, "新产品图", input.origin, input.cookie, budget);
     const redrawnContactSheets: LoadedImage[] = [];
     for (const group of groups) {
         const label = `第 ${group.groupOrdinal} 组重绘十二宫格`;
@@ -134,7 +134,7 @@ export async function buildRemakeProductionVisualBoards(input: {
         redrawnContactSheets.push(image);
     }
 
-    const referenceBoard = await createReferenceBoard(character, characterSupplement, background);
+    const referenceBoard = await createReferenceBoard(character, characterSupplement, product);
     const contactSheetBoard = await createContactSheetBoard(redrawnContactSheets, groups);
     if (referenceBoard.bytes.length + contactSheetBoard.bytes.length > REMAKE_PRODUCTION_VISUAL_BOARDS_TOTAL_MAX_BYTES) {
         throw new RemakeProductionVisionError("生产视觉板总大小超过模型输入上限，请压缩参考图后重试", 413);
@@ -304,13 +304,13 @@ function resolveImageTarget(value: string, origin: string) {
     return { internal: false as const, url: parsed.toString() };
 }
 
-async function createReferenceBoard(character: LoadedImage | undefined, supplement: LoadedImage | undefined, background: LoadedImage): Promise<RemakeProductionVisualBoard> {
+async function createReferenceBoard(character: LoadedImage | undefined, supplement: LoadedImage | undefined, product: LoadedImage): Promise<RemakeProductionVisualBoard> {
     const tileWidth = REFERENCE_BOARD_WIDTH / 3;
     const imageHeight = REFERENCE_BOARD_HEIGHT - LABEL_HEIGHT;
     const assets = [
         { image: character, label: "A | CHARACTER" },
         { image: supplement, label: "B | CHARACTER SUPPLEMENT" },
-        { image: background, label: "C | BACKGROUND" },
+        { image: product, label: "C | PRODUCT" },
     ];
     const overlays: OverlayOptions[] = [];
     for (const [index, asset] of assets.entries()) {
@@ -326,11 +326,11 @@ async function createReferenceBoard(character: LoadedImage | undefined, suppleme
         width: REFERENCE_BOARD_WIDTH,
         height: REFERENCE_BOARD_HEIGHT,
         bytes,
-        description: "从左到右依次为可选人物图、可选人物补充图、背景图；空白位表示未提供该可选素材。",
+        description: "从左到右依次为可选人物图、可选人物补充图、新产品图；空白位表示未提供该可选素材。",
         layout: [
             { order: 1, role: "character", label: "A | CHARACTER", position: "left", provided: Boolean(character) },
             { order: 2, role: "character-supplement", label: "B | CHARACTER SUPPLEMENT", position: "center", provided: Boolean(supplement) },
-            { order: 3, role: "background", label: "C | BACKGROUND", position: "right", provided: true },
+            { order: 3, role: "product", label: "C | PRODUCT", position: "right", provided: true },
         ],
     };
 }

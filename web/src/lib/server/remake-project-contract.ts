@@ -26,6 +26,12 @@ export type RemakePipelineStepStatus = "pending" | "queued" | "running" | "compl
 export type RemakeWorkStatus = "idle" | "queued" | "running" | "completed" | "error";
 export type RemakeRangeGroupId = (typeof REMAKE_RANGE_GROUP_DEFINITIONS)[number]["id"];
 
+export type RemakeModelSelection = {
+    image: string;
+    prompt: string;
+    video: string;
+};
+
 export type RemakeSourceVideo = {
     url: string;
     storageKey?: string;
@@ -49,6 +55,7 @@ export type RemakeMediaAsset = {
 };
 
 export type RemakeReferences = {
+    product?: RemakeMediaAsset;
     character?: RemakeMediaAsset;
     characterSupplement?: RemakeMediaAsset;
     background?: RemakeMediaAsset;
@@ -133,7 +140,16 @@ export type RemakeCopyState = {
 export type RemakeImageGeneration = {
     status: RemakeWorkStatus;
     taskId?: string;
+    model?: string;
     prompt: string;
+    result?: RemakeMediaAsset;
+    error?: string;
+};
+
+export type RemakeVideoGeneration = {
+    status: RemakeWorkStatus;
+    taskId?: string;
+    model?: string;
     result?: RemakeMediaAsset;
     error?: string;
 };
@@ -143,8 +159,10 @@ export type RemakeRangeGroup = {
     ordinal: number;
     frameOrdinals: number[];
     sourceContactSheet?: RemakeMediaAsset;
+    replacementGeneration: RemakeImageGeneration;
     imageGeneration: RemakeImageGeneration;
     videoPrompt: string;
+    videoGeneration: RemakeVideoGeneration;
 };
 
 export type RemakeContactSheetInput = {
@@ -176,6 +194,7 @@ export type RemakeProject = {
     frames: RemakeFrame[];
     copyBlocks: RemakeCopyBlock[];
     pipeline?: RemakePipeline;
+    modelSelection?: RemakeModelSelection;
     references?: RemakeReferences;
     groups?: RemakeRangeGroup[];
     copy?: RemakeCopyState;
@@ -186,6 +205,7 @@ export type RemakeProject = {
 export type HydratedRemakeProject = RemakeProject & {
     analysis: RemakeProjectAnalysis & { raw: string; timestamps: number[] };
     pipeline: RemakePipeline;
+    modelSelection: RemakeModelSelection;
     references: RemakeReferences;
     groups: RemakeRangeGroup[];
     copy: RemakeCopyState;
@@ -271,9 +291,23 @@ export function emptyRemakeReferences(): RemakeReferences {
     return {};
 }
 
+export function emptyRemakeModelSelection(): RemakeModelSelection {
+    return { image: "", prompt: "", video: "" };
+}
+
+export function normalizeRemakeModelSelection(value: unknown, fallback: RemakeModelSelection = emptyRemakeModelSelection()): RemakeModelSelection {
+    const source = object(value);
+    return {
+        image: hasOwn(source, "image") ? cleanText(source.image, 300) : fallback.image,
+        prompt: hasOwn(source, "prompt") ? cleanText(source.prompt, 300) : fallback.prompt,
+        video: hasOwn(source, "video") ? cleanText(source.video, 300) : fallback.video,
+    };
+}
+
 export function normalizeRemakeReferences(value: unknown, fallback: RemakeReferences = emptyRemakeReferences()): RemakeReferences {
     const source = object(value);
     return {
+        product: normalizedAssetProperty(source, "product", fallback.product),
         character: normalizedAssetProperty(source, "character", fallback.character),
         characterSupplement: normalizedAssetProperty(source, "characterSupplement", fallback.characterSupplement),
         background: normalizedAssetProperty(source, "background", fallback.background),
@@ -405,8 +439,10 @@ export function emptyRemakeRangeGroups(): RemakeRangeGroup[] {
         id: definition.id,
         ordinal: definition.ordinal,
         frameOrdinals: frameOrdinalRange(definition.startFrame, definition.endFrame),
+        replacementGeneration: { status: "idle", prompt: "" },
         imageGeneration: { status: "idle", prompt: "" },
         videoPrompt: "",
+        videoGeneration: { status: "idle" },
     }));
 }
 
@@ -424,21 +460,41 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
     return REMAKE_RANGE_GROUP_DEFINITIONS.map((definition) => {
         const previous = fallbackByOrdinal.get(definition.ordinal) || emptyGroups[definition.ordinal - 1];
         const source = incomingByOrdinal.get(definition.ordinal) || {};
+        const replacementSource = object(source.replacementGeneration);
         const generationSource = object(source.imageGeneration);
+        const videoGenerationSource = object(source.videoGeneration);
+        const previousReplacement = previous.replacementGeneration || emptyGroups[definition.ordinal - 1].replacementGeneration;
         const previousGeneration = previous.imageGeneration;
+        const previousVideoGeneration = previous.videoGeneration || emptyGroups[definition.ordinal - 1].videoGeneration;
         return {
             id: definition.id,
             ordinal: definition.ordinal,
             frameOrdinals: frameOrdinalRange(definition.startFrame, definition.endFrame),
             sourceContactSheet: hasOwn(source, "sourceContactSheet") ? normalizeRemakeMediaAsset(source.sourceContactSheet) : previous.sourceContactSheet,
+            replacementGeneration: {
+                status: normalizeWorkStatus(replacementSource.status) || previousReplacement.status,
+                taskId: hasOwn(replacementSource, "taskId") ? cleanText(replacementSource.taskId, 300) || undefined : previousReplacement.taskId,
+                model: hasOwn(replacementSource, "model") ? cleanText(replacementSource.model, 300) || undefined : previousReplacement.model,
+                prompt: hasOwn(replacementSource, "prompt") ? cleanText(replacementSource.prompt, 100_000) : previousReplacement.prompt,
+                result: hasOwn(replacementSource, "result") ? normalizeRemakeMediaAsset(replacementSource.result) : previousReplacement.result,
+                error: hasOwn(replacementSource, "error") ? cleanText(replacementSource.error, 1_000) || undefined : previousReplacement.error,
+            },
             imageGeneration: {
                 status: normalizeWorkStatus(generationSource.status) || previousGeneration.status,
                 taskId: hasOwn(generationSource, "taskId") ? cleanText(generationSource.taskId, 300) || undefined : previousGeneration.taskId,
+                model: hasOwn(generationSource, "model") ? cleanText(generationSource.model, 300) || undefined : previousGeneration.model,
                 prompt: hasOwn(generationSource, "prompt") ? cleanText(generationSource.prompt, 100_000) : previousGeneration.prompt,
                 result: hasOwn(generationSource, "result") ? normalizeRemakeMediaAsset(generationSource.result) : previousGeneration.result,
                 error: hasOwn(generationSource, "error") ? cleanText(generationSource.error, 1_000) || undefined : previousGeneration.error,
             },
             videoPrompt: hasOwn(source, "videoPrompt") ? cleanText(source.videoPrompt, 100_000) : previous.videoPrompt,
+            videoGeneration: {
+                status: normalizeWorkStatus(videoGenerationSource.status) || previousVideoGeneration.status,
+                taskId: hasOwn(videoGenerationSource, "taskId") ? cleanText(videoGenerationSource.taskId, 300) || undefined : previousVideoGeneration.taskId,
+                model: hasOwn(videoGenerationSource, "model") ? cleanText(videoGenerationSource.model, 300) || undefined : previousVideoGeneration.model,
+                result: hasOwn(videoGenerationSource, "result") ? normalizeRemakeMediaAsset(videoGenerationSource.result) : previousVideoGeneration.result,
+                error: hasOwn(videoGenerationSource, "error") ? cleanText(videoGenerationSource.error, 1_000) || undefined : previousVideoGeneration.error,
+            },
         };
     });
 }
@@ -544,6 +600,7 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
             timestamps: timestamps.length ? timestamps : timestampFallback,
         },
         pipeline: normalizeRemakePipeline(project.pipeline, pipelineFallback),
+        modelSelection: normalizeRemakeModelSelection(project.modelSelection),
         references: normalizeRemakeReferences(project.references),
         groups: normalizeRemakeRangeGroups(project.groups),
         copy,

@@ -1,12 +1,78 @@
+import { REMAKE_FEISHU_IMAGE_PROMPTS } from "@/lib/remake-feishu-prompts";
+
 export type RemakeImagePromptAsset = {
     url?: string;
 };
 
 export type RemakeImagePromptReference<T extends RemakeImagePromptAsset> = {
-    key: "source-contact-sheet" | "character" | "background";
+    key: "source-contact-sheet" | "replacement-contact-sheet" | "product" | "character" | "background";
     label: string;
     asset: T;
 };
+
+export type RemakeImagePromptFrame = {
+    ordinal: number;
+    time: number;
+    endTime: number;
+    subtitle: string;
+    sellingPoint: string;
+    shotType: string;
+    description: string;
+    subjectRatio: string;
+};
+
+const REMAKE_GROUP_IDS = ["1-12", "13-24", "25-36", "37-48"] as const;
+type RemakeImagePromptGroupId = (typeof REMAKE_GROUP_IDS)[number];
+
+const REPLACEMENT_PERSON_PROMPTS = Object.fromEntries(REMAKE_GROUP_IDS.map((id) => [id, REMAKE_FEISHU_IMAGE_PROMPTS[id].replacement])) as Record<RemakeImagePromptGroupId, string>;
+const STORYBOARD_PROMPTS = Object.fromEntries(REMAKE_GROUP_IDS.map((id) => [id, REMAKE_FEISHU_IMAGE_PROMPTS[id].storyboard])) as Record<RemakeImagePromptGroupId, string>;
+
+export function remakeReplacementPersonPrompt(groupId: string, frames: RemakeImagePromptFrame[], hasCharacter: boolean) {
+    const id = remakePromptGroupId(groupId);
+    return appendFieldContext(REPLACEMENT_PERSON_PROMPTS[id], id, frames, hasCharacter ? "已上传，按人物图替换人物" : "未上传，本次保留原人物身份，只执行清理和去除旧产品");
+}
+
+export function remakeStoryboardPrompt(groupId: string, frames: RemakeImagePromptFrame[]) {
+    const id = remakePromptGroupId(groupId);
+    return appendFieldContext(STORYBOARD_PROMPTS[id], id, frames, "沿用上一步模板图中的人物");
+}
+
+export function remakeReplacementPromptReferences<T extends RemakeImagePromptAsset>(input: { sourceContactSheet?: T; character?: T }): RemakeImagePromptReference<T>[] {
+    const references: Array<RemakeImagePromptReference<T> | null> = [
+        input.sourceContactSheet ? { key: "source-contact-sheet" as const, label: "原图十二宫格分镜图", asset: input.sourceContactSheet } : null,
+        input.character ? { key: "character" as const, label: "人物图", asset: input.character } : null,
+    ];
+    return references.filter((item): item is RemakeImagePromptReference<T> => Boolean(item?.asset.url));
+}
+
+export function remakeStoryboardPromptReferences<T extends RemakeImagePromptAsset>(input: { replacementContactSheet?: T; product?: T }): RemakeImagePromptReference<T>[] {
+    const references: Array<RemakeImagePromptReference<T> | null> = [
+        input.replacementContactSheet ? { key: "replacement-contact-sheet" as const, label: "十二宫格模板图（已完成清理/换人物/去旧产品）", asset: input.replacementContactSheet } : null,
+        input.product ? { key: "product" as const, label: "产品图", asset: input.product } : null,
+    ];
+    return references.filter((item): item is RemakeImagePromptReference<T> => Boolean(item?.asset.url));
+}
+
+function appendFieldContext(prompt: string, groupId: RemakeImagePromptGroupId, frames: RemakeImagePromptFrame[], characterRule: string) {
+    const selected = frames.filter((frame) => frame.ordinal >= Number(groupId.split("-")[0]) && frame.ordinal <= Number(groupId.split("-")[1]));
+    const script = selected
+        .map(
+            (frame) =>
+                `分镜${frame.ordinal}\n时间：${formatSeconds(frame.time)}-${formatSeconds(frame.endTime)}\n景别：${frame.shotType || "以原图为准"}\n画面：${frame.description || "以原图为准"}\n人物占比：${frame.subjectRatio || "以原图为准"}\n字幕：${frame.subtitle || "-"}\n卖点：${frame.sellingPoint || "-"}`,
+        )
+        .join("\n\n");
+    return `${prompt}\n\n## 【字段引用实际内容】\n\n人物图字段：${characterRule}\n\n${groupId}分镜脚本：\n${script}`;
+}
+
+function remakePromptGroupId(value: string): RemakeImagePromptGroupId {
+    return REMAKE_GROUP_IDS.includes(value as RemakeImagePromptGroupId) ? (value as RemakeImagePromptGroupId) : "1-12";
+}
+
+function formatSeconds(value: number) {
+    const seconds = Math.max(0, Number.isFinite(value) ? value : 0);
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${(seconds - minutes * 60).toFixed(2).padStart(5, "0")}`;
+}
 
 export const REMAKE_IMAGE_PROMPT = `# 电商视频分镜图生成（跟品版）
 
@@ -258,9 +324,10 @@ export const REMAKE_IMAGE_PROMPT = `# 电商视频分镜图生成（跟品版）
 ---`;
 
 export function remakeImagePromptReferences<T extends RemakeImagePromptAsset>(input: { sourceContactSheet?: T; character?: T; background?: T }): RemakeImagePromptReference<T>[] {
-    return [
+    const references: Array<RemakeImagePromptReference<T> | null> = [
         input.sourceContactSheet ? { key: "source-contact-sheet" as const, label: "本组来源拼图（12 张分镜，唯一权威）", asset: input.sourceContactSheet } : null,
         input.character ? { key: "character" as const, label: "人物图（可选，仅参考外貌和服装款式）", asset: input.character } : null,
         input.background ? { key: "background" as const, label: "背景图（必需）", asset: input.background } : null,
-    ].filter((item): item is RemakeImagePromptReference<T> => Boolean(item?.asset.url));
+    ];
+    return references.filter((item): item is RemakeImagePromptReference<T> => Boolean(item?.asset.url));
 }
