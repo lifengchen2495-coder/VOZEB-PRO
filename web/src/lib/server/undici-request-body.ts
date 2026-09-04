@@ -15,6 +15,7 @@ export async function toUndiciRequestBody(body: BodyInit | null | undefined) {
 
 function isFormDataBody(body: BodyInit | null | undefined): body is FormData {
     if (!body || typeof body !== "object") return false;
+    if (ArrayBuffer.isView(body) || body instanceof ArrayBuffer) return false;
     if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return false;
     if (typeof Headers !== "undefined" && body instanceof Headers) return false;
     const tag = Object.prototype.toString.call(body);
