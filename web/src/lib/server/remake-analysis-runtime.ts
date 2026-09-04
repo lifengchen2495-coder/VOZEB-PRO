@@ -13,7 +13,7 @@ import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_COPY_PROMPT } from "@/lib/
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "@/lib/server/logical-model-router";
 import { maintenanceWorkerContext, maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
 import { downloadMediaToFile } from "@/lib/server/media-download";
-import { buildDoubaoFileUploadBody, readDoubaoJsonResponse } from "@/lib/server/doubao-file-api";
+import { buildDoubaoFileUploadBody, fetchDoubaoFileApi, readDoubaoJsonResponse } from "@/lib/server/doubao-file-api";
 import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
 import { writeReferenceMediaFile } from "@/lib/server/reference-asset-store";
 import { completeRemakeAnalysisTask, failRemakeAnalysisTask, markRemakeAnalysisTaskRunning, updateRemakeAnalysisTaskProgress, type RemakeAnalysisTask } from "@/lib/server/remake-analysis-task-store";
@@ -123,7 +123,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             origin: input.origin,
             credential,
             task,
-            onCharge: (headers) => trackAnalysisCharge(pendingRefunds, task, models.videoModel, "video-understanding", headers),
+            onCharge: (headers: Headers) => trackAnalysisCharge(pendingRefunds, task, models.videoModel, "video-understanding", headers),
         });
 
         const existingSourceCopy = typeof project.sourceCopy === "string" ? project.sourceCopy : "";
@@ -153,7 +153,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             origin: input.origin,
             credential,
             task,
-            onCharge: (headers) => trackAnalysisCharge(pendingRefunds, task, models.copyModel, "copy-planning", headers),
+            onCharge: (headers: Headers) => trackAnalysisCharge(pendingRefunds, task, models.copyModel, "copy-planning", headers),
         });
 
         await updateRemakeAnalysisTaskProgress(task, { stage: "saving", progress: 97 });
@@ -255,19 +255,19 @@ async function resolveAnalysisModels() {
     return { copyModel, copyCandidates, videoModel: videoCandidates[0].logicalModelId, videoCandidates };
 }
 
-async function transcodeAnalysisVideo(input: { sourcePath: string; workDirectory: string; probe: ProbeResult }) {
+async function transcodeAnalysisVideo(input: { sourcePath: string; workDirectory: string; probe: ProbeResult }): Promise<Buffer> {
     const outputPath = join(input.workDirectory, "analysis-video.mp4");
     const durationSeconds = input.probe.durationMs / 1_000;
     const totalBitrate = Math.max(96_000, Math.floor((INLINE_VIDEO_TARGET_BYTES * 8 * 0.94) / durationSeconds));
     const audioBitrate = 48_000;
     let videoBitrate = Math.max(64_000, Math.min(1_600_000, totalBitrate - audioBitrate));
     await runAnalysisTranscode(input.sourcePath, outputPath, videoBitrate, audioBitrate);
-    let bytes = await readFile(outputPath);
+    let bytes: Buffer = (await readFile(outputPath)) as Buffer;
     if (!bytes.length) throw new Error("原视频转码结果为空");
     if (bytes.length > MAX_INLINE_VIDEO_BYTES) {
         videoBitrate = Math.max(48_000, Math.floor(videoBitrate * ((MAX_INLINE_VIDEO_BYTES * 0.9) / bytes.length)));
         await runAnalysisTranscode(input.sourcePath, outputPath, videoBitrate, 32_000);
-        bytes = await readFile(outputPath);
+        bytes = (await readFile(outputPath)) as Buffer;
     }
     if (!bytes.length) throw new Error("原视频转码结果为空");
     if (bytes.length > MAX_INLINE_VIDEO_BYTES) throw new Error("原视频转码后仍超过视频理解内联上限，请缩短视频后重试");
@@ -468,7 +468,7 @@ function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
 
 async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer) {
     const upload = buildDoubaoFileUploadBody(bytes, "remake-analysis-video.mp4");
-    const response = await fetch(doubaoEndpoint(candidate, "files"), {
+    const response = await fetchDoubaoFileApi(doubaoEndpoint(candidate, "files"), {
         method: "POST",
         headers: {
             Accept: "application/json",
@@ -488,7 +488,7 @@ async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer)
 async function waitForDoubaoFile(candidate: ResolvedLogicalModel, fileId: string) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < DOUBAO_FILE_WAIT_TIMEOUT_MS) {
-        const response = await fetch(doubaoEndpoint(candidate, `files/${encodeURIComponent(fileId)}`), {
+        const response = await fetchDoubaoFileApi(doubaoEndpoint(candidate, `files/${encodeURIComponent(fileId)}`), {
             headers: { Authorization: `Bearer ${candidate.channel.apiKey}` },
             cache: "no-store",
             signal: AbortSignal.timeout(60_000),
@@ -502,7 +502,7 @@ async function waitForDoubaoFile(candidate: ResolvedLogicalModel, fileId: string
 }
 
 async function deleteDoubaoFile(candidate: ResolvedLogicalModel, fileId: string) {
-    const response = await fetch(doubaoEndpoint(candidate, `files/${encodeURIComponent(fileId)}`), {
+    const response = await fetchDoubaoFileApi(doubaoEndpoint(candidate, `files/${encodeURIComponent(fileId)}`), {
         method: "DELETE",
         headers: { Authorization: `Bearer ${candidate.channel.apiKey}` },
         signal: AbortSignal.timeout(60_000),
@@ -1165,15 +1165,6 @@ function records(value: unknown): Record<string, unknown>[] {
 
 function object(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function jsonText(value: unknown) {
-    if (typeof value === "string") return value.trim();
-    try {
-        return value && typeof value === "object" ? JSON.stringify(value) : "";
-    } catch {
-        return "";
-    }
 }
 
 const remakeVideoTool = {

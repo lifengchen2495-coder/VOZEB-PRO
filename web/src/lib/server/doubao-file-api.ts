@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import { readProviderError } from "@/lib/server/provider-task-config";
 import { sanitizeProviderMessage } from "@/lib/server/admin-channel-config";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
+import { fetchSafeOutbound } from "@/lib/server/safe-outbound-fetch";
+
+export function fetchDoubaoFileApi(input: string | URL, init: RequestInit = {}) {
+    return fetchSafeOutbound(input, init);
+}
 
 export function buildDoubaoFileUploadBody(bytes: Buffer, filename: string) {
     const boundary = `----VozebDoubao${randomUUID().replaceAll("-", "")}`;
@@ -22,11 +27,11 @@ export function buildDoubaoFileUploadBody(bytes: Buffer, filename: string) {
         "utf8",
     );
     const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, "ascii");
-    const body = new Blob([new Uint8Array(prefix), new Uint8Array(bytes), new Uint8Array(suffix)]);
+    const body = Buffer.concat([prefix, bytes, suffix]);
     return {
         body,
         contentType: `multipart/form-data; boundary=${boundary}`,
-        contentLength: body.size,
+        contentLength: body.byteLength,
     };
 }
 
