@@ -13,6 +13,7 @@ import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_COPY_PROMPT } from "@/lib/
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "@/lib/server/logical-model-router";
 import { maintenanceWorkerContext, maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
 import { downloadMediaToFile } from "@/lib/server/media-download";
+import { buildDoubaoFileUploadBody, readDoubaoJsonResponse } from "@/lib/server/doubao-file-api";
 import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
 import { writeReferenceMediaFile } from "@/lib/server/reference-asset-store";
 import { completeRemakeAnalysisTask, failRemakeAnalysisTask, markRemakeAnalysisTaskRunning, updateRemakeAnalysisTaskProgress, type RemakeAnalysisTask } from "@/lib/server/remake-analysis-task-store";
@@ -466,16 +467,19 @@ function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
 }
 
 async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer) {
-    const form = new FormData();
-    form.append("purpose", "user_data");
-    form.append("file", new Blob([new Uint8Array(bytes)], { type: "video/mp4" }), "remake-analysis-video.mp4");
+    const upload = buildDoubaoFileUploadBody(bytes, "remake-analysis-video.mp4");
     const response = await fetch(doubaoEndpoint(candidate, "files"), {
         method: "POST",
-        headers: { Authorization: `Bearer ${candidate.channel.apiKey}` },
-        body: form,
+        headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${candidate.channel.apiKey}`,
+            "Content-Type": upload.contentType,
+            "Content-Length": String(upload.contentLength),
+        },
+        body: upload.body,
         signal: AbortSignal.timeout(10 * 60_000),
     });
-    const payload = await readDoubaoResponse(response, "Doubao 视频文件上传失败");
+    const payload = await readDoubaoJsonResponse(response, "Doubao 视频文件上传失败", [candidate.channel.apiKey]);
     const fileId = typeof payload.id === "string" ? payload.id.trim() : "";
     if (!fileId) throw new Error("Doubao 视频文件上传响应缺少 file id");
     return fileId;
@@ -489,7 +493,7 @@ async function waitForDoubaoFile(candidate: ResolvedLogicalModel, fileId: string
             cache: "no-store",
             signal: AbortSignal.timeout(60_000),
         });
-        const payload = await readDoubaoResponse(response, "Doubao 视频文件状态查询失败");
+        const payload = await readDoubaoJsonResponse(response, "Doubao 视频文件状态查询失败", [candidate.channel.apiKey]);
         if (payload.status === "active") return;
         if (payload.status === "failed") throw new Error(toSafeGenerationErrorMessage(payload.error, "Doubao 视频文件处理失败"));
         await new Promise((resolve) => setTimeout(resolve, DOUBAO_FILE_POLL_INTERVAL_MS));
@@ -504,12 +508,6 @@ async function deleteDoubaoFile(candidate: ResolvedLogicalModel, fileId: string)
         signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) throw new Error(`Doubao 临时视频清理失败（HTTP ${response.status}）`);
-}
-
-async function readDoubaoResponse(response: Response, fallback: string) {
-    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    if (response.ok && payload) return payload;
-    throw new Error(toSafeGenerationErrorMessage(payload || (await response.text().catch(() => "")), `${fallback}（HTTP ${response.status}）`));
 }
 
 function readDoubaoOutputText(payload: Record<string, unknown>) {
