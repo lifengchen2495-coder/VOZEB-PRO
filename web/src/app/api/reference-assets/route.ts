@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fileTypeFromBuffer } from "file-type";
+import sharp from "sharp";
 
 import { getCurrentUser } from "@/lib/auth/session";
 import { CREATIVE_UPLOAD_MAX_BYTES, isCreativeUploadMimeType } from "@/lib/creative-upload";
@@ -12,6 +13,7 @@ import { readRequestBodyBytes, RequestBodyTooLargeError } from "@/lib/server/req
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const MAX_MULTIPART_BYTES = CREATIVE_UPLOAD_MAX_BYTES + 64 * 1024;
+const MAX_IMAGE_INPUT_PIXELS = 40_000_000;
 
 type UploadInput = { dataUrl: string; type: "image" | "video" | "audio"; persistent: boolean; originalName?: string };
 
@@ -64,8 +66,8 @@ async function readUploadInput(request: Request): Promise<UploadInput> {
         if (file.size > CREATIVE_UPLOAD_MAX_BYTES) throw new RequestBodyTooLargeError("单个文件不能超过 20MB");
         const type = mediaType(form.get("type"));
         const bytes = Buffer.from(await file.arrayBuffer());
-        const mimeType = await resolveMultipartMimeType(bytes, type, file.type);
-        const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
+        const media = await resolveMultipartMedia(bytes, type, file.type);
+        const dataUrl = `data:${media.mimeType};base64,${media.bytes.toString("base64")}`;
         return { dataUrl, type, persistent: String(form.get("persistent") || "") === "true", originalName: file.name || undefined };
     }
 
@@ -81,15 +83,25 @@ async function readUploadInput(request: Request): Promise<UploadInput> {
     };
 }
 
-async function resolveMultipartMimeType(bytes: Buffer, type: UploadInput["type"], declaredMime: string) {
+async function resolveMultipartMedia(bytes: Buffer, type: UploadInput["type"], declaredMime: string) {
     const detectedMime = (await fileTypeFromBuffer(bytes))?.mime?.toLowerCase() || "";
     if (detectedMime) {
-        if (!isCreativeUploadMimeType(detectedMime) || !detectedMime.startsWith(`${type}/`)) throw new UploadInputError("参考素材格式不正确");
-        return detectedMime;
+        if (isCreativeUploadMimeType(detectedMime) && detectedMime.startsWith(`${type}/`)) return { bytes, mimeType: detectedMime };
+        if (type === "image" && detectedMime.startsWith("image/")) return normalizeUploadedImage(bytes);
+        throw new UploadInputError("参考素材格式不正确");
     }
     const normalizedDeclaredMime = declaredMime.split(";", 1)[0]?.trim().toLowerCase() || "";
     if (!isCreativeUploadMimeType(normalizedDeclaredMime) || !normalizedDeclaredMime.startsWith(`${type}/`)) throw new UploadInputError("参考素材格式不正确");
-    return normalizedDeclaredMime;
+    return { bytes, mimeType: normalizedDeclaredMime };
+}
+
+async function normalizeUploadedImage(bytes: Buffer) {
+    try {
+        const normalized = await sharp(bytes, { failOn: "error", limitInputPixels: MAX_IMAGE_INPUT_PIXELS }).rotate().flatten({ background: "#ffffff" }).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+        return { bytes: normalized, mimeType: "image/jpeg" };
+    } catch {
+        throw new UploadInputError("图片内容无法读取，可能不是有效图片或图片尺寸过大");
+    }
 }
 
 function mediaType(value: FormDataEntryValue | unknown): UploadInput["type"] {
