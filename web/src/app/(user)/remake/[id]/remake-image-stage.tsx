@@ -284,8 +284,11 @@ export function RemakeImageStage({
                 if (disposition === "aborted") return;
                 const detail = reason instanceof Error ? reason.message : "十二宫格任务创建失败";
                 if (disposition === "deferred") {
-                    message.info(`分镜 ${group.id}：任务创建结果待确认，正在恢复原请求`);
-                    scheduleResume(key);
+                    // 创建请求超时后无法确认上游是否已经受理，不能自动创建第二个任务。
+                    const failed = { status: "error" as const, taskId: null, model, prompt, result: null, error: detail };
+                    emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: failed } : { imageGeneration: failed });
+                    await onFlush();
+                    message.error(`分镜 ${group.id}：${detail}`);
                     return;
                 }
                 const failed = { status: "error" as const, taskId: null, model, prompt, result: null, error: detail };
