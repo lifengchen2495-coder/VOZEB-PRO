@@ -5,6 +5,7 @@ import { App, Button, Image, Input, Progress, Tag, Tooltip } from "antd";
 import { Check, Copy, ImagePlus, Images, LoaderCircle, Play, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { friendlyAgentError } from "@/components/agent/agent-message-format";
 import { imagePreviewUrl } from "@/lib/media-image-url";
 import { createImageGenerationTask, isImageGenerationTaskDeferredError, waitForImageGenerationTask } from "@/services/api/image";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
@@ -78,6 +79,7 @@ export function RemakeImageStage({
     const activeTasksRef = useRef(new Map<string, { controller: AbortController; snapshot: RemakeImageTaskSnapshot }>());
     const creationControllersRef = useRef(new Map<string, AbortController>());
     const deferredStagesRef = useRef(new Set<string>());
+    const invalidStagesRef = useRef(new Set<string>());
     const resumeTimersRef = useRef(new Set<number>());
     const startingStagesRef = useRef(new Set<string>());
     const retryAttemptsRef = useRef(new Map<string, number>());
@@ -165,16 +167,16 @@ export function RemakeImageStage({
                 if (announce) message.success(stage === "replacement" ? `分镜 ${groupId} 清理换人图已生成，继续执行换品` : `分镜 ${groupId} 最终十二宫格已生成`);
             } catch (reason) {
                 if (controller.signal.aborted || !isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) return;
-                const detail = reason instanceof Error ? reason.message : "十二宫格生成失败";
+                const detail = friendlyAgentError(reason, "十二宫格生成失败，请稍后重试");
                 if (isImageGenerationTaskDeferredError(reason)) {
-                    message.info(`分镜 ${groupId}：${detail}`);
+                    message.info({ key: `remake-image:${stageKey(groupId, stage)}`, content: `分镜 ${groupId}：${detail}` });
                     scheduleResume(stageKey(groupId, stage));
                     return;
                 }
                 const generationPatch = { status: "error" as const, taskId, model, prompt, error: detail };
                 emitGroupChange(groupId, stage === "replacement" ? { replacementGeneration: generationPatch } : { imageGeneration: generationPatch });
                 await onFlush();
-                message.error(`分镜 ${groupId}：${detail}`);
+                message.error({ key: `remake-image:${stageKey(groupId, stage)}`, content: `分镜 ${groupId}：${detail}` });
             } finally {
                 if (activeTasksRef.current.get(taskId)?.controller === controller) activeTasksRef.current.delete(taskId);
             }
@@ -190,6 +192,7 @@ export function RemakeImageStage({
             activeTasksRef.current.clear();
             creationControllersRef.current.clear();
             deferredStagesRef.current.clear();
+            invalidStagesRef.current.clear();
             resumeTimersRef.current.clear();
             startingStagesRef.current.clear();
         },
@@ -282,19 +285,19 @@ export function RemakeImageStage({
                 if (controller.signal.aborted || !isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage)) return;
                 const disposition = remakeImageCreationFailureDisposition(reason);
                 if (disposition === "aborted") return;
-                const detail = reason instanceof Error ? reason.message : "十二宫格任务创建失败";
+                const detail = friendlyAgentError(reason, "十二宫格任务创建失败，请稍后重试");
                 if (disposition === "deferred") {
                     // 创建请求超时后无法确认上游是否已经受理，不能自动创建第二个任务。
                     const failed = { status: "error" as const, taskId: null, model, prompt, result: null, error: detail };
                     emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: failed } : { imageGeneration: failed });
                     await onFlush();
-                    message.error(`分镜 ${group.id}：${detail}`);
+                    message.error({ key: `remake-image:${key}`, content: `分镜 ${group.id}：${detail}` });
                     return;
                 }
                 const failed = { status: "error" as const, taskId: null, model, prompt, result: null, error: detail };
                 emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: failed } : { imageGeneration: failed });
                 await onFlush();
-                message.error(`分镜 ${group.id}：${detail}`);
+                message.error({ key: `remake-image:${key}`, content: `分镜 ${group.id}：${detail}` });
             } finally {
                 if (creationControllersRef.current.get(key) === controller) creationControllersRef.current.delete(key);
                 startingStagesRef.current.delete(key);
@@ -311,20 +314,31 @@ export function RemakeImageStage({
                 if ((generation.status === "queued" || generation.status === "running") && generation.taskId && model) {
                     const prompt = generation.prompt || (stage === "replacement" ? buildRemakeReplacementPrompt(project, group) : buildRemakeImagePrompt(project, group));
                     void waitForGroupTask(stage, group.id, generation.taskId, prompt, remakeGroupInputVersion(group, project.references, stage), model);
-                } else if ((generation.status === "queued" || generation.status === "running") && !deferredStagesRef.current.has(stageKey(group.id, stage))) {
-                    void startStage(group.id, stage, false);
+                } else if (generation.status === "queued" || generation.status === "running") {
+                    const key = stageKey(group.id, stage);
+                    if (startingStagesRef.current.has(key) || invalidStagesRef.current.has(key)) continue;
+                    invalidStagesRef.current.add(key);
+                    const failed = {
+                        ...generation,
+                        status: "error" as const,
+                        taskId: null,
+                        error: "图片任务缺少可查询的任务 ID，系统已停止自动重试，请手动重试。",
+                    };
+                    emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: failed } : { imageGeneration: failed });
+                    void onFlush();
                 }
             }
             if (group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "idle") {
                 void startStage(group.id, "storyboard", true);
             }
         }
-    }, [project, resumeNonce, selectedImageModel, startStage, waitForGroupTask]);
+    }, [emitGroupChange, onFlush, project, resumeNonce, selectedImageModel, startStage, waitForGroupTask]);
 
     const startGroup = useCallback(
         async (group: RemakeRangeGroup) => {
             const latest = latestProjectRef.current.groups.find((item) => item.id === group.id) || group;
             const stage: ImageStage = latest.replacementGeneration.status === "completed" && latest.replacementGeneration.result?.url && latest.imageGeneration.status !== "completed" ? "storyboard" : "replacement";
+            invalidStagesRef.current.delete(stageKey(latest.id, stage));
             await startStage(latest.id, stage);
         },
         [startStage],
@@ -451,6 +465,8 @@ function ReferenceSlot({ label, detail, required, asset, loading, disabled, onCh
 function RemakeGroupCard({ project, group, references, disabled, onGenerate }: { project: RemakeProject; group: RemakeRangeGroup; references: RemakeReferenceAssets; disabled: boolean; onGenerate: () => void }) {
     const { message } = App.useApp();
     const active = activeGeneration(group);
+    const replacementError = group.replacementGeneration.error ? friendlyAgentError(group.replacementGeneration.error, "图片生成失败，请稍后重试") : "";
+    const imageError = group.imageGeneration.error ? friendlyAgentError(group.imageGeneration.error, "图片生成失败，请稍后重试") : "";
     const replacementPrompt = group.replacementGeneration.prompt || buildRemakeReplacementPrompt(project, group);
     const storyboardPrompt = group.imageGeneration.prompt || buildRemakeImagePrompt(project, group);
     return (
@@ -477,11 +493,11 @@ function RemakeGroupCard({ project, group, references, disabled, onGenerate }: {
 
             <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
                 <ContactSheet label="来源十二宫格" asset={group.sourceContactSheet} />
-                <ContactSheet label="第一步：清理 / 换人 / 去旧产品" asset={completedAsset(group.replacementGeneration)} loading={isGenerationActive(group.replacementGeneration)} error={group.replacementGeneration.error || undefined} />
-                <ContactSheet label="第二步：放入新产品" asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} error={group.imageGeneration.error || undefined} />
+                <ContactSheet label="第一步：清理 / 换人 / 去旧产品" asset={completedAsset(group.replacementGeneration)} loading={isGenerationActive(group.replacementGeneration)} error={replacementError || undefined} />
+                <ContactSheet label="第二步：放入新产品" asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} error={imageError || undefined} />
             </div>
 
-            {group.replacementGeneration.error || group.imageGeneration.error ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{group.replacementGeneration.error || group.imageGeneration.error}</div> : null}
+            {replacementError || imageError ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{replacementError || imageError}</div> : null}
 
             <PromptDetails title="第一步完整提示词" prompt={replacementPrompt} copyLabel={`分镜 ${group.id} 第一步提示词`} onCopied={() => message.success("第一步完整提示词已复制")} />
             <PromptDetails title="第二步完整提示词" prompt={storyboardPrompt} copyLabel={`分镜 ${group.id} 第二步提示词`} onCopied={() => message.success("第二步完整提示词已复制")} />

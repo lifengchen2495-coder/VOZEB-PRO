@@ -56,7 +56,8 @@ async function requestPayload(url: string, init?: RequestInit) {
     const response = await fetch(url, { cache: "no-store", ...init });
     const payload = (await response.json().catch(() => ({}))) as ApiEnvelope;
     if (!response.ok) {
-        const message = messageFromEnvelope(payload, "复刻工作区请求失败");
+        const fallback = response.status >= 500 ? `复刻工作区服务暂时不可用（HTTP ${response.status}），请稍后重试` : "复刻工作区请求失败";
+        const message = messageFromEnvelope(payload, fallback);
         if (response.status === 409) throw new RemakeConflictError(message, payload);
         throw new RemakeRequestError(message, response.status, payload);
     }

@@ -502,7 +502,7 @@ async function processImageLease(lease: GenerationTaskLease, workerId: string, o
         const step = task.upstream?.id ? await queryImageTaskUpstreamStep(task, origin, cookie, cookie ? "" : task.userId) : await createImageTaskUpstreamStep(task, origin, publicOrigin, cookie, cookie ? "" : task.userId);
         const now = Date.now();
         if (step.state === "failed") {
-            if (step.retryReason === "upstream_failed") {
+            if (step.retryReason === "upstream_failed" && !task.generationSlotId?.startsWith("remake:")) {
                 const retry = await prepareImageTaskAutomaticRetry(task, step.error);
                 if (retry) {
                     await releaseGenerationTaskLease(

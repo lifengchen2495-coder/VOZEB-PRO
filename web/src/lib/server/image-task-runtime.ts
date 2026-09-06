@@ -7,6 +7,7 @@ import { stableMediaUrl, writeImageGenerationLog } from "@/app/api/image-tasks/i
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { registerGenerationTaskAssetsForUser } from "@/lib/server/creative-runtime-service";
 import { finishGenerationAttempt, startGenerationAttempt } from "@/lib/server/generation-attempt";
+import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { generationModelId } from "@/lib/server/generation-channel";
 import { refundImageTask } from "@/lib/server/image-task-refund";
 import { deletePreparedImageTaskResults, persistedImageTaskResults, prepareImageTaskResults } from "@/lib/server/image-task-result-service";
@@ -151,13 +152,14 @@ export async function persistImageTaskResult(task: ImageTask, origin: string, re
 export async function markImageTaskFailed(task: ImageTask, error: string) {
     const current = (await getImageTask(task.id)) || task;
     if (current.status === "success" || current.status === "cancelled") return current;
+    const safeError = toSafeGenerationErrorMessage(error, "图片生成失败");
     const attempts = finishGenerationAttempt(current.attempts || [], current.attemptNo || current.attempts?.at(-1)?.attemptNo || 1, {
         status: "failed",
-        error,
+        error: safeError,
         pointsCost: current.billing?.pointsCost,
         pointsRecordId: current.billing?.pointsRecordId,
     });
-    const failed = await transitionImageTask(current, ["pending", "running"], { status: "error", error: error.slice(0, 500), retryable: true, billing: current.billing });
+    const failed = await transitionImageTask(current, ["pending", "running"], { status: "error", error: safeError.slice(0, 500), retryable: true, billing: current.billing });
     if (!failed) {
         const latest = await getImageTask(current.id);
         if (latest?.status === "error" || latest?.status === "cancelled") return refundImageTask(latest);
@@ -165,7 +167,7 @@ export async function markImageTaskFailed(task: ImageTask, error: string) {
     }
     await updateImageTask(current.id, { attempts, candidateConfigs: [], attemptNo: attempts.at(-1)?.attemptNo });
     const refunded = await refundImageTask(failed);
-    await writeImageGenerationLog({ ...refunded, retryable: true }, "failed", "", Date.now() - current.createdAt, error).catch((logError) => console.error("Image generation failure log write failed", logError));
+    await writeImageGenerationLog({ ...refunded, retryable: true }, "failed", "", Date.now() - current.createdAt, safeError).catch((logError) => console.error("Image generation failure log write failed", logError));
     return refunded;
 }
 

@@ -168,7 +168,7 @@ export function RemakeWorkspace() {
                 }
                 pendingPatchRef.current = { ...patch, ...pendingPatchRef.current };
                 setSaveState("error");
-                message.error(reason instanceof Error ? reason.message : "项目保存失败");
+                message.error({ key: "remake-save-error", content: reason instanceof Error ? reason.message : "项目保存失败" });
                 return false;
             }
         })();
