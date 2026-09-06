@@ -80,6 +80,7 @@ export function RemakeImageStage({
     const deferredStagesRef = useRef(new Set<string>());
     const resumeTimersRef = useRef(new Set<number>());
     const startingStagesRef = useRef(new Set<string>());
+    const retryAttemptsRef = useRef(new Map<string, number>());
     const uploadingKeyRef = useRef<ReferenceKey | undefined>(undefined);
     const [uploadingKey, setUploadingKey] = useState<ReferenceKey>();
     const [batchStarting, setBatchStarting] = useState(false);
@@ -241,6 +242,9 @@ export function RemakeImageStage({
             const references = stage === "replacement" ? remakeReplacementReferenceImages(group, current.references) : remakeGroupReferenceImages(group, current.references);
             const inputVersion = remakeGroupInputVersion(group, current.references, stage);
             const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage);
+            const previousAttempt = retryAttemptsRef.current.get(key) || 0;
+            const attemptNo = generation.status === "error" ? previousAttempt + 1 : previousAttempt;
+            retryAttemptsRef.current.set(key, attemptNo);
             const controller = new AbortController();
             startingStagesRef.current.add(key);
             creationControllersRef.current.set(key, controller);
@@ -264,6 +268,7 @@ export function RemakeImageStage({
                     logTitle: `${current.title} · 分镜 ${group.id} · ${stage === "replacement" ? "清理换人" : "最终换品"}`,
                     projectId: current.id,
                     clientRequestId,
+                    ...(attemptNo > 0 ? { attemptNo } : {}),
                     generationSlotId: remakeImageGenerationSlotId(group.id, stage),
                 });
                 const latestGroup = latestProjectRef.current.groups.find((item) => item.id === group.id);
