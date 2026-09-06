@@ -78,15 +78,12 @@ export function RemakeImageStage({
     const inputRefs = useRef<Partial<Record<ReferenceKey, HTMLInputElement | null>>>({});
     const activeTasksRef = useRef(new Map<string, { controller: AbortController; snapshot: RemakeImageTaskSnapshot }>());
     const creationControllersRef = useRef(new Map<string, AbortController>());
-    const deferredStagesRef = useRef(new Set<string>());
     const invalidStagesRef = useRef(new Set<string>());
-    const resumeTimersRef = useRef(new Set<number>());
     const startingStagesRef = useRef(new Set<string>());
     const retryAttemptsRef = useRef(new Map<string, number>());
     const uploadingKeyRef = useRef<ReferenceKey | undefined>(undefined);
     const [uploadingKey, setUploadingKey] = useState<ReferenceKey>();
     const [batchStarting, setBatchStarting] = useState(false);
-    const [resumeNonce, setResumeNonce] = useState(0);
 
     const emitGroupChange = useCallback(
         (groupId: string, patch: RemakeGroupPatch) => {
@@ -130,16 +127,6 @@ export function RemakeImageStage({
         [onModelChange],
     );
 
-    const scheduleResume = useCallback((stageKey: string) => {
-        deferredStagesRef.current.add(stageKey);
-        const timer = window.setTimeout(() => {
-            resumeTimersRef.current.delete(timer);
-            deferredStagesRef.current.delete(stageKey);
-            setResumeNonce((current) => current + 1);
-        }, 2500);
-        resumeTimersRef.current.add(timer);
-    }, []);
-
     const waitForGroupTask = useCallback(
         async (stage: ImageStage, groupId: string, taskId: string, prompt: string, inputVersion: string, model: string, announce = false) => {
             const snapshot: RemakeImageTaskSnapshot = { stage, groupId, slotId: remakeImageGenerationSlotId(groupId, stage), taskId, inputVersion };
@@ -167,33 +154,25 @@ export function RemakeImageStage({
                 if (announce) message.success(stage === "replacement" ? `分镜 ${groupId} 清理换人图已生成，继续执行换品` : `分镜 ${groupId} 最终十二宫格已生成`);
             } catch (reason) {
                 if (controller.signal.aborted || !isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) return;
-                const detail = friendlyAgentError(reason, "十二宫格生成失败，请稍后重试");
-                if (isImageGenerationTaskDeferredError(reason)) {
-                    message.info({ key: `remake-image:${stageKey(groupId, stage)}`, content: `分镜 ${groupId}：${detail}` });
-                    scheduleResume(stageKey(groupId, stage));
-                    return;
-                }
+                const detail = isImageGenerationTaskDeferredError(reason) ? "图片任务查询已超时，系统已停止自动查询，请确认原任务状态后再手动重试。" : friendlyAgentError(reason, "十二宫格生成失败，请稍后重试");
                 const generationPatch = { status: "error" as const, taskId, model, prompt, error: detail };
                 emitGroupChange(groupId, stage === "replacement" ? { replacementGeneration: generationPatch } : { imageGeneration: generationPatch });
                 await onFlush();
-                message.error({ key: `remake-image:${stageKey(groupId, stage)}`, content: `分镜 ${groupId}：${detail}` });
+                if (announce) message.error({ key: "remake-image-error", content: `分镜 ${groupId}：${detail}` });
             } finally {
                 if (activeTasksRef.current.get(taskId)?.controller === controller) activeTasksRef.current.delete(taskId);
             }
         },
-        [emitGroupChange, imageConfig, message, onFlush, scheduleResume],
+        [emitGroupChange, imageConfig, message, onFlush],
     );
 
     useEffect(
         () => () => {
             for (const task of activeTasksRef.current.values()) task.controller.abort();
             for (const controller of creationControllersRef.current.values()) controller.abort();
-            for (const timer of resumeTimersRef.current) window.clearTimeout(timer);
             activeTasksRef.current.clear();
             creationControllersRef.current.clear();
-            deferredStagesRef.current.clear();
             invalidStagesRef.current.clear();
-            resumeTimersRef.current.clear();
             startingStagesRef.current.clear();
         },
         [],
@@ -230,7 +209,7 @@ export function RemakeImageStage({
             const generation = stageGeneration(group, stage);
             const key = stageKey(group.id, stage);
             const awaitingCreation = (generation.status === "queued" || generation.status === "running") && !generation.taskId;
-            if ((isGenerationActive(generation) && !awaitingCreation) || startingStagesRef.current.has(key) || deferredStagesRef.current.has(key)) return;
+            if ((isGenerationActive(generation) && !awaitingCreation) || startingStagesRef.current.has(key)) return;
             if (uploadingKeyRef.current) return message.warning("请等待参考图上传完成后再生成十二宫格");
             if (!remakeReferencesReady(current)) return message.warning("请先上传新产品图");
             if (!group.sourceContactSheet?.url) return message.warning(`分镜 ${group.id} 缺少来源十二宫格，请重新执行视频分析`);
@@ -291,19 +270,19 @@ export function RemakeImageStage({
                     const failed = { status: "error" as const, taskId: null, model, prompt, result: null, error: detail };
                     emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: failed } : { imageGeneration: failed });
                     await onFlush();
-                    message.error({ key: `remake-image:${key}`, content: `分镜 ${group.id}：${detail}` });
+                    if (announce) message.error({ key: "remake-image-error", content: `分镜 ${group.id}：${detail}` });
                     return;
                 }
                 const failed = { status: "error" as const, taskId: null, model, prompt, result: null, error: detail };
                 emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: failed } : { imageGeneration: failed });
                 await onFlush();
-                message.error({ key: `remake-image:${key}`, content: `分镜 ${group.id}：${detail}` });
+                if (announce) message.error({ key: "remake-image-error", content: `分镜 ${group.id}：${detail}` });
             } finally {
                 if (creationControllersRef.current.get(key) === controller) creationControllersRef.current.delete(key);
                 startingStagesRef.current.delete(key);
             }
         },
-        [emitGroupChange, emitModelChange, imageConfig, isAiConfigReady, message, onFlush, openConfigDialog, scheduleResume, selectedImageModel, waitForGroupTask],
+        [emitGroupChange, emitModelChange, imageConfig, isAiConfigReady, message, onFlush, openConfigDialog, selectedImageModel, waitForGroupTask],
     );
 
     useEffect(() => {
@@ -329,17 +308,17 @@ export function RemakeImageStage({
                 }
             }
             if (group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "idle") {
-                void startStage(group.id, "storyboard", true);
+                void startStage(group.id, "storyboard", false);
             }
         }
-    }, [emitGroupChange, onFlush, project, resumeNonce, selectedImageModel, startStage, waitForGroupTask]);
+    }, [emitGroupChange, onFlush, project, selectedImageModel, startStage, waitForGroupTask]);
 
     const startGroup = useCallback(
-        async (group: RemakeRangeGroup) => {
+        async (group: RemakeRangeGroup, announce = true) => {
             const latest = latestProjectRef.current.groups.find((item) => item.id === group.id) || group;
             const stage: ImageStage = latest.replacementGeneration.status === "completed" && latest.replacementGeneration.result?.url && latest.imageGeneration.status !== "completed" ? "storyboard" : "replacement";
             invalidStagesRef.current.delete(stageKey(latest.id, stage));
-            await startStage(latest.id, stage);
+            await startStage(latest.id, stage, announce);
         },
         [startStage],
     );
@@ -350,7 +329,7 @@ export function RemakeImageStage({
         if (!candidates.length) return message.info(remakeImagesReady(latestProjectRef.current) ? "四组最终十二宫格已经全部生成" : "当前没有可启动的十二宫格任务");
         setBatchStarting(true);
         try {
-            await Promise.all(candidates.map(startGroup));
+            await Promise.all(candidates.map((group) => startGroup(group, false)));
         } finally {
             setBatchStarting(false);
         }
