@@ -574,29 +574,60 @@ export async function inlineRemoteImageResult(value: string, origin: string, coo
     if (!isRemoteMediaUrl(fetchUrl)) return { dataUrl: url, remoteUrl: fallbackUrl };
 
     const controller = new AbortController();
+    const deadline = Date.now() + INLINE_IMAGE_TIMEOUT_MS;
     const timer = setTimeout(() => controller.abort(), INLINE_IMAGE_TIMEOUT_MS);
+    let failure = "下载连接失败";
     try {
         const workerHeaders = maintenanceWorkerContextHeaders(cookie);
         const headers = new Headers(workerHeaders || (cookie ? { cookie } : undefined));
         new Headers(internalHeaders).forEach((headerValue, key) => headers.set(key, headerValue));
-        const response = await (url.startsWith("/") ? fetchInternalApi : fetchSafeOutbound)(fetchUrl, {
-            headers: url.startsWith("/") ? headers : undefined,
-            cache: "no-store",
-            signal: controller.signal,
-        });
-        if (!response.ok || !response.body) return { dataUrl: url, remoteUrl: fallbackUrl };
-        const contentLength = Number(response.headers.get("content-length") || 0);
-        if (contentLength > MAX_INLINE_IMAGE_BYTES) return { dataUrl: url, remoteUrl: fallbackUrl };
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (bytes.length > MAX_INLINE_IMAGE_BYTES) return { dataUrl: url, remoteUrl: fallbackUrl };
-        const mimeType = await resolveMediaMimeType(bytes, "image", response.headers.get("content-type"));
-        if (!mimeType) return { dataUrl: url, remoteUrl: fallbackUrl };
-        return { dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}`, remoteUrl: fallbackUrl };
-    } catch {
-        return { dataUrl: url, remoteUrl: fallbackUrl };
+        // 只重读已经生成的图片，共用超时预算，避免重新提交生图任务。
+        for (let attempt = 0; attempt < 3 && !controller.signal.aborted; attempt += 1) {
+            if (attempt > 0) await delay(Math.max(0, Math.min(attempt * 1000, deadline - Date.now())));
+            if (controller.signal.aborted) break;
+            let response: Response | undefined;
+            try {
+                response = await (url.startsWith("/") ? fetchInternalApi : fetchSafeOutbound)(fetchUrl, {
+                    headers: url.startsWith("/") ? headers : undefined,
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
+                if (!response.ok) {
+                    failure = `HTTP ${response.status}`;
+                    if ([408, 429, 500, 502, 503, 504].includes(response.status)) continue;
+                    break;
+                }
+                if (!response.body) {
+                    failure = "图片响应为空";
+                    break;
+                }
+                const contentLength = Number(response.headers.get("content-length") || 0);
+                if (contentLength > MAX_INLINE_IMAGE_BYTES) {
+                    failure = "图片超过 20 MB 限制";
+                    break;
+                }
+                const bytes = Buffer.from(await response.arrayBuffer());
+                if (bytes.length > MAX_INLINE_IMAGE_BYTES) {
+                    failure = "图片超过 20 MB 限制";
+                    break;
+                }
+                const mimeType = bytes.length ? await resolveMediaMimeType(bytes, "image", response.headers.get("content-type")) : "";
+                if (!mimeType) {
+                    failure = "返回内容不是有效图片";
+                    break;
+                }
+                return { dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}`, remoteUrl: fallbackUrl };
+            } catch {
+                failure = "下载连接失败";
+            } finally {
+                await response?.body?.cancel().catch(() => undefined);
+            }
+        }
     } finally {
         clearTimeout(timer);
     }
+    if (mediaSource.proxyUrl) throw new Error(`上游图片无法通过授权媒体路径读取（${controller.signal.aborted ? "下载超时" : failure}）`);
+    return { dataUrl: url, remoteUrl: fallbackUrl };
 }
 
 export function directRemoteImageResult(remoteUrl?: string) {

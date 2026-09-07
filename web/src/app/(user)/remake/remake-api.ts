@@ -58,7 +58,8 @@ async function requestPayload(url: string, init?: RequestInit) {
     if (!response.ok) {
         const fallback = response.status >= 500 ? `复刻工作区服务暂时不可用（HTTP ${response.status}），请稍后重试` : "复刻工作区请求失败";
         const message = messageFromEnvelope(payload, fallback);
-        if (response.status === 409) throw new RemakeConflictError(message, payload);
+        // 409 也用于任务输入校验；只有版本不一致才进入版本合并流程。
+        if (response.status === 409 && message === "复刻项目已在其他页面更新，请刷新后重试") throw new RemakeConflictError(message, payload);
         throw new RemakeRequestError(message, response.status, payload);
     }
     return dataFromEnvelope(payload);

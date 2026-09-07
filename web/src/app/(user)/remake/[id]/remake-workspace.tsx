@@ -638,7 +638,7 @@ export function RemakeWorkspace() {
             </div>
 
             <Modal
-                title="项目已在其他页面更新"
+                title="项目版本需要同步"
                 open={Boolean(conflict)}
                 closable={false}
                 mask={{ closable: false }}
@@ -650,7 +650,9 @@ export function RemakeWorkspace() {
                 onOk={() => void retryLocalVersion()}
                 onCancel={() => void acceptRemoteVersion()}
             >
-                <p className="text-sm leading-6 text-muted-foreground">服务器 Revision {conflict?.remote.revision ?? 0} 比当前编辑版本更新。请选择保留本地编辑并基于新版本重试，或放弃本地未保存内容。</p>
+                <p className="text-sm leading-6 text-muted-foreground">
+                    当前页面版本为 {conflict?.local.revision ?? 0}，服务器版本为 {conflict?.remote.revision ?? 0}。后台任务或其他页面可能更新了项目。请选择保留本地编辑并重新保存，或载入服务器版本。
+                </p>
             </Modal>
         </main>
     );

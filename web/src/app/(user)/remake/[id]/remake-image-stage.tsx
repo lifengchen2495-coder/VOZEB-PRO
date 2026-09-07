@@ -243,6 +243,12 @@ export function RemakeImageStage({
                     : { imageGeneration: queued, videoPrompt: "", videoGeneration: { status: "idle", taskId: null, model: null, result: null, error: null } },
             );
             try {
+                if (!(await onFlush())) {
+                    const blocked = { ...queued, status: "error" as const, error: "项目尚未保存，生图请求未提交。请先处理保存错误后重试。" };
+                    emitGroupChange(group.id, stage === "replacement" ? { replacementGeneration: blocked } : { imageGeneration: blocked });
+                    return;
+                }
+                if (controller.signal.aborted || !isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage)) return;
                 const taskConfig = { ...imageConfig, model, imageModel: model };
                 const task = await createImageGenerationTask(taskConfig, prompt, references, undefined, {
                     signal: controller.signal,
