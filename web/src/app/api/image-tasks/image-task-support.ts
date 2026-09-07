@@ -475,7 +475,7 @@ export function readImagePayloadError(payload: ImageApiResponse) {
 }
 
 export function readImageTaskId(payload: ImageApiResponse) {
-    return findStringByKeys(payload, IMAGE_TASK_ID_KEYS);
+    return findStringByKeys(payload, IMAGE_TASK_ID_KEYS, 0, true);
 }
 
 export function readImageTaskStatus(payload: ImageApiResponse) {
@@ -488,11 +488,11 @@ export function readImagePollUrl(config: ImageTaskConfig, payload: ImageApiRespo
     return resolveGeneratedMediaUrl(value, mediaBaseUrl || pollBaseUrl);
 }
 
-export function findStringByKeys(value: unknown, keys: string[], depth = 0): string {
+export function findStringByKeys(value: unknown, keys: string[], depth = 0, allowFiniteNumber = false): string {
     if (!value || depth > 5) return "";
     if (Array.isArray(value)) {
         for (const item of value) {
-            const found = findStringByKeys(item, keys, depth + 1);
+            const found = findStringByKeys(item, keys, depth + 1, allowFiniteNumber);
             if (found) return found;
         }
         return "";
@@ -502,9 +502,11 @@ export function findStringByKeys(value: unknown, keys: string[], depth = 0): str
     for (const key of keys) {
         const found = stringField(record, key);
         if (found) return found;
+        const numeric = record[key];
+        if (allowFiniteNumber && typeof numeric === "number" && Number.isFinite(numeric)) return String(numeric);
     }
     for (const key of IMAGE_CONTAINER_KEYS) {
-        const found = findStringByKeys(record[key], keys, depth + 1);
+        const found = findStringByKeys(record[key], keys, depth + 1, allowFiniteNumber);
         if (found) return found;
     }
     return "";

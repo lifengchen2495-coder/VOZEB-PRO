@@ -36,9 +36,12 @@ export type CreateImageTaskBody = {
 export type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
     error?: { message?: string };
-    id?: string;
-    task_id?: string;
+    id?: string | number;
+    task_id?: string | number;
     status?: string;
+    state?: string;
+    is_final?: boolean;
+    result_url?: string;
     result?: unknown;
     results?: unknown;
     content?: unknown;
