@@ -2,9 +2,9 @@ import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
 import { isRemakeNoNarrationCopy } from "@/lib/server/remake-project-contract";
-import { remakeProductionMessages, remakeProductionTool, parseRemakeProductionPlan, renderRemakeCopyReport, renderRemakeSeedancePrompts } from "@/lib/server/remake-production-prompt";
+import { assertRemakeVideoPrompt, remakeProductionMessages, REMAKE_PRODUCTION_GROUP_IDS, renderRemakeCopyReport, type RemakeProductionPromptInput } from "@/lib/server/remake-production-prompt";
 import { assertRemakeImageGenerationsForUser, completeRemakeProductionForUser, getRemakeProjectForUser, RemakeProjectServiceError } from "@/lib/server/remake-project-service";
-import { buildRemakeProductionVisualBoards, RemakeProductionVisionError, requestRemakeProductionVisionPlan, resolveRemakeProductionVisionProtocol } from "@/lib/server/remake-production-vision-runtime";
+import { buildRemakeProductionVisualBoards, RemakeProductionVisionError, requestRemakeProductionVisionPrompt, resolveRemakeProductionVisionProtocol } from "@/lib/server/remake-production-vision-runtime";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { rankTextPlanningCandidates } from "@/lib/server/text-planning-runtime";
 
@@ -18,9 +18,14 @@ export class RemakeProductionError extends Error {
     }
 }
 
-export async function buildRemakeProductionForUser(input: { userId: string; projectId: string; origin: string; cookie: string; expectedRevision?: number }) {
+export async function buildRemakeProductionForUser(input: { userId: string; projectId: string; origin: string; cookie: string; expectedRevision?: number; groupId?: string }) {
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
     if (input.expectedRevision !== undefined && project.revision !== input.expectedRevision) throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
+    const selectedGroups = REMAKE_PRODUCTION_GROUP_IDS.filter((groupId) => input.groupId === undefined || groupId === input.groupId);
+    if (!selectedGroups.length) throw new RemakeProductionError("视频提示词分组无效", 400);
+    if (project.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
+        throw new RemakeProductionError("视频任务尚未结束，请完成后再生成 Prompt", 409);
+    }
     await assertProductionReady(input.userId, project);
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
 
@@ -49,7 +54,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
         throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "人物、产品图或最终十二宫格读取失败，无法执行真实视觉规划"), 502);
     }
 
-    const messages = remakeProductionMessages({
+    const promptInput: RemakeProductionPromptInput = {
         title: project.title,
         hasNarration,
         ...(hasNarration ? { voice: project.voice as "female" | "male" } : {}),
@@ -79,71 +84,81 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
             description: board.description,
             layout: board.layout,
         })),
-    });
-    let latestError: unknown;
-    for (const candidate of candidates) {
-        const idempotencyKey = systemAiIdempotencyKey("remake-production", input.userId, project.id, String(project.revision), candidate.channelId, candidate.upstreamModel);
-        let chargedHeaders: Headers | undefined;
-        let refunded = false;
-        try {
-            const call = await requestRemakeProductionVisionPlan({
-                origin: input.origin,
-                cookie: input.cookie,
-                candidate,
-                messages,
-                boards: visualBoards,
-                tool: remakeProductionTool,
-                headers: {
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": idempotencyKey,
-                    "X-Client-Request-Id": idempotencyKey,
-                    ...systemAiBillingHeaders(model, idempotencyKey, candidate.upstreamModel),
-                },
-                validateArguments: (value) => Boolean(parseRemakeProductionPlan(value)),
-            });
-            chargedHeaders = call.headers;
-            const plan = parseRemakeProductionPlan(call.arguments);
-            if (!plan) {
-                await refundInvalidResponse(input.userId, model, call.headers, `${idempotencyKey}:refund`);
-                refunded = true;
-                throw new RemakeProductionError("文本模型没有返回完整的四组视频结构");
+    };
+    const prompts: Array<{ groupOrdinal: number; prompt: string }> = [];
+    const completedCharges: Array<{ headers: Headers; idempotencyKey: string }> = [];
+    try {
+        for (const groupId of selectedGroups) {
+            const messages = remakeProductionMessages(promptInput, groupId);
+            let latestError: unknown;
+            let generated = false;
+            for (const candidate of candidates) {
+                const idempotencyKey = systemAiIdempotencyKey("remake-feishu-video-prompt", input.userId, project.id, String(project.revision), groupId, candidate.channelId, candidate.upstreamModel);
+                let chargedHeaders: Headers | undefined;
+                try {
+                    const call = await requestRemakeProductionVisionPrompt({
+                        origin: input.origin,
+                        cookie: input.cookie,
+                        candidate,
+                        messages,
+                        boards: visualBoards,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Idempotency-Key": idempotencyKey,
+                            "X-Client-Request-Id": idempotencyKey,
+                            ...systemAiBillingHeaders(model, idempotencyKey, candidate.upstreamModel),
+                        },
+                    });
+                    chargedHeaders = call.headers;
+                    assertRemakeVideoPrompt(call.text, promptInput, groupId);
+                    prompts.push({ groupOrdinal: REMAKE_PRODUCTION_GROUP_IDS.indexOf(groupId) + 1, prompt: call.text });
+                    completedCharges.push({ headers: call.headers, idempotencyKey });
+                    generated = true;
+                    break;
+                } catch (error) {
+                    const responseHeaders = chargedHeaders || (error instanceof RemakeProductionVisionError ? error.responseHeaders : undefined);
+                    if (responseHeaders) await refundInvalidResponse(input.userId, model, responseHeaders, `${idempotencyKey}:refund`);
+                    latestError = error;
+                }
             }
-            const prompts = renderRemakeSeedancePrompts({
-                plan,
-                copyBlocks: project.copyBlocks.map((block) => ({ ordinal: block.ordinal, frameOrdinals: block.frameOrdinals, sourceText: block.sourceText, text: block.text })),
-                hasNarration,
-            });
-            const rawReport = renderRemakeCopyReport({
-                sourceCopy: project.sourceCopy,
-                blocks: project.copyBlocks.map((block) => ({ ordinal: block.ordinal, frameOrdinals: block.frameOrdinals, sourceText: block.sourceText, text: block.text })),
-                optionRaw: project.copy.optionRaw,
-                rawReport: project.copy.rawReport,
-                paragraphs: project.copy.paragraphs,
-                mappings: project.copy.mappings,
-                checks: project.copy.checks,
-                stats: project.copy.stats,
-            });
+            if (!generated) throw new RemakeProductionError(toSafeGenerationErrorMessage(latestError, `分镜 ${groupId} 的视频提示词生成失败`));
+        }
+        if (input.groupId !== undefined) {
             return await completeRemakeProductionForUser(input.userId, project.id, {
                 expectedRevision: project.revision,
-                copy: {
-                    ...project.copy,
-                    status: "completed",
-                    optionRaw: project.copy.optionRaw || (hasNarration ? "A: 保持原文案" : "不需要人物口播"),
-                    rawReport,
-                    checks: { sequential: true, noDuplicates: true, noSkips: true },
-                    error: undefined,
-                },
-                copyBlocks: project.copyBlocks,
-                videoPrompts: prompts.map((prompt) => ({ groupOrdinal: prompt.ordinal, prompt: prompt.text })),
+                groupId: input.groupId,
+                videoPrompts: prompts,
             });
-        } catch (error) {
-            const responseHeaders = chargedHeaders || (error instanceof RemakeProductionVisionError ? error.responseHeaders : undefined);
-            if (responseHeaders && !refunded) await refundInvalidResponse(input.userId, model, responseHeaders, `${idempotencyKey}:refund`);
-            if (error instanceof RemakeProjectServiceError) throw error;
-            latestError = error;
         }
+        const rawReport = renderRemakeCopyReport({
+            sourceCopy: project.sourceCopy,
+            blocks: promptInput.copyBlocks,
+            optionRaw: project.copy.optionRaw,
+            rawReport: project.copy.rawReport,
+            paragraphs: project.copy.paragraphs,
+            mappings: project.copy.mappings,
+            checks: project.copy.checks,
+            stats: project.copy.stats,
+        });
+        return await completeRemakeProductionForUser(input.userId, project.id, {
+            expectedRevision: project.revision,
+            copy: {
+                ...project.copy,
+                status: "completed",
+                optionRaw: project.copy.optionRaw || (hasNarration ? "A: 保持原文案" : "不需要人物口播"),
+                rawReport,
+                checks: { sequential: true, noDuplicates: true, noSkips: true },
+                error: undefined,
+            },
+            copyBlocks: project.copyBlocks,
+            videoPrompts: prompts,
+        });
+    } catch (error) {
+        // 本次请求的分组一起保存；未交付时退回已生成组的费用。
+        for (const charge of completedCharges) await refundInvalidResponse(input.userId, model, charge.headers, `${charge.idempotencyKey}:refund`);
+        if (error instanceof RemakeProjectServiceError || error instanceof RemakeProductionError) throw error;
+        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "生产包生成失败，请稍后重试"));
     }
-    throw new RemakeProductionError(toSafeGenerationErrorMessage(latestError, "生产包生成失败，请稍后重试"));
 }
 
 async function assertProductionReady(userId: string, project: Awaited<ReturnType<typeof getRemakeProjectForUser>>) {

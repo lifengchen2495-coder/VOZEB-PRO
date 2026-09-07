@@ -20,6 +20,7 @@ import {
     normalizeRemakeReferences,
     normalizeRemakeSourceVideo,
     normalizeRemakeTimestamps,
+    normalizeRemakeVideoPrompt,
     REMAKE_COPY_BLOCK_COUNT,
     REMAKE_FRAME_COUNT,
     type HydratedRemakeProject,
@@ -76,6 +77,7 @@ export class RemakeAnalysisSupersededError extends Error {
 export type RemakeVideoPromptInput = { groupOrdinal: number; prompt: string };
 export type RemakeProductionCompletionInput = {
     expectedRevision?: number;
+    groupId?: string;
     copy?: Partial<RemakeCopyState>;
     copyBlocks?: RemakeCopyBlock[];
     videoPrompts?: RemakeVideoPromptInput[];
@@ -364,19 +366,30 @@ export async function completeRemakeProductionForUser(userId: string, id: string
               });
         if (copyBlocks.length !== REMAKE_COPY_BLOCK_COUNT) throw new RemakeProjectServiceError("请提交完整的 16 个语义文案区间", 400);
         const promptPatches = normalizeVideoPromptPatches(input.videoPrompts);
-        if (input.videoPrompts && promptPatches.length !== 4) throw new RemakeProjectServiceError("请提交完整的 4 组视频提示词", 400);
+        if (input.groupId !== undefined) {
+            const target = normalized.groups.find((group) => group.id === input.groupId);
+            if (!target || input.videoPrompts?.length !== 1 || promptPatches.length !== 1 || promptPatches[0].ordinal !== target.ordinal) {
+                throw new RemakeProjectServiceError("请提交指定分组的一条完整视频提示词", 400);
+            }
+        } else if (input.videoPrompts && promptPatches.length !== 4) {
+            throw new RemakeProjectServiceError("请提交完整的 4 组视频提示词", 400);
+        }
+        if (normalized.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
+            throw new RemakeProjectServiceError("视频任务尚未结束，请完成后再生成 Prompt", 409);
+        }
         const groups = normalizeRemakeRangeGroups(promptPatches, normalized.groups).map((group, index) =>
             group.videoPrompt !== normalized.groups[index]?.videoPrompt ? { ...group, videoGeneration: { status: "idle" as const } } : group,
         );
         const promptsReady = groups.every((group) => Boolean(group.videoPrompt));
-        if (!promptsReady) throw new RemakeProjectServiceError("4 组视频提示词尚未完整生成", 409);
+        if (!promptsReady && input.groupId === undefined) throw new RemakeProjectServiceError("4 组视频提示词尚未完整生成", 409);
         const noNarration = isRemakeNoNarrationCopy(normalized.sourceCopy);
         const copyReady = copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));
         if (!copyReady) throw new RemakeProjectServiceError(noNarration ? "无口播视频的 16 个语义文案区间必须保持为空" : "16 个语义文案区间存在空内容", 409);
         const imagesReady = groups.every((group) => group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result));
-        let pipeline = withPipelineStep(normalized.pipeline, "copy", "completed", "prompts-ready", copy.taskId);
-        pipeline = withPipelineStep(pipeline, "prompts", "completed", imagesReady ? "ready" : "prompts-ready");
-        if (imagesReady) pipeline = withPipelineStep(pipeline, "images", "completed", "ready");
+        const stage = promptsReady ? (imagesReady ? "ready" : "prompts-ready") : "prompts";
+        let pipeline = withPipelineStep(normalized.pipeline, "copy", "completed", stage, copy.taskId);
+        pipeline = withPipelineStep(pipeline, "prompts", promptsReady ? "completed" : "pending", stage);
+        if (imagesReady) pipeline = withPipelineStep(pipeline, "images", "completed", stage);
         previous = normalized;
         return withRevision(normalized, { copy, copyBlocks, groups, pipeline });
     });
@@ -567,8 +580,8 @@ async function authoritativeRemakeVideoGeneration(input: {
     selectedModel: string;
 }): Promise<RemakeRangeGroup["videoGeneration"]> {
     if (!input.requested.taskId) {
-        if (input.requested.status === "queued") return { status: "queued", model: input.requested.model };
-        if (input.requested.status === "error") return { status: "error", model: input.requested.model, error: input.requested.error || "视频任务创建失败" };
+        if (input.requested.status === "queued") return { status: "queued", model: input.requested.model, attemptNo: input.requested.attemptNo };
+        if (input.requested.status === "error") return { status: "error", model: input.requested.model, attemptNo: input.requested.attemptNo, error: input.requested.error || "视频任务创建失败" };
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务标识缺失`, 409);
     }
     const task = await getVideoTask(input.requested.taskId);
@@ -580,12 +593,16 @@ async function authoritativeRemakeVideoGeneration(input: {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频模型与当前任务不一致`, 409);
     }
     if (task.requestedDurationSeconds !== 15) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务必须为 15 秒`, 409);
-    if (task.status === "running") return { status: "running", taskId: task.id, model };
-    if (task.status === "error" || task.status === "cancelled") return { status: "error", taskId: task.id, model, error: task.error || (task.status === "cancelled" ? "视频任务已取消" : "视频生成失败") };
+    const attemptNo = task.attemptNo ?? 0;
+    if (task.status === "running") {
+        const needsReview = task.executionPhase === "needs_review";
+        return { status: "running", taskId: task.id, model, attemptNo, needsReview, error: needsReview ? task.reviewReason || "上游任务状态待检查，请点击检查状态继续查询原任务" : undefined };
+    }
+    if (task.status === "error" || task.status === "cancelled") return { status: "error", taskId: task.id, model, attemptNo, error: task.error || (task.status === "cancelled" ? "视频任务已取消" : "视频生成失败") };
     if (task.status !== "success") throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务状态无效`, 409);
     const result = normalizeRemakeMediaAsset(task.result);
     if (!result?.url) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务没有持久化结果`, 409);
-    return { status: "completed", taskId: task.id, model, result: { ...result, originalName: `remake-${input.group.id}-15s.mp4` } };
+    return { status: "completed", taskId: task.id, model, attemptNo, result: { ...result, originalName: `remake-${input.group.id}-15s.mp4` } };
 }
 
 function deriveRemakePipeline(input: {
@@ -670,7 +687,7 @@ function normalizeVideoPromptPatches(value: RemakeVideoPromptInput[] | undefined
     for (const item of value) {
         const source = object(item);
         const ordinal = integerInRange(source.groupOrdinal, 1, 4);
-        const videoPrompt = cleanText(source.prompt, 100_000);
+        const videoPrompt = normalizeRemakeVideoPrompt(source.prompt);
         if (ordinal && videoPrompt && !prompts.has(ordinal)) prompts.set(ordinal, { ordinal, videoPrompt });
     }
     return Array.from(prompts.values()).sort((left, right) => left.ordinal - right.ordinal);

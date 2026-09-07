@@ -5,6 +5,10 @@ export const REMAKE_RANGE_GROUP_COUNT = 4;
 export const REMAKE_FRAMES_PER_RANGE_GROUP = 12;
 export const REMAKE_NO_NARRATION_TEXT = "不需要人物口播";
 
+export function normalizeRemakeVideoPrompt(value: unknown) {
+    return typeof value === "string" && value.trim() && value.length <= 100_000 ? value : "";
+}
+
 export const REMAKE_RANGE_GROUP_DEFINITIONS = [
     { id: "1-12", ordinal: 1, startFrame: 1, endFrame: 12 },
     { id: "13-24", ordinal: 2, startFrame: 13, endFrame: 24 },
@@ -149,6 +153,8 @@ export type RemakeImageGeneration = {
 export type RemakeVideoGeneration = {
     status: RemakeWorkStatus;
     taskId?: string;
+    attemptNo?: number;
+    needsReview?: boolean;
     model?: string;
     result?: RemakeMediaAsset;
     error?: string;
@@ -487,10 +493,12 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
                 result: hasOwn(generationSource, "result") ? normalizeRemakeMediaAsset(generationSource.result) : previousGeneration.result,
                 error: hasOwn(generationSource, "error") ? cleanText(generationSource.error, 1_000) || undefined : previousGeneration.error,
             },
-            videoPrompt: hasOwn(source, "videoPrompt") ? cleanText(source.videoPrompt, 100_000) : previous.videoPrompt,
+            videoPrompt: hasOwn(source, "videoPrompt") ? normalizeRemakeVideoPrompt(source.videoPrompt) : previous.videoPrompt,
             videoGeneration: {
                 status: normalizeWorkStatus(videoGenerationSource.status) || previousVideoGeneration.status,
                 taskId: hasOwn(videoGenerationSource, "taskId") ? cleanText(videoGenerationSource.taskId, 300) || undefined : previousVideoGeneration.taskId,
+                attemptNo: hasOwn(videoGenerationSource, "attemptNo") ? optionalNonNegativeInteger(videoGenerationSource.attemptNo) : previousVideoGeneration.attemptNo,
+                needsReview: hasOwn(videoGenerationSource, "needsReview") ? videoGenerationSource.needsReview === true : previousVideoGeneration.needsReview,
                 model: hasOwn(videoGenerationSource, "model") ? cleanText(videoGenerationSource.model, 300) || undefined : previousVideoGeneration.model,
                 result: hasOwn(videoGenerationSource, "result") ? normalizeRemakeMediaAsset(videoGenerationSource.result) : previousVideoGeneration.result,
                 error: hasOwn(videoGenerationSource, "error") ? cleanText(videoGenerationSource.error, 1_000) || undefined : previousVideoGeneration.error,
@@ -703,6 +711,10 @@ function firstDefined(...values: unknown[]) {
 function optionalPositiveInteger(value: unknown) {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 ? Math.floor(number) : undefined;
+}
+
+function optionalNonNegativeInteger(value: unknown) {
+    return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
 }
 
 function optionalNonNegativeNumber(value: unknown) {

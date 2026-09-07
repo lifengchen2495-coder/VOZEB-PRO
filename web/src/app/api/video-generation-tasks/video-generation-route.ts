@@ -25,7 +25,7 @@ import { VIDEO_PROVIDER_MEDIA_KEYS, parseVideoProviderJson, readVideoProviderHtt
 import { buildSeedanceSpecialRequest } from "@/lib/seedance-special";
 import { assertVozebRecommendedVideoReferences, buildVozebRecommendedVideoRequest } from "@/lib/vozeb-recommended-video";
 import { assertGeminiVideoReferences, buildGeminiVideoRequest, geminiVideoCreatePath, normalizeGeminiVideoDuration, parseGeminiVideoCreateResponse } from "@/lib/server/gemini-video-provider";
-import { systemAiBillingHeaders } from "@/lib/server/system-ai-billing";
+import { systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { maintenanceWorkerContextHeaders, requestRuntimeCredential } from "@/lib/server/maintenance-auth";
 import { resolvePublicRequestOrigin } from "@/lib/server/public-request-origin";
 import { writeVideoGenerationLog } from "@/lib/server/video-task-log";
@@ -33,6 +33,8 @@ import { buildOpenAiVideoFormData } from "./video-task-openai";
 import { normalizeVideoGenerationReferences, regularVideoReferences, videoFrameReferences, type VideoGenerationReference } from "@/lib/video-reference-contract";
 import { assertYumengVideoReferences, buildYumengVideoRequest } from "@/lib/yumeng-model-center";
 import { normalizeVideoProviderImageReferences } from "@/lib/server/video-reference-image";
+import { normalizeRemakeVideoAudioReferences } from "@/lib/server/remake-video-audio";
+import { getRemakeProjectForUser, RemakeProjectServiceError } from "@/lib/server/remake-project-service";
 
 const CREATE_PATHS = ["/video/generations", "/videos/generations", "/videos/videos", "/videos"];
 type CreateVideoTaskBody = { config?: Record<string, unknown>; prompt?: string; references?: VideoGenerationReference[]; source?: string; context?: GenerationTaskContext };
@@ -71,8 +73,26 @@ export async function POST(request: Request) {
         async () => {
             const requestedModel = typeof body.config?.model === "string" && body.config.model.trim() ? body.config.model : settings.defaultModels.videoModel;
             const channels = resolveLogicalModelCandidates(settings, "video", requestedModel).map(toSystemGenerationChannel);
-            const prompt = String(body.prompt || "").trim();
-            if (!channels.length || !prompt) return NextResponse.json({ error: "视频任务参数不完整或渠道不支持" }, { status: 400 });
+            const requestedPrompt = String(body.prompt || "");
+            if (!channels.length || !requestedPrompt.trim()) return NextResponse.json({ error: "视频任务参数不完整或渠道不支持" }, { status: 400 });
+            const remakeProjectId = clean(body.context?.projectId);
+            const remakeSlotId = clean(body.context?.generationSlotId);
+            const isRemakeVideoRequest = remakeProjectId.startsWith("remake-") || remakeSlotId.startsWith("remake-video:");
+            let prompt = requestedPrompt.trim();
+            if (isRemakeVideoRequest) {
+                if (!remakeProjectId.startsWith("remake-") || !remakeSlotId.startsWith("remake-video:")) return NextResponse.json({ error: "复刻视频任务的项目或分镜标识不完整" }, { status: 400 });
+                try {
+                    const project = await getRemakeProjectForUser(user.id, remakeProjectId);
+                    const group = project.groups.find((item) => `remake-video:${item.id}` === remakeSlotId);
+                    if (!group) return NextResponse.json({ error: "复刻视频任务的分镜组不存在" }, { status: 400 });
+                    if (!group.videoPrompt.trim()) return NextResponse.json({ error: "复刻视频提示词尚未生成，请先生成并保存提示词" }, { status: 409 });
+                    if (requestedPrompt !== group.videoPrompt) return NextResponse.json({ error: "复刻视频提示词与已保存原文不一致，请刷新项目后重试" }, { status: 409 });
+                    prompt = group.videoPrompt;
+                } catch (error) {
+                    if (error instanceof RemakeProjectServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+                    throw error;
+                }
+            }
             const publicOrigin = requestPublicOrigin(request);
             let references: VideoGenerationReference[];
             try {
@@ -87,9 +107,10 @@ export async function POST(request: Request) {
             } catch (error) {
                 return NextResponse.json({ error: error instanceof Error ? error.message : "视频参考素材转换失败" }, { status: 400 });
             }
-            const providerPrompt = withVideoReferenceFidelity(prompt, references);
+            const providerPrompt = isRemakeVideoRequest ? prompt : withVideoReferenceFidelity(prompt, references);
             const requestedParameters = resolveVideoGenerationParameters(body.config || {}, settings.generationDefaults);
-            const billingRequestId = concurrencyRequestId;
+            const attemptNo = positiveAttemptNo(body.context?.attemptNo);
+            const billingRequestId = attemptNo ? systemAiIdempotencyKey("video-attempt", user.id, concurrencyRequestId, String(attemptNo)) : concurrencyRequestId;
             let lastError: unknown;
             let capabilityError: unknown;
             let attempts: GenerationAttempt[] = [];
@@ -107,6 +128,7 @@ export async function POST(request: Request) {
                               maxDurationSeconds: channel.capabilityProfile?.maxDurationSeconds,
                           }),
                 };
+                let providerReferences = references;
                 try {
                     assertCapabilityConstraints(channel.capabilityProfile, {
                         capability: "video",
@@ -135,6 +157,13 @@ export async function POST(request: Request) {
                         if (channel.advancedConfig?.protocol === "yumeng") assertYumengVideoReferences(channel.model, references);
                         assertReferenceUrls(channel.advancedConfig, references, Boolean(globalPreset));
                     }
+                    if (
+                        isRemakeVideoRequest &&
+                        (channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video") &&
+                        references.some((reference) => reference.type === "audio")
+                    ) {
+                        providerReferences = await normalizeRemakeVideoAudioReferences({ references, userId: user.id, internalOrigin: origin, publicOrigin, projectId: remakeProjectId });
+                    }
                 } catch (error) {
                     capabilityError = error;
                     continue;
@@ -156,10 +185,10 @@ export async function POST(request: Request) {
                         config: channel,
                         upstream: pendingUpstream,
                         requestedDurationSeconds: parameters.videoSeconds === -1 ? undefined : parameters.videoSeconds,
-                        prompt,
                         source: mediaTaskSource(body.source, body.context, "video-task"),
                         attempts,
                         ...(body.context || {}),
+                        prompt,
                     });
                     await linkStoredGenerationTask("video", localTask.id, body.context || {});
                 } else {
@@ -181,7 +210,7 @@ export async function POST(request: Request) {
                     lastUpstreamStatus: "submitting",
                 });
                 try {
-                    const upstream = await createUpstream(user.id, origin, cookie, channel, providerPrompt, parameters, references, settings.generationPointMultipliers, billingRequestId);
+                    const upstream = await createUpstream(user.id, origin, cookie, channel, providerPrompt, parameters, providerReferences, settings.generationPointMultipliers, billingRequestId);
                     await updateVideoTask(localTask.id, { config: channel, upstream, requestedDurationSeconds: parameters.videoSeconds === -1 ? undefined : parameters.videoSeconds, attempts });
                     const task = { ...localTask, config: channel, upstream, requestedDurationSeconds: parameters.videoSeconds === -1 ? undefined : parameters.videoSeconds, attempts };
                     const submittedAt = Date.now();

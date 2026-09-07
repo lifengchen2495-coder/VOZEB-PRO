@@ -18,24 +18,9 @@ export type RemakeProductionFrame = {
     description: string;
 };
 
-export type RemakeProductionGroupPlan = {
-    ordinal: number;
-    style: string;
-    scene: string;
-    emotionalRhythm: [string, string, string, string];
-    person?: string;
-    products: string[];
-    overallVisual: string;
-    intervals: Array<{
-        blockOrdinal: number;
-        emotion: string;
-        actions: [string, string, string];
-    }>;
-};
+export type RemakeProductionGroupId = keyof typeof REMAKE_FEISHU_VIDEO_PROMPTS;
 
-export type RemakeProductionPlan = {
-    groups: RemakeProductionGroupPlan[];
-};
+export const REMAKE_PRODUCTION_GROUP_IDS: readonly RemakeProductionGroupId[] = ["1-12", "13-24", "25-36", "37-48"];
 
 export type RemakeProductionAssetMetadata = {
     available: boolean;
@@ -96,166 +81,64 @@ export type RemakeProductionCopyReportInput = {
     stats: { paragraphCount: number; unchangedBlocks: number; completedBlocks: number; correctedBlocks: number; emptyBlocks: number };
 };
 
-export const remakeProductionTool = {
-    name: "build_remake_production_plan",
-    description: "为四张十二宫格生成严格对应的 Seedance 视频结构，不改变镜头顺序、商品事实或口播文本",
-    parameters: {
-        type: "object",
-        properties: {
-            groups: {
-                type: "array",
-                minItems: REMAKE_PRODUCTION_GROUP_COUNT,
-                maxItems: REMAKE_PRODUCTION_GROUP_COUNT,
-                items: {
-                    type: "object",
-                    properties: {
-                        ordinal: { type: "integer", minimum: 1, maximum: REMAKE_PRODUCTION_GROUP_COUNT },
-                        style: { type: "string", minLength: 1, maxLength: 120 },
-                        scene: { type: "string", minLength: 1, maxLength: 160 },
-                        emotionalRhythm: {
-                            type: "array",
-                            minItems: REMAKE_PRODUCTION_BLOCKS_PER_GROUP,
-                            maxItems: REMAKE_PRODUCTION_BLOCKS_PER_GROUP,
-                            items: { type: "string", minLength: 1, maxLength: 80 },
-                        },
-                        person: {
-                            type: "string",
-                            minLength: 1,
-                            maxLength: 300,
-                            description: "仅当该组镜头解析中确实出现人物时填写；纯产品或纯手部操作组必须省略",
-                        },
-                        products: {
-                            type: "array",
-                            minItems: 1,
-                            maxItems: 12,
-                            items: { type: "string", minLength: 1, maxLength: 300 },
-                            description: "逐项列出该组真实画面中的产品、食材或器具；多件素材不得合并为一个字符串",
-                        },
-                        overallVisual: {
-                            type: "string",
-                            minLength: 1,
-                            maxLength: 300,
-                            description: "仅填写人物皮肤、动作连续性、光线等补充画面要求，不要重复产品植入自然、画面有质感、无多余杂物或画面清晰无模糊",
-                        },
-                        intervals: {
-                            type: "array",
-                            minItems: REMAKE_PRODUCTION_BLOCKS_PER_GROUP,
-                            maxItems: REMAKE_PRODUCTION_BLOCKS_PER_GROUP,
-                            items: {
-                                type: "object",
-                                properties: {
-                                    blockOrdinal: { type: "integer", minimum: 1, maximum: 16 },
-                                    emotion: { type: "string", minLength: 1, maxLength: 80 },
-                                    actions: {
-                                        type: "array",
-                                        minItems: 3,
-                                        maxItems: 3,
-                                        items: { type: "string", minLength: 1, maxLength: 300 },
-                                    },
-                                },
-                                required: ["blockOrdinal", "emotion", "actions"],
-                                additionalProperties: false,
-                            },
-                        },
-                    },
-                    required: ["ordinal", "style", "scene", "emotionalRhythm", "products", "overallVisual", "intervals"],
-                    additionalProperties: false,
-                },
-            },
-        },
-        required: ["groups"],
-        additionalProperties: false,
-    },
-};
-
-export function remakeProductionMessages(input: RemakeProductionPromptInput) {
-    const voice = input.hasNarration ? (input.voice === "male" ? "男性配音" : "女性配音") : "不需要人物口播";
-    const narrationRule = input.hasNarration
-        ? "必须保持 16 个三帧区间中的原语言口播，禁止翻译、改写或遗漏；声音只引用用户选择的配音和原视频音频。"
-        : "当前视频不需要人物口播。16 个三帧区间的 sourceText 与 text 均为空，只生成画面动作和分镜描述，禁止添加口播、配音、音频引用或字幕。";
+export function remakeProductionMessages(input: RemakeProductionPromptInput, groupId: RemakeProductionGroupId) {
+    const groupOrdinal = REMAKE_PRODUCTION_GROUP_IDS.indexOf(groupId) + 1;
+    const firstBlock = (groupOrdinal - 1) * REMAKE_PRODUCTION_BLOCKS_PER_GROUP + 1;
+    const blocks = input.copyBlocks.filter((block) => block.ordinal >= firstBlock && block.ordinal < firstBlock + REMAKE_PRODUCTION_BLOCKS_PER_GROUP);
+    if (blocks.length !== REMAKE_PRODUCTION_BLOCKS_PER_GROUP) throw new Error(`分镜 ${groupId} 缺少文案预处理区间`);
     return [
-        ...(["1-12", "13-24", "25-36", "37-48"] as const).map((groupId) => ({
-            role: "system",
-            content: REMAKE_FEISHU_VIDEO_PROMPTS[groupId],
-        })),
         {
             role: "system",
-            content: `你是电商视频复刻导演。用户消息后会按 visualBoards 的 ordinal 顺序附带真实图片像素；必须逐张查看，并严格按照每张视觉板的 description、layout、位置标签、groupOrdinal 与 frameOrdinals 建立素材对应关系。第一张视觉板用于识别可选目标人物、可选人物补充角度和新产品，第二张视觉板按左上、右上、左下、右下对应第 1 至第 4 组最终换品十二宫格。必须结合这些真实像素、48 镜头文字解析和 16 个三帧区间生成四个 15 秒 Seedance 生产单元。${narrationRule}保持新产品身份、人物身份、场景、动作意图、构图和镜头顺序，禁止添加素材不存在的功效、价格、品牌、认证、促销及视觉事实。products 必须逐项列出组内每件可见产品、食材或器具，多件素材不得合并为一项。纯产品或纯手部操作组省略 person，不得凭空添加人物。每组必须恰好四个连续三帧区间，每个区间恰好三个可执行动作。必须调用 build_remake_production_plan。`,
+            content: REMAKE_FEISHU_VIDEO_PROMPTS[groupId],
         },
         {
             role: "user",
             content: JSON.stringify({
-                title: input.title,
-                hasNarration: input.hasNarration,
-                voice,
-                runtimeVisualCapability: "multimodal-image-pixels; two ordered visual boards are attached after this text",
-                visualBoards: input.visualBoards,
-                referenceAssets: {
-                    ...input.referenceAssets,
-                    audio: input.hasNarration ? input.referenceAssets.audio : { available: false },
+                "人物六宫格图（可选）": input.referenceAssets.character,
+                [`分镜${groupId}生图（十二宫格图）`]: {
+                    ...input.contactSheets.find((sheet) => sheet.groupOrdinal === groupOrdinal)?.redrawnContactSheet,
+                    visualBoardOrdinal: 2,
+                    ...input.visualBoards[1]?.layout.find((item) => item.groupOrdinal === groupOrdinal),
                 },
-                contactSheets: input.contactSheets,
-                frames: input.frames,
-                copyBlocks: input.copyBlocks.map((block) => ({ ...block, ...(input.hasNarration ? { speechLanguage: speechLanguage(block.text) } : {}) })),
+                "48镜头解析": input.frames,
+                "文案预处理": {
+                    [`第${chineseOrdinal(groupOrdinal)}部分：分镜${groupId}`]: blocks.map((block) => ({
+                        "分镜区间": `分镜${block.frameOrdinals[0]}-${block.frameOrdinals[2]}`,
+                        "字幕": block.text,
+                    })),
+                },
+                "产品图": input.referenceAssets.product,
+                "参考音频（可选）": input.hasNarration ? input.referenceAssets.audio : { available: false },
+                "配音选择": input.hasNarration ? (input.voice === "male" ? "男性配音" : "女性配音") : "无配音",
+                "图片附件位置": input.visualBoards,
             }),
         },
     ];
 }
 
-export function parseRemakeProductionPlan(value: string): RemakeProductionPlan | null {
-    let payload: unknown;
-    try {
-        payload = JSON.parse(value);
-    } catch {
-        return null;
+export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProductionPromptInput, "copyBlocks" | "hasNarration" | "voice">, groupId: RemakeProductionGroupId) {
+    if (!value.trim() || value.length > 100_000) throw new Error(`分镜 ${groupId} 的视频提示词为空或超过长度上限`);
+    const firstFrame = Number(groupId.split("-")[0]);
+    const intervals = Array.from(value.matchAll(/分镜\s*(\d+)\s*[-－–—~～至]\s*(\d+)\s*[，,:：]/gu));
+    if (intervals.length !== 4 || intervals.some((match, index) => Number(match[1]) !== firstFrame + index * 3 || Number(match[2]) !== firstFrame + index * 3 + 2)) {
+        throw new Error(`分镜 ${groupId} 的视频提示词未包含对应的四个连续三帧区间`);
     }
-    const groups = records(record(payload).groups)
-        .map(normalizeGroup)
-        .filter((group): group is RemakeProductionGroupPlan => Boolean(group))
-        .sort((left, right) => left.ordinal - right.ordinal);
-    if (groups.length !== REMAKE_PRODUCTION_GROUP_COUNT || groups.some((group, index) => group.ordinal !== index + 1)) return null;
-    return { groups };
-}
-
-export function renderRemakeSeedancePrompts(input: { plan: RemakeProductionPlan; copyBlocks: RemakeProductionCopyBlock[]; hasNarration: boolean }) {
-    const blocks = new Map(input.copyBlocks.map((block) => [block.ordinal, block]));
-    if (blocks.size !== REMAKE_PRODUCTION_GROUP_COUNT * REMAKE_PRODUCTION_BLOCKS_PER_GROUP) throw new Error("文案预处理必须包含 16 个三帧区间");
-    if (input.hasNarration && input.copyBlocks.some((block) => !block.text.trim())) throw new Error("有口播视频的 16 个三帧区间不能为空");
-    if (!input.hasNarration && input.copyBlocks.some((block) => block.sourceText.trim() || block.text.trim())) throw new Error("无口播视频的 16 个三帧区间必须为空");
-    return input.plan.groups.map((group) => {
-        const firstFrame = (group.ordinal - 1) * 12 + 1;
-        const lastFrame = group.ordinal * 12;
-        const person = cleanSentence(group.person || "");
-        const intervalText = group.intervals
-            .map((interval) => {
-                const block = blocks.get(interval.blockOrdinal);
-                if (!block) throw new Error(`缺少区间 ${interval.blockOrdinal} 的口播文案`);
-                const actionText = interval.actions.map(cleanSentence).join("；");
-                const personSafety = person ? "；生成人物 禁止出现模糊处理、遮挡" : "";
-                const narration = input.hasNarration ? `；口播（${speechLanguage(block.text)}，人物，${cleanSentence(interval.emotion)}）：★\"${block.text}\"` : "";
-                return `分镜${block.frameOrdinals[0]}-${block.frameOrdinals[2]}，${actionText}${narration}${personSafety}；`;
-            })
-            .join("\n\n");
-        const opening = `15秒抖音短视频，${cleanSentence(group.style)}，全程高清写实，电影级光影，9:16竖屏，镜头流畅连贯；场景：${cleanSentence(group.scene)}；${person ? "生成人物 禁止出现模糊处理、遮挡；" : ""}`;
-        const sections = [
-            opening,
-            `情绪节奏：${group.emotionalRhythm.map(cleanSentence).join(" → ")}`,
-            person ? `人物：${withAssetTag(person, "@人物图")}` : "",
-            `产品：${group.products.map((product) => withProductAssetTag(cleanSentence(product))).join("；")}；`,
-            input.hasNarration ? "声音风格：说话自然，有停顿，有情绪起伏，人物动作和文案节奏连贯；音色参考@音频文件" : "",
-            "无文字 禁止画面出现字幕 禁止画面出现字幕 禁止画面出现字幕",
-            "剧情流程：",
-            "正在执行分镜图 @十二宫格图 的动作，依次呈现12个连续的分镜头画面分别是：",
-            intervalText,
-            `整体画面：${renderOverallVisual(group.overallVisual)}`,
-            "无文字 禁止画面出现字幕 禁止画面出现字幕 禁止画面出现字幕",
-        ].filter(Boolean);
-        return {
-            ordinal: group.ordinal,
-            range: `${firstFrame}-${lastFrame}`,
-            text: fenced(sections.join("\n\n")),
-        };
-    });
+    if (!/15\s*秒/u.test(value) || !value.includes("@十二宫格图") || !value.includes("禁止画面出现字幕")) {
+        throw new Error(`分镜 ${groupId} 的视频提示词缺少原模板中的时长、十二宫格或禁字幕要求`);
+    }
+    const blocks = input.copyBlocks.filter((block) => block.frameOrdinals[0] >= firstFrame && block.frameOrdinals[2] <= firstFrame + 11);
+    if (blocks.length !== 4) throw new Error(`分镜 ${groupId} 缺少文案预处理区间`);
+    if (input.hasNarration) {
+        const speaker = input.voice === "male" ? "旁白" : "人物";
+        intervals.forEach((match, index) => {
+            const interval = value.slice(match.index, intervals[index + 1]?.index);
+            if (!blocks[index].text.trim() || !interval.includes(blocks[index].text) || !new RegExp(`口播[（(][^）)\\n]*[，,]\\s*${speaker}\\s*[，,]`, "u").test(interval)) {
+                throw new Error(`分镜 ${groupId} 的第 ${index + 1} 个区间未保留原文案或所选配音格式`);
+            }
+        });
+    } else if (/@音频文件|口播\s*[（(]/u.test(value)) {
+        throw new Error(`分镜 ${groupId} 选择无配音，但模型返回了口播或音频引用`);
+    }
 }
 
 export function renderRemakeCopyReport(input: RemakeProductionCopyReportInput) {
@@ -354,65 +237,11 @@ export function assertRemakeCopyCoverage(sourceCopy: string, blocks: RemakeProdu
     if (sourceCopy !== assigned) throw new Error("16 个文案区间没有按原顺序完整覆盖原文案（必须逐字符一致）");
 }
 
-function normalizeGroup(value: Record<string, unknown>): RemakeProductionGroupPlan | null {
-    const ordinal = integer(value.ordinal, 1, REMAKE_PRODUCTION_GROUP_COUNT);
-    if (!ordinal) return null;
-    const expectedStart = (ordinal - 1) * REMAKE_PRODUCTION_BLOCKS_PER_GROUP + 1;
-    const emotions = strings(value.emotionalRhythm, REMAKE_PRODUCTION_BLOCKS_PER_GROUP, 80);
-    const intervals = records(value.intervals)
-        .map((item) => {
-            const blockOrdinal = integer(item.blockOrdinal, expectedStart, expectedStart + REMAKE_PRODUCTION_BLOCKS_PER_GROUP - 1);
-            const emotion = text(item.emotion, 80);
-            const actions = strings(item.actions, 3, 300);
-            return blockOrdinal && emotion && actions.length === 3 ? { blockOrdinal, emotion, actions: actions as [string, string, string] } : null;
-        })
-        .filter((item): item is NonNullable<typeof item> => Boolean(item))
-        .sort((left, right) => left.blockOrdinal - right.blockOrdinal);
-    const style = text(value.style, 120);
-    const scene = text(value.scene, 160);
-    const person = text(value.person, 300);
-    const products = stringsBetween(value.products, 1, 12, 300);
-    const overallVisual = text(value.overallVisual, 300);
-    if (!style || !scene || !products.length || !overallVisual || emotions.length !== 4 || intervals.length !== 4 || intervals.some((item, index) => item.blockOrdinal !== expectedStart + index)) return null;
-    return { ordinal, style, scene, emotionalRhythm: emotions as [string, string, string, string], ...(person ? { person } : {}), products, overallVisual, intervals };
-}
-
-function cleanSentence(value: string) {
-    return value.trim().replace(/[；;。]+$/u, "");
-}
-
 function markdownCell(value: string) {
     return value
         .trim()
         .replace(/[\r\n]+/g, " ")
         .replace(/\|/g, "\\|");
-}
-
-function speechLanguage(value: string) {
-    const hanCount = Array.from(value.matchAll(/\p{Script=Han}/gu)).length;
-    const latinCount = Array.from(value.matchAll(/\p{Script=Latin}/gu)).length;
-    if (latinCount > hanCount) return "英文";
-    if (hanCount > 0) return "中文";
-    return latinCount > 0 ? "英文" : "原文";
-}
-
-function withAssetTag(value: string, tag: "@人物图") {
-    return value.includes(tag) ? value : `${value}${tag}`;
-}
-
-function withProductAssetTag(value: string) {
-    if (value.includes("@产品图")) return value;
-    const descriptionStart = value.search(/[，,]/u);
-    return descriptionStart > 0 ? `${value.slice(0, descriptionStart)}@产品图${value.slice(descriptionStart)}` : `${value}@产品图`;
-}
-
-function renderOverallVisual(value: string) {
-    const fixedSegments = ["产品植入自然", "画面有质感", "无多余杂物", "画面清晰无模糊"];
-    const supplementalSegments = cleanSentence(value)
-        .split(/[，,；;。]+/u)
-        .map((segment) => segment.trim())
-        .filter((segment) => segment && !fixedSegments.includes(segment));
-    return [fixedSegments[0], fixedSegments[1], ...supplementalSegments, fixedSegments[2], fixedSegments[3]].join("，");
 }
 
 function fenced(value: string) {
@@ -473,33 +302,4 @@ function isDetailedCopyReport(report: string, input: RemakeProductionCopyReportI
 
 function chineseOrdinal(value: number) {
     return ["一", "二", "三", "四"][value - 1] || String(value);
-}
-
-function record(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function records(value: unknown) {
-    return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
-}
-
-function text(value: unknown, maximum: number) {
-    return typeof value === "string" ? value.trim().slice(0, maximum) : "";
-}
-
-function strings(value: unknown, maximumItems: number, maximumLength: number) {
-    if (!Array.isArray(value) || value.length !== maximumItems) return [];
-    const values = value.map((item) => text(item, maximumLength));
-    return values.every(Boolean) ? values : [];
-}
-
-function stringsBetween(value: unknown, minimumItems: number, maximumItems: number, maximumLength: number) {
-    if (!Array.isArray(value) || value.length < minimumItems || value.length > maximumItems) return [];
-    const values = value.map((item) => text(item, maximumLength));
-    return values.every(Boolean) ? values : [];
-}
-
-function integer(value: unknown, minimum: number, maximum: number) {
-    const number = Number(value);
-    return Number.isInteger(number) && number >= minimum && number <= maximum ? number : 0;
 }

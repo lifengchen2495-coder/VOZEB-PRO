@@ -135,6 +135,8 @@ export type RemakeRangeGroup = {
     videoGeneration: {
         status: RemakeImageGenerationStatus;
         taskId?: string | null;
+        attemptNo?: number;
+        needsReview?: boolean;
         model?: string | null;
         result?: RemakeMediaAsset | null;
         error?: string | null;
@@ -443,6 +445,8 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
             videoGeneration: {
                 status: normalizeImageGenerationStatus(firstDefined(videoGeneration.status, group.videoStatus, group.video_status)),
                 taskId: stringValue(firstDefined(videoGeneration.taskId, videoGeneration.task_id, group.videoTaskId, group.video_task_id)) || undefined,
+                attemptNo: Number.isSafeInteger(videoGeneration.attemptNo) && Number(videoGeneration.attemptNo) >= 0 ? Number(videoGeneration.attemptNo) : undefined,
+                needsReview: videoGeneration.needsReview === true,
                 model: stringValue(firstDefined(videoGeneration.model, group.videoModel, group.video_model)) || undefined,
                 result: normalizeMediaAsset(firstDefined(videoGeneration.result, videoGeneration.output, group.generatedVideo, group.generated_video)),
                 error: stringValue(firstDefined(videoGeneration.error, group.videoError, group.video_error)) || undefined,

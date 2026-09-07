@@ -47,6 +47,7 @@ export function RemakeWorkspace() {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [analyzing, setAnalyzing] = useState(false);
     const [buildingProduction, setBuildingProduction] = useState(false);
+    const [buildingGroupId, setBuildingGroupId] = useState<string>();
     const [handoffPending, setHandoffPending] = useState(false);
     const [resolvingConflict, setResolvingConflict] = useState(false);
 
@@ -58,6 +59,7 @@ export function RemakeWorkspace() {
     const conflictRef = useRef<ConflictState | null>(null);
     const uploadControllerRef = useRef<AbortController | null>(null);
     const editingLockedRef = useRef(false);
+    const productionBuildRef = useRef(false);
     const editingLocked = isRemakeAnalysisActive(analyzing, task?.status) || buildingProduction || handoffPending;
     editingLockedRef.current = editingLocked;
 
@@ -373,19 +375,30 @@ export function RemakeWorkspace() {
         }
     };
 
-    const buildProductionContent = async () => {
+    const buildProductionContent = async (groupId?: string) => {
+        if (productionBuildRef.current || editingLockedRef.current) return;
+        if (projectRef.current?.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
+            message.warning("请等待视频任务完成后再生成 Prompt");
+            return;
+        }
+        productionBuildRef.current = true;
+        editingLockedRef.current = true;
         setBuildingProduction(true);
+        setBuildingGroupId(groupId);
         let productionBase: RemakeProject | null = null;
         try {
-            if (!(await flushSave())) return message.warning("请先处理保存冲突，再生成生产内容");
+            if (!(await flushSave())) {
+                message.warning("请先处理保存冲突，再生成生产内容");
+                return;
+            }
             const current = projectRef.current;
             if (!current) return;
             productionBase = current;
-            const next = await buildRemakeProduction(projectId, current.revision);
+            const next = await buildRemakeProduction(projectId, current.revision, groupId);
             pendingPatchRef.current = {};
             applyServerProject(next);
             setSaveState("saved");
-            message.success("文案报告和 4 条 Seedance 提示词已生成");
+            message.success(groupId ? `分镜 ${groupId} 的 Prompt 已生成` : "4 条 Seedance 提示词已生成");
         } catch (reason) {
             if (reason instanceof RemakeConflictError && productionBase) {
                 try {
@@ -407,11 +420,15 @@ export function RemakeWorkspace() {
             }
             message.error(reason instanceof Error ? reason.message : "生产内容生成失败");
         } finally {
+            productionBuildRef.current = false;
+            editingLockedRef.current = isRemakeAnalysisActive(analyzing, task?.status) || handoffPending;
             setBuildingProduction(false);
+            setBuildingGroupId(undefined);
         }
     };
 
     const handoff = async () => {
+        if (editingLockedRef.current) return;
         setHandoffPending(true);
         try {
             if (!(await flushSave())) return message.warning("请先处理保存冲突，再交接短剧");
@@ -561,7 +578,7 @@ export function RemakeWorkspace() {
                     <Dropdown
                         trigger={["click"]}
                         menu={{
-                            items: [{ key: "handoff", icon: <Send className="size-4" />, label: handoffPending ? "正在交接短剧" : "兼容交接到短剧", disabled: !productionReady || handoffPending }],
+                            items: [{ key: "handoff", icon: <Send className="size-4" />, label: handoffPending ? "正在交接短剧" : "兼容交接到短剧", disabled: !productionReady || editingLocked }],
                             onClick: ({ key }) => {
                                 if (key === "handoff") void handoff();
                             },
@@ -627,12 +644,13 @@ export function RemakeWorkspace() {
                     <RemakeProductionStage
                         project={project}
                         building={buildingProduction}
+                        buildingGroupId={buildingGroupId}
                         onVoiceChange={updateVoice}
                         onPromptModelChange={(model) => updateModelSelection("prompt", model)}
                         onVideoModelChange={(model) => updateModelSelection("video", model)}
                         onGroupChange={updateGroup}
                         onFlush={flushSave}
-                        onBuild={() => void buildProductionContent()}
+                        onBuild={buildProductionContent}
                     />
                 ) : null}
             </div>

@@ -8,7 +8,8 @@ import { ModelPicker } from "@/components/model-picker";
 import { browserReadableMediaUrl } from "@/lib/browser-media-url";
 import { mediaDownloadFileName } from "@/lib/media-file";
 import { imagePreviewUrl, originalMediaDownloadUrl } from "@/lib/media-image-url";
-import { createServerVideoGenerationTask, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
+import { createServerVideoGenerationTask, recoverVideoGenerationTask, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
+import { isGenerationTaskNeedsReviewError } from "@/services/api/generation-task-state";
 import type { VideoGenerationTask } from "@/services/api/video-types";
 import type { UploadedFile } from "@/services/file-storage";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -22,6 +23,7 @@ import { isRemakeCopyPlanReady } from "./remake-workspace-state";
 export function RemakeProductionStage({
     project,
     building,
+    buildingGroupId,
     onVoiceChange,
     onPromptModelChange,
     onVideoModelChange,
@@ -31,12 +33,13 @@ export function RemakeProductionStage({
 }: {
     project: RemakeProject;
     building: boolean;
+    buildingGroupId?: string;
     onVoiceChange: (voice: RemakeVoice) => void;
     onPromptModelChange: (model: string) => void;
     onVideoModelChange: (model: string) => void;
     onGroupChange: (groupId: string, patch: RemakeGroupPatch) => void;
     onFlush: () => Promise<boolean>;
-    onBuild: () => void;
+    onBuild: (groupId?: string) => void | Promise<void>;
 }) {
     const { message } = App.useApp();
     const config = useEffectiveConfig();
@@ -60,6 +63,7 @@ export function RemakeProductionStage({
     const latestProjectRef = useRef(project);
     latestProjectRef.current = project;
     const activeTasksRef = useRef(new Map<string, AbortController>());
+    const promptBuildPendingRef = useRef(false);
     const startingGroupsRef = useRef(new Set<string>());
     const deferredGroupsRef = useRef(new Set<string>());
     const resumeTimersRef = useRef(new Set<number>());
@@ -118,46 +122,72 @@ export function RemakeProductionStage({
         resumeTimersRef.current.add(timer);
     }, []);
 
+    const saveVideoState = useCallback(async (detail: string) => {
+        try {
+            if (await onFlush()) return true;
+        } catch {
+            // 保存失败不能覆盖已取得的视频结果，也不能被当作上游任务失败。
+        }
+        message.error(detail);
+        return false;
+    }, [message, onFlush]);
+
     const waitForGroupVideo = useCallback(
-        async (groupId: string, prompt: string, task: VideoGenerationTask, announce = false) => {
+        async (groupId: string, prompt: string, task: VideoGenerationTask, announce = false, checkStatus = false) => {
             const current = latestProjectRef.current.groups.find((group) => group.id === groupId);
             if (!current || current.videoGeneration.taskId !== task.id || current.videoPrompt !== prompt) return;
+            if (current.videoGeneration.needsReview && !checkStatus) return;
             if (activeTasksRef.current.has(task.id)) return;
             const controller = new AbortController();
             activeTasksRef.current.set(task.id, controller);
             try {
+                if (checkStatus) {
+                    await recoverVideoGenerationTask(task, { signal: controller.signal });
+                    emitGroupChange(groupId, { videoGeneration: { status: "running", needsReview: false, error: null } });
+                    await saveVideoState(`分镜 ${groupId} 的任务状态尚未保存，请重试保存`);
+                }
                 const generationConfig = { ...videoConfig, model: task.model, videoModel: task.model };
                 const stored = await storeGeneratedVideo(await waitForVideoGenerationTask(generationConfig, task, { signal: controller.signal, source: "video-workbench", projectId: latestProjectRef.current.id }));
                 const latest = latestProjectRef.current.groups.find((group) => group.id === groupId);
                 if (controller.signal.aborted || latest?.videoGeneration.taskId !== task.id || latest.videoPrompt !== prompt) return;
-                emitGroupChange(groupId, { videoGeneration: { status: "completed", taskId: task.id, model: task.model, result: videoAsset(stored, groupId), error: null } });
-                await onFlush();
-                if (announce) message.success(`分镜 ${groupId} 的 15 秒视频已生成`);
+                emitGroupChange(groupId, { videoGeneration: { status: "completed", taskId: task.id, model: task.model, needsReview: false, result: videoAsset(stored, groupId), error: null } });
+                const saved = await saveVideoState(`分镜 ${groupId} 的视频已生成，但项目尚未保存，请重试保存`);
+                if (announce && saved) message.success(`分镜 ${groupId} 的 15 秒视频已生成`);
             } catch (reason) {
                 if (controller.signal.aborted) return;
                 const latest = latestProjectRef.current.groups.find((group) => group.id === groupId);
                 if (latest?.videoGeneration.taskId !== task.id || latest.videoPrompt !== prompt) return;
                 const detail = reason instanceof Error ? reason.message : "视频生成失败";
+                if (isGenerationTaskNeedsReviewError(reason)) {
+                    emitGroupChange(groupId, { videoGeneration: { status: "running", taskId: task.id, model: task.model, needsReview: true, error: detail } });
+                    await saveVideoState(`分镜 ${groupId} 的待确认状态尚未保存，请重试保存`);
+                    message.warning(`分镜 ${groupId}：${detail}`);
+                    return;
+                }
                 if (isDeferredVideoError(reason)) {
                     message.info(`分镜 ${groupId}：${detail}`);
                     scheduleResume(groupId);
                     return;
                 }
-                emitGroupChange(groupId, { videoGeneration: { status: "error", taskId: task.id, model: task.model, result: null, error: detail } });
-                await onFlush();
+                emitGroupChange(groupId, { videoGeneration: { status: "error", taskId: task.id, model: task.model, needsReview: false, result: null, error: detail } });
+                await saveVideoState(`分镜 ${groupId} 的失败状态尚未保存，请重试保存`);
                 message.error(`分镜 ${groupId}：${detail}`);
             } finally {
                 if (activeTasksRef.current.get(task.id) === controller) activeTasksRef.current.delete(task.id);
             }
         },
-        [emitGroupChange, message, onFlush, scheduleResume, videoConfig],
+        [emitGroupChange, message, saveVideoState, scheduleResume, videoConfig],
     );
 
     const startGroupVideo = useCallback(
         async (groupId: string, announce = true) => {
+            if (building || promptBuildPendingRef.current) return;
             const current = latestProjectRef.current;
             const group = current.groups.find((item) => item.id === groupId);
             if (!group || startingGroupsRef.current.has(groupId) || deferredGroupsRef.current.has(groupId)) return;
+            if (group.videoGeneration.needsReview && group.videoGeneration.taskId && group.videoGeneration.model) {
+                return waitForGroupVideo(groupId, group.videoPrompt, { id: group.videoGeneration.taskId, serverTaskId: group.videoGeneration.taskId, provider: "generation", pollPath: "server", model: group.videoGeneration.model, durationSeconds: 15 }, announce, true);
+            }
             const awaitingCreation = isVideoActive(group) && !group.videoGeneration.taskId;
             if (isVideoActive(group) && !awaitingCreation) return;
             if (!group.videoPrompt.trim()) return message.warning(`分镜 ${group.id} 的视频 Prompt 尚未生成`);
@@ -171,19 +201,28 @@ export function RemakeProductionStage({
             if (!current.modelSelection.video) emitModelChange("video", model);
             const prompt = group.videoPrompt;
             const clientRequestId = remakeVideoClientRequestId(current, group, model);
+            const previousAttempt = group.videoGeneration.attemptNo;
+            // 旧请求未传次数时由服务端按 0 去重，恢复时必须保留该身份。
+            const attemptNo = awaitingCreation ? previousAttempt : group.videoGeneration.status === "error" || group.videoGeneration.status === "completed" ? (previousAttempt ?? 1) + 1 : previousAttempt ?? 1;
             startingGroupsRef.current.add(groupId);
-            emitGroupChange(groupId, { videoGeneration: { status: "queued", taskId: null, model, result: null, error: null } });
+            emitGroupChange(groupId, { videoGeneration: { status: "queued", taskId: null, attemptNo, model, needsReview: false, result: null, error: null } });
             try {
+                const saveError = `分镜 ${group.id} 的项目保存失败，尚未提交视频任务，请保存后重试`;
+                if (!await saveVideoState(saveError)) {
+                    emitGroupChange(groupId, { videoGeneration: { status: "error", error: saveError } });
+                    return;
+                }
                 const task = await createServerVideoGenerationTask(generationConfig, prompt, remakeVideoReferenceImages(group, current.references), [], remakeVideoAudioReferences(current), {
                     source: "video-workbench",
                     projectId: current.id,
                     clientRequestId,
+                    attemptNo,
                     generationSlotId: `remake-video:${group.id}`,
                 });
                 const latest = latestProjectRef.current.groups.find((item) => item.id === groupId);
                 if (!latest || latest.videoPrompt !== prompt || (latest.videoGeneration.taskId && latest.videoGeneration.taskId !== task.id)) return;
                 emitGroupChange(groupId, { videoGeneration: { status: "running", taskId: task.id, model: task.model || model, result: null, error: null } });
-                await onFlush();
+                await saveVideoState(`分镜 ${group.id} 的视频任务已提交，但项目尚未保存，请重试保存`);
                 void waitForGroupVideo(groupId, prompt, task, announce);
             } catch (reason) {
                 const latest = latestProjectRef.current.groups.find((item) => item.id === groupId);
@@ -195,18 +234,19 @@ export function RemakeProductionStage({
                     return;
                 }
                 emitGroupChange(groupId, { videoGeneration: { status: "error", taskId: null, model, result: null, error: detail } });
-                await onFlush();
+                await saveVideoState(`分镜 ${group.id} 的失败状态尚未保存，请重试保存`);
                 message.error(`分镜 ${group.id}：${detail}`);
             } finally {
                 startingGroupsRef.current.delete(groupId);
             }
         },
-        [emitGroupChange, emitModelChange, isAiConfigReady, message, onFlush, openConfigDialog, scheduleResume, selectedVideoModel, videoConfig, waitForGroupVideo],
+        [building, emitGroupChange, emitModelChange, isAiConfigReady, message, saveVideoState, openConfigDialog, scheduleResume, selectedVideoModel, videoConfig, waitForGroupVideo],
     );
 
     useEffect(() => {
         for (const group of project.groups) {
             const generation = group.videoGeneration;
+            if (generation.needsReview) continue;
             if ((generation.status === "queued" || generation.status === "running") && generation.taskId && generation.model) {
                 void waitForGroupVideo(
                     group.id,
@@ -227,12 +267,13 @@ export function RemakeProductionStage({
             activeTasksRef.current.clear();
             deferredGroupsRef.current.clear();
             resumeTimersRef.current.clear();
-            startingGroupsRef.current.clear();
+            // StrictMode 会重放清理与恢复；创建锁由请求的 finally 释放。
         },
         [],
     );
 
     const startAllVideos = async () => {
+        if (building || promptBuildPendingRef.current || batchStarting) return;
         const candidates = latestProjectRef.current.groups.filter((group) => group.videoPrompt.trim() && group.videoGeneration.status !== "completed" && !isVideoActive(group));
         if (!candidates.length) return message.info(videosReady ? "4 条独立视频已经全部生成" : "当前没有可启动的视频任务");
         setBatchStarting(true);
@@ -240,6 +281,17 @@ export function RemakeProductionStage({
             await Promise.all(candidates.map((group) => startGroupVideo(group.id)));
         } finally {
             setBatchStarting(false);
+        }
+    };
+
+    const buildPrompts = async (groupId?: string) => {
+        if (building || promptBuildPendingRef.current || startingGroupsRef.current.size || latestProjectRef.current.groups.some(isVideoActive)) return;
+        if (!productionPrerequisites(latestProjectRef.current).ready) return;
+        promptBuildPendingRef.current = true;
+        try {
+            await onBuild(groupId);
+        } finally {
+            promptBuildPendingRef.current = false;
         }
     };
 
@@ -267,20 +319,20 @@ export function RemakeProductionStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 03</div>
                         <h2 className="mt-1 text-lg font-semibold">Prompt 与独立视频</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">先生成 4 条完整 Seedance Prompt，再分别生成 4 条 15 秒视频；系统不拼接。</p>
+                        <p className="mt-1 text-sm text-muted-foreground">4 组分镜 · 每组 12 个镜头 · 15 秒竖屏视频</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-end gap-2">
                         <ModelControl label="Prompt 文本模型">
                             <ModelPicker config={config} capability="text" value={selectedPromptModel} onChange={(model) => emitModelChange("prompt", model)} onMissingConfig={() => openConfigDialog(true)} className={building || videoActive ? "pointer-events-none opacity-60" : ""} placeholder="选择文本模型" />
                         </ModelControl>
                         <ModelControl label="视频模型">
-                            <ModelPicker config={config} capability="video" value={selectedVideoModel} onChange={(model) => emitModelChange("video", model)} onMissingConfig={() => openConfigDialog(true)} className={videoActive ? "pointer-events-none opacity-60" : ""} placeholder="选择视频模型" />
+                            <ModelPicker config={config} capability="video" value={selectedVideoModel} onChange={(model) => emitModelChange("video", model)} onMissingConfig={() => openConfigDialog(true)} className={building || videoActive ? "pointer-events-none opacity-60" : ""} placeholder="选择视频模型" />
                         </ModelControl>
                         <Button icon={<Download className="size-4" />} loading={exporting} disabled={!productionReady} onClick={() => void exportBundle()}>
                             下载生产包
                         </Button>
-                        <Button type="primary" icon={<Sparkles className="size-4" />} loading={building} disabled={!prerequisites.ready || videoActive} onClick={onBuild}>
-                            {promptsReady ? "重新生成 Prompt" : "生成 4 条 Prompt"}
+                        <Button type="primary" icon={<Sparkles className="size-4" />} loading={building && !buildingGroupId} disabled={building || !prerequisites.ready || videoActive} onClick={() => void buildPrompts()}>
+                            {promptsReady ? "重新生成全部 Prompt" : "生成 4 条 Prompt"}
                         </Button>
                     </div>
                 </div>
@@ -324,7 +376,7 @@ export function RemakeProductionStage({
                 <div className="grid min-w-0 gap-4 py-4 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
                     <section className="min-w-0 rounded-lg border border-border bg-card" aria-label="文案预处理报告">
                         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
-                            <div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><FileText className="size-4 text-muted-foreground" />文案预处理输出</div>
+                            <div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><FileText className="size-4 text-muted-foreground" />文案预处理</div>
                             <div className="flex shrink-0 items-center gap-1.5">
                                 <Tag color={reportReady ? "success" : "default"} className="!m-0">{reportReady ? "已生成" : "待生成"}</Tag>
                                 <Tooltip title="复制完整输出">
@@ -338,14 +390,24 @@ export function RemakeProductionStage({
                     <section className="min-w-0" aria-label="Seedance 视频提示词与视频">
                         <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
                             <div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><Video className="size-4 text-muted-foreground" />4 条 Seedance Prompt 与独立视频</div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 <Button size="small" icon={<Copy className="size-3.5" />} disabled={!promptsReady} onClick={() => void copyPrompt(project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.videoPrompt}`).join("\n\n"), "4 条完整视频 Prompt 已复制")}>复制全部 Prompt</Button>
-                                <Button type="primary" size="small" icon={<Play className="size-3.5" />} loading={batchStarting} disabled={!promptsReady || videosReady || videoActive} onClick={() => void startAllVideos()}>生成全部 4 条</Button>
+                                <Button type="primary" size="small" icon={<Play className="size-3.5" />} loading={batchStarting} disabled={building || !promptsReady || videosReady || videoActive} onClick={() => void startAllVideos()}>生成全部 4 条</Button>
                             </div>
                         </div>
                         <div className="grid gap-3">
                             {project.groups.map((group) => (
-                                <VideoGroupCard key={group.id} group={group} building={building} disabled={!group.videoPrompt || videoActive} onGenerate={() => void startGroupVideo(group.id)} onCopy={(text) => void copyPrompt(text, `分镜 ${group.id} 完整视频 Prompt 已复制`)} />
+                                <VideoGroupCard
+                                    key={group.id}
+                                    group={group}
+                                    building={building && (!buildingGroupId || buildingGroupId === group.id)}
+                                    locked={building}
+                                    promptDisabled={building || !prerequisites.ready || videoActive}
+                                    disabled={!group.videoPrompt || videoActive}
+                                    onBuild={() => void buildPrompts(group.id)}
+                                    onGenerate={() => void startGroupVideo(group.id)}
+                                    onCopy={(text) => void copyPrompt(text, `分镜 ${group.id} 完整视频 Prompt 已复制`)}
+                                />
                             ))}
                         </div>
                     </section>
@@ -364,24 +426,29 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, building, disabled, onGenerate, onCopy }: { group: RemakeRangeGroup; building: boolean; disabled: boolean; onGenerate: () => void; onCopy: (text: string) => void }) {
+function VideoGroupCard({ group, building, locked, promptDisabled, disabled, onBuild, onGenerate, onCopy }: { group: RemakeRangeGroup; building: boolean; locked: boolean; promptDisabled: boolean; disabled: boolean; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
     const generation = group.videoGeneration;
-    const active = isVideoActive(group);
+    const active = isVideoActive(group) && !generation.needsReview;
     const videoUrl = generation.result?.url ? browserReadableMediaUrl(generation.result.url) : "";
     return (
         <article className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
-            <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">第 {group.ordinal} 条 · 分镜 {group.id}</h3>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">15 秒 · 12 个连续镜头 · 9:16 · 独立文件</p>
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5">
+                <div className="flex max-w-full flex-wrap items-center gap-1.5">
                     <VideoGenerationTag generation={generation} />
                     <Tooltip title="复制完整视频 Prompt">
                         <Button type="text" size="small" className="!size-7 !min-w-0 !p-0" icon={<Copy className="size-3.5" />} disabled={!group.videoPrompt} aria-label={`复制分镜 ${group.id} 视频 Prompt`} onClick={() => onCopy(group.videoPrompt)} />
                     </Tooltip>
-                    <Button size="small" type={generation.status === "completed" ? "default" : "primary"} loading={active} disabled={disabled && !active} icon={generation.status === "completed" || generation.status === "error" ? <RefreshCw className="size-3.5" /> : <Play className="size-3.5" />} onClick={onGenerate}>
-                        {generation.status === "completed" ? "重新生成" : generation.status === "error" ? "重试" : "生成视频"}
+                    <Tooltip title={`${group.videoPrompt ? "重新生成" : "生成"}分镜 ${group.id} 的 Prompt`}>
+                        <Button size="small" loading={building} disabled={promptDisabled} icon={group.videoPrompt ? <RefreshCw className="size-3.5" /> : <Sparkles className="size-3.5" />} aria-label={`${group.videoPrompt ? "重新生成" : "生成"}分镜 ${group.id} Prompt`} onClick={onBuild}>
+                            {group.videoPrompt ? "重新生成 Prompt" : "生成 Prompt"}
+                        </Button>
+                    </Tooltip>
+                    <Button size="small" type={generation.status === "completed" ? "default" : "primary"} loading={active} disabled={locked || (!generation.needsReview && disabled && !active)} icon={generation.needsReview || generation.status === "completed" || generation.status === "error" ? <RefreshCw className="size-3.5" /> : <Play className="size-3.5" />} onClick={onGenerate}>
+                        {generation.needsReview ? "检查状态" : generation.status === "completed" ? "重新生成" : generation.status === "error" ? "重试" : "生成视频"}
                     </Button>
                 </div>
             </div>
@@ -407,8 +474,8 @@ function VideoGroupCard({ group, building, disabled, onGenerate, onCopy }: { gro
 
 function VideoGenerationTag({ generation }: { generation: RemakeRangeGroup["videoGeneration"] }) {
     const status = generation.status;
-    const color = status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
-    const label = status === "completed" ? "视频完成" : status === "error" ? "视频失败" : status === "queued" ? "视频排队" : status === "running" ? "视频生成中" : "视频未生成";
+    const color = generation.needsReview ? "warning" : status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
+    const label = generation.needsReview ? "待确认" : status === "completed" ? "视频完成" : status === "error" ? "视频失败" : status === "queued" ? "视频排队" : status === "running" ? "视频生成中" : "视频未生成";
     return <Tag color={color} className="!m-0">{label}</Tag>;
 }
 

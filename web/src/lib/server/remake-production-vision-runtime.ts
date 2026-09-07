@@ -6,11 +6,12 @@ import { fetchInternalApi } from "@/lib/server/internal-origin";
 import type { ResolvedLogicalModel } from "@/lib/server/logical-model-router";
 import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
 import { remakeContactSheetDimensionError } from "@/lib/server/remake-contact-sheet-validation";
-import { fetchSafeOutbound } from "@/lib/server/safe-outbound-fetch";
+import { fetchRemakeProductionImage } from "@/lib/server/remake-production-image-fetch";
 import { resolveTextProtocol } from "@/lib/server/text-protocol-resolver";
 
-export const REMAKE_PRODUCTION_SOURCE_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
-export const REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES = 32 * 1024 * 1024;
+// 源图需先读取后缩放拼板，大小上限独立于压缩后的模型输入限制。
+export const REMAKE_PRODUCTION_SOURCE_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
+export const REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES = 128 * 1024 * 1024;
 export const REMAKE_PRODUCTION_VISUAL_BOARD_MAX_BYTES = 3_500_000;
 export const REMAKE_PRODUCTION_VISUAL_BOARDS_TOTAL_MAX_BYTES = 7_000_000;
 
@@ -53,14 +54,8 @@ export type RemakeProductionVisualBoard = {
     layout: RemakeProductionVisualBoardLayoutItem[];
 };
 
-export type RemakeProductionVisionTool = {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-};
-
 export type RemakeProductionVisionCall = {
-    arguments: string;
+    text: string;
     headers: Headers;
     protocol: RemakeProductionVisionProtocol;
     elapsedMs: number;
@@ -142,16 +137,14 @@ export async function buildRemakeProductionVisualBoards(input: {
     return [referenceBoard, contactSheetBoard];
 }
 
-export async function requestRemakeProductionVisionPlan(input: {
+export async function requestRemakeProductionVisionPrompt(input: {
     origin: string;
     cookie: string;
     candidate: ResolvedLogicalModel;
     messages: Array<{ role: string; content: string }>;
     boards: RemakeProductionVisualBoard[];
-    tool: RemakeProductionVisionTool;
     headers?: HeadersInit;
     signal?: AbortSignal;
-    validateArguments?: (value: string) => boolean;
 }): Promise<RemakeProductionVisionCall> {
     const protocol = resolveRemakeProductionVisionProtocol(input.candidate);
     if (!protocol) throw new RemakeProductionVisionError("当前文本候选不支持受信任的多模态图片协议", 503);
@@ -173,7 +166,7 @@ export async function requestRemakeProductionVisionPlan(input: {
     const response = await fetchInternalApi(modelProxyUrl(input.origin, input.candidate.channelId, protocol.path), {
         method: "POST",
         headers,
-        body: JSON.stringify(buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.tool)),
+        body: JSON.stringify(buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards)),
         cache: "no-store",
         signal,
     });
@@ -183,14 +176,14 @@ export async function requestRemakeProductionVisionPlan(input: {
     }
     const payload = await readResponseJson(response).catch(() => null);
     if (!payload) throw new RemakeProductionVisionError("生产视觉规划模型返回了无效 JSON", 502, response.headers);
-    const argumentsText = readToolArguments(protocol.kind, payload, input.tool.name);
-    if (!argumentsText || (input.validateArguments && !input.validateArguments(argumentsText))) {
-        throw new RemakeProductionVisionError("生产视觉规划模型没有返回完整的四组结构", 502, response.headers);
+    const prompt = readPromptText(protocol.kind, payload);
+    if (!prompt.trim()) {
+        throw new RemakeProductionVisionError("模型没有返回视频提示词正文", 502, response.headers);
     }
-    return { arguments: argumentsText, headers: response.headers, protocol: protocol.kind, elapsedMs: Date.now() - startedAt };
+    return { text: prompt, headers: response.headers, protocol: protocol.kind, elapsedMs: Date.now() - startedAt };
 }
 
-function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: RemakeProductionVisualBoard[], tool: RemakeProductionVisionTool) {
+function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: RemakeProductionVisualBoard[]) {
     const systemText = messages
         .filter((message) => message.role === "system")
         .map((message) => message.content)
@@ -209,8 +202,6 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
                     content: [{ type: "input_text", text: userText }, ...boards.map((board) => ({ type: "input_image", image_url: boardDataUrl(board), detail: "high" }))],
                 },
             ],
-            tools: [{ type: "function", ...tool, strict: true }],
-            tool_choice: { type: "function", name: tool.name },
         };
     }
     if (protocol === "gemini") {
@@ -222,8 +213,6 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
                 },
             ],
             ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-            tools: [{ functionDeclarations: [tool] }],
-            toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [tool.name] } },
         };
     }
     return {
@@ -235,8 +224,6 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
                 content: [{ type: "text", text: userText }, ...boards.map((board) => ({ type: "image_url", image_url: { url: boardDataUrl(board), detail: "high" } }))],
             },
         ],
-        tools: [{ type: "function", function: { ...tool, strict: true } }],
-        tool_choice: { type: "function", function: { name: tool.name } },
     };
 }
 
@@ -244,9 +231,7 @@ async function readProductionImage(asset: RemakeProductionVisionAsset, label: st
     let response: Response;
     try {
         const target = resolveImageTarget(asset.url, origin);
-        response = target.internal
-            ? await fetchInternalApi(target.url, { headers: cookie ? { cookie } : undefined, cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30_000) })
-            : await fetchSafeOutbound(target.url, { cache: "no-store", signal: AbortSignal.timeout(30_000) });
+        response = await fetchRemakeProductionImage(target.url, { internal: target.internal, cookie });
     } catch (error) {
         if (error instanceof RemakeProductionVisionError) throw error;
         throw new RemakeProductionVisionError(`${label}读取失败：${toSafeGenerationErrorMessage(error, "参考图片暂时无法读取")}`);
@@ -408,34 +393,32 @@ function modelProxyUrl(origin: string, channelId: string, path: string) {
     return `${origin.replace(/\/+$/, "")}/api/ai/system/${encodeURIComponent(channelId)}${normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`}`;
 }
 
-function readToolArguments(protocol: RemakeProductionVisionProtocol, payload: Record<string, unknown>, toolName: string) {
+function readPromptText(protocol: RemakeProductionVisionProtocol, payload: Record<string, unknown>) {
     if (protocol === "responses") {
-        const call = records(payload.output).find((item) => item.type === "function_call" && item.name === toolName);
-        return jsonArgumentText(call?.arguments);
+        if (payload.status === "incomplete" || payload.status === "failed") return "";
+        return records(payload.output)
+            .filter((item) => item.type === "message" && item.role === "assistant")
+            .flatMap((item) => records(item.content))
+            .filter((part) => part.type === "output_text")
+            .map((part) => typeof part.text === "string" ? part.text : "")
+            .join("");
     }
     if (protocol === "gemini") {
         const candidate = records(payload.candidates)[0];
-        const parts = records(record(candidate?.content).parts);
-        const call = parts.map((part) => record(part.functionCall)).find((item) => item.name === toolName);
-        return jsonArgumentText(call?.args);
+        if (candidate?.finishReason && candidate.finishReason !== "STOP") return "";
+        return records(record(candidate?.content).parts)
+            .filter((part) => part.thought !== true && typeof part.text === "string")
+            .map((part) => part.text)
+            .join("");
     }
-    const message = record(records(payload.choices)[0]?.message);
-    const call = records(message.tool_calls)
-        .map((item) => record(item.function))
-        .find((item) => item.name === toolName);
-    return jsonArgumentText(call?.arguments);
-}
-
-function jsonArgumentText(value: unknown) {
-    if (typeof value === "string") {
-        try {
-            const parsed = JSON.parse(value);
-            return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? value : "";
-        } catch {
-            return "";
-        }
-    }
-    return value && typeof value === "object" && !Array.isArray(value) ? JSON.stringify(value) : "";
+    const choice = records(payload.choices)[0];
+    if (choice?.finish_reason && choice.finish_reason !== "stop") return "";
+    const message = record(choice?.message);
+    if (message.refusal) return "";
+    return typeof message.content === "string" ? message.content : records(message.content)
+        .filter((part) => part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("");
 }
 
 async function readResponseJson(response: Response) {
