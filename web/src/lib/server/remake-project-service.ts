@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
+
+import { remakeProductionInputSnapshot, type RemakeProductionInputProject } from "@/lib/remake-production-input";
 
 import {
     buildRemakeCopyBlocks,
@@ -77,11 +80,16 @@ export class RemakeAnalysisSupersededError extends Error {
 export type RemakeVideoPromptInput = { groupOrdinal: number; prompt: string };
 export type RemakeProductionCompletionInput = {
     expectedRevision?: number;
+    expectedInputVersion?: string;
     groupId?: string;
     copy?: Partial<RemakeCopyState>;
     copyBlocks?: RemakeCopyBlock[];
     videoPrompts?: RemakeVideoPromptInput[];
 };
+
+export function remakeProductionInputVersion(project: RemakeProductionInputProject, groupIds?: readonly string[]) {
+    return createHash("sha256").update(remakeProductionInputSnapshot(project, groupIds)).digest("hex");
+}
 
 export function listRemakeProjectSummariesForUser(userId: string, input: { page?: number; pageSize?: number } = {}) {
     return listRemakeProjectSummaries(userId, input);
@@ -346,7 +354,13 @@ export async function completeRemakeProductionForUser(userId: string, id: string
     const expectedRevision = optionalRevision(input.expectedRevision);
     const next = await mutateRemakeProject(userId, cleanText(id, 160), (current) => {
         const normalized = normalizeRemakeProjectWorkflow(current);
-        if (expectedRevision !== undefined && expectedRevision !== normalized.revision) throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
+        if (input.expectedInputVersion !== undefined) {
+            if (input.expectedInputVersion !== remakeProductionInputVersion(normalized, input.groupId === undefined ? undefined : [input.groupId])) {
+                throw new RemakeProjectServiceError("本组提示词或生成素材已变化，请刷新后重试", 409);
+            }
+        } else if (expectedRevision !== undefined && expectedRevision !== normalized.revision) {
+            throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
+        }
         if (normalized.frames.length !== REMAKE_FRAME_COUNT) throw new RemakeProjectServiceError("请先完成 48 帧视频分析", 409);
         const copy = normalizeRemakeCopyState(input.copy, normalized.copy);
         const copyBlocks = input.copyBlocks
@@ -374,8 +388,8 @@ export async function completeRemakeProductionForUser(userId: string, id: string
         } else if (input.videoPrompts && promptPatches.length !== 4) {
             throw new RemakeProjectServiceError("请提交完整的 4 组视频提示词", 400);
         }
-        if (normalized.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
-            throw new RemakeProjectServiceError("视频任务尚未结束，请完成后再生成 Prompt", 409);
+        if (normalized.groups.some((group) => (input.groupId === undefined || group.id === input.groupId) && (group.videoGeneration.status === "queued" || group.videoGeneration.status === "running"))) {
+            throw new RemakeProjectServiceError("本组视频任务尚未结束，请完成后再生成 Prompt", 409);
         }
         const groups = normalizeRemakeRangeGroups(promptPatches, normalized.groups).map((group, index) =>
             group.videoPrompt !== normalized.groups[index]?.videoPrompt ? { ...group, videoGeneration: { status: "idle" as const } } : group,

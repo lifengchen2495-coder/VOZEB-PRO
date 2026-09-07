@@ -2,6 +2,45 @@ import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch
 
 export type RemakeWorkspacePatch = RemakeEditablePatch & Partial<Pick<RemakeProject, "copy" | "pipeline">>;
 
+export type RemakePendingVideoProgress = {
+    inputVersion: string;
+    generation: RemakeRangeGroup["videoGeneration"];
+};
+
+export function remakeVideoInputVersion(project: RemakeProject, groupId: string) {
+    const group = project.groups.find((item) => item.id === groupId);
+    return JSON.stringify([
+        project.id, groupId, group?.videoPrompt || "", assetIdentity(group?.imageGeneration.result || undefined),
+        project.modelSelection.video, assetIdentity(project.references.product), assetIdentity(project.references.character), assetIdentity(project.references.audio),
+    ]);
+}
+
+export function mergeRemakeVideoProgress(project: RemakeProject, updates: ReadonlyMap<string, RemakePendingVideoProgress>): RemakeProject {
+    return {
+        ...project,
+        groups: project.groups.map((group) => {
+            const update = updates.get(group.id);
+            if (!update || update.inputVersion !== remakeVideoInputVersion(project, group.id)) return group;
+            const local = update.generation;
+            const remote = group.videoGeneration;
+            if ((remote.attemptNo ?? 0) > (local.attemptNo ?? 0)) return group;
+            if ((remote.attemptNo ?? 0) === (local.attemptNo ?? 0)) {
+                if (remote.taskId && remote.taskId !== local.taskId) return group;
+                if (remote.status === "completed" || (remote.status === "error" && local.status !== "completed")) return group;
+            }
+            return { ...group, videoGeneration: local };
+        }),
+    };
+}
+
+export function mergeRemakeConcurrentResult(incoming: RemakeProject, current: RemakeProject | null, pending: RemakeWorkspacePatch, videoOnly: boolean, updates: ReadonlyMap<string, RemakePendingVideoProgress>) {
+    const newest = current && current.revision > incoming.revision ? current : incoming;
+    const patch = { ...pending };
+    // 视频进度只覆盖所属分组，不能把旧的整组快照写回新 Prompt。
+    if (videoOnly) delete patch.groups;
+    return mergeRemakeVideoProgress(mergeEditablePatch(newest, patch), updates);
+}
+
 export type RemakeImageTaskSnapshot = {
     groupId: string;
     stage: "replacement" | "storyboard";

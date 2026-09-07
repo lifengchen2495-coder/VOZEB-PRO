@@ -6,8 +6,9 @@ import { ArrowLeft, Check, CircleAlert, CloudCheck, CloudOff, CloudUpload, FileO
 import { useParams, useRouter } from "next/navigation";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
+import { remakeProductionInputSnapshot } from "@/lib/remake-production-input";
 
-import { buildRemakeProduction, getRemakeProject, getRemakeTask, handoffRemakeProject, RemakeConflictError, saveRemakeProject, startRemakeAnalysis, uploadRemakeVideo } from "../remake-api";
+import { buildRemakeProduction, getRemakeProject, getRemakeTask, handoffRemakeProject, RemakeConflictError, RemakeRequestError, saveRemakeProject, startRemakeAnalysis, uploadRemakeVideo } from "../remake-api";
 import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeFrame, type RemakeMediaAsset, type RemakeModelSelection, type RemakeProject, type RemakeTask, type RemakeVoice } from "../remake-contract";
 import { RemakeAnalysisBoard, type RemakeWorkspaceTab } from "./remake-analysis-board";
 import { RemakeImageStage, type RemakeGroupPatch } from "./remake-image-stage";
@@ -15,7 +16,7 @@ import { RemakeProductionStage } from "./remake-production-stage";
 import { remakeImagesReady, remakeProductionReady } from "./remake-production-utils";
 import { RemakeSourcePanel } from "./remake-source-panel";
 import { RemakeUnitEditor } from "./remake-unit-editor";
-import { editRemakeCopyBlock, hasRemakePatch, invalidateRemakeProduction, isRemakeAnalysisActive, mergeEditablePatch, mergeSavedProject, rebaseRemakeConflict, type RemakeWorkspacePatch } from "./remake-workspace-state";
+import { editRemakeCopyBlock, hasRemakePatch, invalidateRemakeProduction, isRemakeAnalysisActive, mergeEditablePatch, mergeRemakeConcurrentResult, mergeRemakeVideoProgress, remakeVideoInputVersion, rebaseRemakeConflict, type RemakePendingVideoProgress, type RemakeWorkspacePatch } from "./remake-workspace-state";
 
 type SaveState = "saved" | "pending" | "saving" | "error" | "conflict";
 type ConflictState = { local: RemakeProject; remote: RemakeProject; dirty: RemakeWorkspacePatch };
@@ -47,20 +48,23 @@ export function RemakeWorkspace() {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [analyzing, setAnalyzing] = useState(false);
     const [buildingProduction, setBuildingProduction] = useState(false);
-    const [buildingGroupId, setBuildingGroupId] = useState<string>();
+    const [buildingGroupIds, setBuildingGroupIds] = useState<string[]>([]);
     const [handoffPending, setHandoffPending] = useState(false);
     const [resolvingConflict, setResolvingConflict] = useState(false);
 
     const projectRef = useRef<RemakeProject | null>(null);
     const pendingPatchRef = useRef<RemakeWorkspacePatch>({});
+    const pendingVideoOnlyRef = useRef(true);
+    const videoProgressRef = useRef(new Map<string, RemakePendingVideoProgress>());
     const saveTimerRef = useRef<number | undefined>(undefined);
     const savingPromiseRef = useRef<Promise<boolean> | null>(null);
     const flushSaveRef = useRef<(() => Promise<boolean>) | null>(null);
     const conflictRef = useRef<ConflictState | null>(null);
     const uploadControllerRef = useRef<AbortController | null>(null);
     const editingLockedRef = useRef(false);
-    const productionBuildRef = useRef(false);
-    const editingLocked = isRemakeAnalysisActive(analyzing, task?.status) || buildingProduction || handoffPending;
+    const productionBuildRef = useRef(new Set<string>());
+    const videoActive = project?.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running");
+    const editingLocked = isRemakeAnalysisActive(analyzing, task?.status) || buildingProduction || buildingGroupIds.length > 0 || Boolean(videoActive) || handoffPending;
     editingLockedRef.current = editingLocked;
 
     const applyServerProject = useCallback((next: RemakeProject) => {
@@ -70,12 +74,20 @@ export function RemakeWorkspace() {
         setSelectedBlockId((current) => (current && next.copyBlocks.some((block) => block.id === current) ? current : next.copyBlocks[0]?.id));
     }, []);
 
+    const applyConcurrentProject = useCallback((incoming: RemakeProject) => {
+        const next = mergeRemakeConcurrentResult(incoming, projectRef.current, pendingPatchRef.current, pendingVideoOnlyRef.current, videoProgressRef.current);
+        if (pendingVideoOnlyRef.current && pendingPatchRef.current.groups) pendingPatchRef.current = { groups: next.groups };
+        applyServerProject(next);
+    }, [applyServerProject]);
+
     const load = useCallback(async () => {
         setLoading(true);
         setLoadError("");
         try {
             const next = await getRemakeProject(projectId);
             pendingPatchRef.current = {};
+            pendingVideoOnlyRef.current = true;
+            videoProgressRef.current.clear();
             conflictRef.current = null;
             setConflict(null);
             applyServerProject(next);
@@ -136,20 +148,42 @@ export function RemakeWorkspace() {
         if (conflictRef.current) return false;
         if (savingPromiseRef.current) {
             const saved = await savingPromiseRef.current;
-            return saved && Object.keys(pendingPatchRef.current).length ? (flushSaveRef.current?.() ?? Promise.resolve(true)) : saved;
+            return saved ? (flushSaveRef.current?.() ?? true) : false;
         }
         const base = projectRef.current;
         const patch = pendingPatchRef.current;
         if (!base || !hasRemakePatch(patch)) return true;
+        const videoOnly = pendingVideoOnlyRef.current && videoProgressRef.current.size > 0;
+        const videoUpdates = new Map(videoProgressRef.current);
         pendingPatchRef.current = {};
+        pendingVideoOnlyRef.current = true;
         setSaveState("saving");
         const run = (async () => {
             try {
-                const saved = await saveRemakeProject(base.id, base.revision, patch);
-                const current = projectRef.current;
-                if (current) {
-                    applyServerProject(mergeSavedProject(saved, current, pendingPatchRef.current));
+                let saveBase = base;
+                let savePatch = patch;
+                let saved: RemakeProject | undefined;
+                for (let attempt = 0; attempt < 5; attempt += 1) {
+                    try {
+                        saved = await saveRemakeProject(base.id, saveBase.revision, savePatch);
+                        break;
+                    } catch (reason) {
+                        if (!videoOnly || !(reason instanceof RemakeConflictError) || attempt === 4) throw reason;
+                        const remote = await getRemakeProject(base.id);
+                        for (const [groupId, update] of videoUpdates) {
+                            if (update.inputVersion !== remakeVideoInputVersion(remote, groupId)) throw new Error(`分镜 ${groupId} 的视频输入已变化，请刷新后重试`);
+                        }
+                        saveBase = remote;
+                        const rebased = mergeRemakeVideoProgress(remote, videoUpdates);
+                        savePatch = { groups: rebased.groups.filter((group) => videoUpdates.has(group.id)) };
+                        applyConcurrentProject(remote);
+                    }
                 }
+                if (!saved) return false;
+                for (const [groupId, update] of videoUpdates) {
+                    if (videoProgressRef.current.get(groupId) === update) videoProgressRef.current.delete(groupId);
+                }
+                applyConcurrentProject(saved);
                 setSaveState(hasRemakePatch(pendingPatchRef.current) ? "pending" : "saved");
                 return true;
             } catch (reason) {
@@ -160,15 +194,18 @@ export function RemakeWorkspace() {
                         const state = { local: projectRef.current || base, remote, dirty };
                         conflictRef.current = state;
                         pendingPatchRef.current = {};
+                        pendingVideoOnlyRef.current = true;
                         setConflict(state);
                         setSaveState("conflict");
                     } catch {
                         pendingPatchRef.current = { ...patch, ...pendingPatchRef.current };
+                        pendingVideoOnlyRef.current = videoOnly && pendingVideoOnlyRef.current;
                         setSaveState("error");
                     }
                     return false;
                 }
                 pendingPatchRef.current = { ...patch, ...pendingPatchRef.current };
+                pendingVideoOnlyRef.current = videoOnly && pendingVideoOnlyRef.current;
                 setSaveState("error");
                 message.error({ key: "remake-save-error", content: reason instanceof Error ? reason.message : "项目保存失败" });
                 return false;
@@ -179,17 +216,18 @@ export function RemakeWorkspace() {
         savingPromiseRef.current = null;
         if (saved && hasRemakePatch(pendingPatchRef.current)) return flushSaveRef.current?.() ?? true;
         return saved;
-    }, [applyServerProject, message]);
+    }, [applyConcurrentProject, message]);
     flushSaveRef.current = flushSave;
 
-    const queuePatch = useCallback((patch: RemakeWorkspacePatch) => {
-        if (editingLockedRef.current) return;
+    const queuePatch = useCallback((patch: RemakeWorkspacePatch, videoProgress = false) => {
+        if (editingLockedRef.current && !videoProgress) return;
         const current = projectRef.current;
         if (!current) return;
         const next = { ...current, ...patch };
         projectRef.current = next;
         setProject(next);
         pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
+        pendingVideoOnlyRef.current = pendingVideoOnlyRef.current && videoProgress;
         setSaveState(conflictRef.current ? "conflict" : "pending");
         if (conflictRef.current) return;
         if (saveTimerRef.current !== undefined) window.clearTimeout(saveTimerRef.current);
@@ -287,6 +325,8 @@ export function RemakeWorkspace() {
         (groupId: string, patch: RemakeGroupPatch) => {
             const current = projectRef.current;
             if (!current) return;
+            const videoProgress = Object.keys(patch).length === 1 && Boolean(patch.videoGeneration);
+            if (editingLockedRef.current && !videoProgress) return;
             const groups = current.groups.map((group) =>
                 group.id === groupId
                     ? {
@@ -298,7 +338,11 @@ export function RemakeWorkspace() {
                       }
                     : group,
             );
-            queuePatch({ groups });
+            if (videoProgress) {
+                const group = groups.find((item) => item.id === groupId);
+                if (group) videoProgressRef.current.set(groupId, { inputVersion: remakeVideoInputVersion(current, groupId), generation: group.videoGeneration });
+            }
+            queuePatch({ groups }, videoProgress);
         },
         [queuePatch],
     );
@@ -376,16 +420,18 @@ export function RemakeWorkspace() {
     };
 
     const buildProductionContent = async (groupId?: string) => {
-        if (productionBuildRef.current || editingLockedRef.current) return;
-        if (projectRef.current?.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
-            message.warning("请等待视频任务完成后再生成 Prompt");
+        const initial = projectRef.current;
+        if (!initial || isRemakeAnalysisActive(analyzing, task?.status) || handoffPending) return;
+        const targets = initial.groups.filter((group) => !groupId || group.id === groupId);
+        if (!targets.length || targets.some((group) => productionBuildRef.current.has(group.id))) return;
+        if (targets.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
+            message.warning("请等待本组视频任务完成后再生成 Prompt");
             return;
         }
-        productionBuildRef.current = true;
+        targets.forEach((group) => productionBuildRef.current.add(group.id));
         editingLockedRef.current = true;
-        setBuildingProduction(true);
-        setBuildingGroupId(groupId);
-        let productionBase: RemakeProject | null = null;
+        if (!groupId) setBuildingProduction(true);
+        setBuildingGroupIds([...productionBuildRef.current]);
         try {
             if (!(await flushSave())) {
                 message.warning("请先处理保存冲突，再生成生产内容");
@@ -393,25 +439,21 @@ export function RemakeWorkspace() {
             }
             const current = projectRef.current;
             if (!current) return;
-            productionBase = current;
-            const next = await buildRemakeProduction(projectId, current.revision, groupId);
-            pendingPatchRef.current = {};
-            applyServerProject(next);
-            setSaveState("saved");
+            const snapshot = remakeProductionInputSnapshot(current, groupId ? [groupId] : undefined);
+            const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(snapshot));
+            const inputVersion = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+            const next = await buildRemakeProduction(projectId, current.revision, groupId, inputVersion);
+            applyConcurrentProject(next);
+            setSaveState(savingPromiseRef.current ? "saving" : hasRemakePatch(pendingPatchRef.current) ? "pending" : "saved");
             message.success(groupId ? `分镜 ${groupId} 的 Prompt 已生成` : "4 条 Seedance 提示词已生成");
         } catch (reason) {
-            if (reason instanceof RemakeConflictError && productionBase) {
+            if (reason instanceof RemakeConflictError || (reason instanceof RemakeRequestError && reason.status === 409 && reason.message === "本组提示词或生成素材已变化，请刷新后重试")) {
                 try {
                     const remote = await getRemakeProject(projectId);
-                    const local = projectRef.current || productionBase;
-                    const rebased = rebaseRemakeConflict(pendingPatchRef.current, local, remote);
-                    const dirty = rebased.dirty;
-                    pendingPatchRef.current = dirty;
-                    applyServerProject(rebased.project);
+                    applyConcurrentProject(remote);
                     setTask(recoveredTask(remote));
-                    setSaveState(hasRemakePatch(dirty) ? "pending" : "saved");
-                    if (hasRemakePatch(dirty)) saveTimerRef.current = window.setTimeout(() => void flushSaveRef.current?.(), 0);
-                    message.warning("项目版本已刷新并合并未保存内容，请确认后重新生成生产内容");
+                    setSaveState(savingPromiseRef.current ? "saving" : hasRemakePatch(pendingPatchRef.current) ? "pending" : "saved");
+                    message.warning(reason.message);
                     return;
                 } catch (refreshReason) {
                     message.error(refreshReason instanceof Error ? refreshReason.message : "项目最新版本加载失败");
@@ -420,10 +462,10 @@ export function RemakeWorkspace() {
             }
             message.error(reason instanceof Error ? reason.message : "生产内容生成失败");
         } finally {
-            productionBuildRef.current = false;
-            editingLockedRef.current = isRemakeAnalysisActive(analyzing, task?.status) || handoffPending;
-            setBuildingProduction(false);
-            setBuildingGroupId(undefined);
+            targets.forEach((group) => productionBuildRef.current.delete(group.id));
+            editingLockedRef.current = productionBuildRef.current.size > 0 || isRemakeAnalysisActive(analyzing, task?.status) || handoffPending || Boolean(projectRef.current?.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running"));
+            if (!groupId) setBuildingProduction(false);
+            setBuildingGroupIds([...productionBuildRef.current]);
         }
     };
 
@@ -454,6 +496,8 @@ export function RemakeWorkspace() {
         try {
             const remote = await getRemakeProject(projectId);
             pendingPatchRef.current = {};
+            pendingVideoOnlyRef.current = true;
+            videoProgressRef.current.clear();
             conflictRef.current = null;
             applyServerProject(remote);
             setTask(recoveredTask(remote));
@@ -477,6 +521,8 @@ export function RemakeWorkspace() {
             const dirty = rebased.dirty;
             const discardedVersionedChanges = hasRemakePatch(currentConflict.dirty) && Object.keys(dirty).length !== Object.keys(currentConflict.dirty).length;
             pendingPatchRef.current = dirty;
+            pendingVideoOnlyRef.current = false;
+            videoProgressRef.current.clear();
             conflictRef.current = null;
             applyServerProject(rebased.project);
             const remoteTask = recoveredTask(remote);
@@ -644,7 +690,8 @@ export function RemakeWorkspace() {
                     <RemakeProductionStage
                         project={project}
                         building={buildingProduction}
-                        buildingGroupId={buildingGroupId}
+                        buildingGroupIds={buildingGroupIds}
+                        getCurrentProject={() => projectRef.current || project}
                         onVoiceChange={updateVoice}
                         onPromptModelChange={(model) => updateModelSelection("prompt", model)}
                         onVideoModelChange={(model) => updateModelSelection("video", model)}

@@ -3,7 +3,7 @@ import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
 import { isRemakeNoNarrationCopy } from "@/lib/server/remake-project-contract";
 import { assertRemakeVideoPrompt, remakeProductionMessages, REMAKE_PRODUCTION_GROUP_IDS, renderRemakeCopyReport, type RemakeProductionPromptInput } from "@/lib/server/remake-production-prompt";
-import { assertRemakeImageGenerationsForUser, completeRemakeProductionForUser, getRemakeProjectForUser, RemakeProjectServiceError } from "@/lib/server/remake-project-service";
+import { assertRemakeImageGenerationsForUser, completeRemakeProductionForUser, getRemakeProjectForUser, remakeProductionInputVersion, RemakeProjectServiceError } from "@/lib/server/remake-project-service";
 import { buildRemakeProductionVisualBoards, RemakeProductionVisionError, requestRemakeProductionVisionPrompt, resolveRemakeProductionVisionProtocol } from "@/lib/server/remake-production-vision-runtime";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { rankTextPlanningCandidates } from "@/lib/server/text-planning-runtime";
@@ -18,14 +18,43 @@ export class RemakeProductionError extends Error {
     }
 }
 
-export async function buildRemakeProductionForUser(input: { userId: string; projectId: string; origin: string; cookie: string; expectedRevision?: number; groupId?: string }) {
+type RemakeProductionRequest = { userId: string; projectId: string; origin: string; cookie: string; expectedRevision?: number; groupId?: string; inputVersion?: string };
+type PendingProduction = { key: string; promise: ReturnType<typeof generateRemakeProduction> };
+const runtime = globalThis as typeof globalThis & { __vozebProRemakeProductions?: Map<string, PendingProduction> };
+
+export async function buildRemakeProductionForUser(input: RemakeProductionRequest) {
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
-    if (input.expectedRevision !== undefined && project.revision !== input.expectedRevision) throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
     const selectedGroups = REMAKE_PRODUCTION_GROUP_IDS.filter((groupId) => input.groupId === undefined || groupId === input.groupId);
     if (!selectedGroups.length) throw new RemakeProductionError("视频提示词分组无效", 400);
-    if (project.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
-        throw new RemakeProductionError("视频任务尚未结束，请完成后再生成 Prompt", 409);
+    const expectedInputVersion = remakeProductionInputVersion(project, selectedGroups);
+    if (input.inputVersion !== undefined) {
+        if (input.inputVersion !== expectedInputVersion) throw new RemakeProjectServiceError("本组提示词或生成素材已变化，请刷新后重试", 409);
+    } else if (input.expectedRevision !== undefined && project.revision !== input.expectedRevision) {
+        throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
     }
+    if (project.groups.some((group) => selectedGroups.some((id) => id === group.id) && (group.videoGeneration.status === "queued" || group.videoGeneration.status === "running"))) {
+        throw new RemakeProductionError("本组视频任务尚未结束，请完成后再生成 Prompt", 409);
+    }
+    const pending = runtime.__vozebProRemakeProductions ??= new Map();
+    const slots = selectedGroups.map((groupId) => JSON.stringify([input.userId, project.id, groupId]));
+    const key = JSON.stringify([expectedInputVersion, selectedGroups]);
+    const overlapping = slots.map((slot) => pending.get(slot)).filter((operation) => operation !== undefined);
+    if (overlapping.length) {
+        if (overlapping.length === slots.length && overlapping.every((operation) => operation.key === key)) return overlapping[0].promise;
+        throw new RemakeProductionError("所选分组已有 Prompt 生成任务，请等待该组完成", 409);
+    }
+    // 同组重复请求共享一次生成，其他组可以独立执行和保存。
+    const operation: PendingProduction = {
+        key,
+        promise: generateRemakeProduction(input, project, selectedGroups, expectedInputVersion).finally(() => {
+            for (const slot of slots) if (pending.get(slot) === operation) pending.delete(slot);
+        }),
+    };
+    for (const slot of slots) pending.set(slot, operation);
+    return operation.promise;
+}
+
+async function generateRemakeProduction(input: RemakeProductionRequest, project: Awaited<ReturnType<typeof getRemakeProjectForUser>>, selectedGroups: typeof REMAKE_PRODUCTION_GROUP_IDS[number][], expectedInputVersion: string) {
     await assertProductionReady(input.userId, project);
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
 
@@ -93,7 +122,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
             let latestError: unknown;
             let generated = false;
             for (const candidate of candidates) {
-                const idempotencyKey = systemAiIdempotencyKey("remake-feishu-video-prompt", input.userId, project.id, String(project.revision), groupId, candidate.channelId, candidate.upstreamModel);
+                const idempotencyKey = systemAiIdempotencyKey("remake-feishu-video-prompt", input.userId, project.id, remakeProductionInputVersion(project, [groupId]), groupId, candidate.channelId, candidate.upstreamModel);
                 let chargedHeaders: Headers | undefined;
                 try {
                     const call = await requestRemakeProductionVisionPrompt({
@@ -126,6 +155,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
         if (input.groupId !== undefined) {
             return await completeRemakeProductionForUser(input.userId, project.id, {
                 expectedRevision: project.revision,
+                expectedInputVersion,
                 groupId: input.groupId,
                 videoPrompts: prompts,
             });
@@ -142,6 +172,7 @@ export async function buildRemakeProductionForUser(input: { userId: string; proj
         });
         return await completeRemakeProductionForUser(input.userId, project.id, {
             expectedRevision: project.revision,
+            expectedInputVersion,
             copy: {
                 ...project.copy,
                 status: "completed",

@@ -22,8 +22,9 @@ import { isRemakeCopyPlanReady } from "./remake-workspace-state";
 
 export function RemakeProductionStage({
     project,
+    getCurrentProject,
     building,
-    buildingGroupId,
+    buildingGroupIds = [],
     onVoiceChange,
     onPromptModelChange,
     onVideoModelChange,
@@ -32,8 +33,9 @@ export function RemakeProductionStage({
     onBuild,
 }: {
     project: RemakeProject;
+    getCurrentProject?: () => RemakeProject;
     building: boolean;
-    buildingGroupId?: string;
+    buildingGroupIds?: string[];
     onVoiceChange: (voice: RemakeVoice) => void;
     onPromptModelChange: (model: string) => void;
     onVideoModelChange: (model: string) => void;
@@ -63,7 +65,9 @@ export function RemakeProductionStage({
     const latestProjectRef = useRef(project);
     latestProjectRef.current = project;
     const activeTasksRef = useRef(new Map<string, AbortController>());
-    const promptBuildPendingRef = useRef(false);
+    const promptBuildPendingRef = useRef(new Set<string>());
+    const batchPromptBuildPendingRef = useRef(false);
+    const batchVideoStartingRef = useRef(false);
     const startingGroupsRef = useRef(new Set<string>());
     const deferredGroupsRef = useRef(new Set<string>());
     const resumeTimersRef = useRef(new Set<number>());
@@ -77,6 +81,20 @@ export function RemakeProductionStage({
     const videosReady = remakeVideosReady(project);
     const productionReady = remakeProductionReady(project);
     const videoActive = project.groups.some((group) => isVideoActive(group)) || startingGroupsRef.current.size > 0;
+    const sharedBusy = building || buildingGroupIds.length > 0 || promptBuildPendingRef.current.size > 0 || batchPromptBuildPendingRef.current || videoActive;
+    const isPromptBuilding = useCallback((groupId: string) => building || batchPromptBuildPendingRef.current || buildingGroupIds.includes(groupId) || promptBuildPendingRef.current.has(groupId), [building, buildingGroupIds]);
+    const canStartGroupVideo = (group: RemakeRangeGroup) => Boolean(
+        group.videoPrompt.trim() &&
+        group.imageGeneration.status === "completed" &&
+        group.imageGeneration.result?.url &&
+        latestProjectRef.current.references.product?.url &&
+        group.videoGeneration.status !== "completed" &&
+        !isVideoActive(group) &&
+        !isPromptBuilding(group.id) &&
+        !startingGroupsRef.current.has(group.id) &&
+        !deferredGroupsRef.current.has(group.id),
+    );
+    const videoCandidateCount = project.groups.filter(canStartGroupVideo).length;
 
     const emitGroupChange = useCallback(
         (groupId: string, patch: RemakeGroupPatch) => {
@@ -181,7 +199,7 @@ export function RemakeProductionStage({
 
     const startGroupVideo = useCallback(
         async (groupId: string, announce = true) => {
-            if (building || promptBuildPendingRef.current) return;
+            if (isPromptBuilding(groupId)) return;
             const current = latestProjectRef.current;
             const group = current.groups.find((item) => item.id === groupId);
             if (!group || startingGroupsRef.current.has(groupId) || deferredGroupsRef.current.has(groupId)) return;
@@ -212,6 +230,25 @@ export function RemakeProductionStage({
                     emitGroupChange(groupId, { videoGeneration: { status: "error", error: saveError } });
                     return;
                 }
+                // 保存可能合并其他页面的更新；只提交仍属于本次尝试的当前分组。
+                const savedProject = getCurrentProject?.() || latestProjectRef.current;
+                latestProjectRef.current = savedProject;
+                const savedGroup = savedProject.groups.find((item) => item.id === groupId);
+                if (
+                    !savedGroup ||
+                    savedGroup.videoPrompt !== prompt ||
+                    (savedGroup.videoGeneration.status !== "queued" && savedGroup.videoGeneration.status !== "running") ||
+                    savedGroup.videoGeneration.taskId ||
+                    savedGroup.videoGeneration.needsReview ||
+                    savedGroup.videoGeneration.attemptNo !== attemptNo ||
+                    savedGroup.videoGeneration.model !== model ||
+                    (savedProject.modelSelection.video || selectedVideoModel) !== model ||
+                    savedGroup.imageGeneration.status !== "completed" ||
+                    !savedGroup.imageGeneration.result?.url ||
+                    !savedProject.references.product?.url ||
+                    isRemakeNoNarrationCopy(savedProject.sourceCopy) !== isRemakeNoNarrationCopy(current.sourceCopy) ||
+                    remakeVideoClientRequestId(savedProject, savedGroup, model) !== clientRequestId
+                ) return;
                 const task = await createServerVideoGenerationTask(generationConfig, prompt, remakeVideoReferenceImages(group, current.references), [], remakeVideoAudioReferences(current), {
                     source: "video-workbench",
                     projectId: current.id,
@@ -240,7 +277,7 @@ export function RemakeProductionStage({
                 startingGroupsRef.current.delete(groupId);
             }
         },
-        [building, emitGroupChange, emitModelChange, isAiConfigReady, message, saveVideoState, openConfigDialog, scheduleResume, selectedVideoModel, videoConfig, waitForGroupVideo],
+        [emitGroupChange, emitModelChange, getCurrentProject, isAiConfigReady, isPromptBuilding, message, saveVideoState, openConfigDialog, scheduleResume, selectedVideoModel, videoConfig, waitForGroupVideo],
     );
 
     useEffect(() => {
@@ -273,25 +310,35 @@ export function RemakeProductionStage({
     );
 
     const startAllVideos = async () => {
-        if (building || promptBuildPendingRef.current || batchStarting) return;
-        const candidates = latestProjectRef.current.groups.filter((group) => group.videoPrompt.trim() && group.videoGeneration.status !== "completed" && !isVideoActive(group));
+        if (building || batchPromptBuildPendingRef.current || batchVideoStartingRef.current) return;
+        const candidates = latestProjectRef.current.groups.filter(canStartGroupVideo);
         if (!candidates.length) return message.info(videosReady ? "4 条独立视频已经全部生成" : "当前没有可启动的视频任务");
+        batchVideoStartingRef.current = true;
         setBatchStarting(true);
         try {
             await Promise.all(candidates.map((group) => startGroupVideo(group.id)));
         } finally {
+            batchVideoStartingRef.current = false;
             setBatchStarting(false);
         }
     };
 
     const buildPrompts = async (groupId?: string) => {
-        if (building || promptBuildPendingRef.current || startingGroupsRef.current.size || latestProjectRef.current.groups.some(isVideoActive)) return;
+        if (building || batchPromptBuildPendingRef.current) return;
         if (!productionPrerequisites(latestProjectRef.current).ready) return;
-        promptBuildPendingRef.current = true;
+        if (groupId) {
+            const group = latestProjectRef.current.groups.find((item) => item.id === groupId);
+            if (!group || isPromptBuilding(groupId) || isVideoActive(group) || startingGroupsRef.current.has(groupId) || deferredGroupsRef.current.has(groupId)) return;
+            promptBuildPendingRef.current.add(groupId);
+        } else {
+            if (buildingGroupIds.length || promptBuildPendingRef.current.size || startingGroupsRef.current.size || latestProjectRef.current.groups.some(isVideoActive)) return;
+            batchPromptBuildPendingRef.current = true;
+        }
         try {
             await onBuild(groupId);
         } finally {
-            promptBuildPendingRef.current = false;
+            if (groupId) promptBuildPendingRef.current.delete(groupId);
+            else batchPromptBuildPendingRef.current = false;
         }
     };
 
@@ -323,15 +370,15 @@ export function RemakeProductionStage({
                     </div>
                     <div className="flex shrink-0 flex-wrap items-end gap-2">
                         <ModelControl label="Prompt 文本模型">
-                            <ModelPicker config={config} capability="text" value={selectedPromptModel} onChange={(model) => emitModelChange("prompt", model)} onMissingConfig={() => openConfigDialog(true)} className={building || videoActive ? "pointer-events-none opacity-60" : ""} placeholder="选择文本模型" />
+                            <ModelPicker config={config} capability="text" value={selectedPromptModel} onChange={(model) => emitModelChange("prompt", model)} onMissingConfig={() => openConfigDialog(true)} className={sharedBusy ? "pointer-events-none opacity-60" : ""} placeholder="选择文本模型" />
                         </ModelControl>
                         <ModelControl label="视频模型">
-                            <ModelPicker config={config} capability="video" value={selectedVideoModel} onChange={(model) => emitModelChange("video", model)} onMissingConfig={() => openConfigDialog(true)} className={building || videoActive ? "pointer-events-none opacity-60" : ""} placeholder="选择视频模型" />
+                            <ModelPicker config={config} capability="video" value={selectedVideoModel} onChange={(model) => emitModelChange("video", model)} onMissingConfig={() => openConfigDialog(true)} className={sharedBusy ? "pointer-events-none opacity-60" : ""} placeholder="选择视频模型" />
                         </ModelControl>
                         <Button icon={<Download className="size-4" />} loading={exporting} disabled={!productionReady} onClick={() => void exportBundle()}>
                             下载生产包
                         </Button>
-                        <Button type="primary" icon={<Sparkles className="size-4" />} loading={building && !buildingGroupId} disabled={building || !prerequisites.ready || videoActive} onClick={() => void buildPrompts()}>
+                        <Button type="primary" icon={<Sparkles className="size-4" />} loading={building} disabled={sharedBusy || !prerequisites.ready} onClick={() => void buildPrompts()}>
                             {promptsReady ? "重新生成全部 Prompt" : "生成 4 条 Prompt"}
                         </Button>
                     </div>
@@ -352,7 +399,7 @@ export function RemakeProductionStage({
                             <>
                                 <Segmented
                                     className="!mt-2 !w-full sm:!w-auto"
-                                    disabled={building || videoActive}
+                                    disabled={sharedBusy}
                                     value={project.voice === "male" ? "male" : project.voice === "female" ? "female" : undefined}
                                     options={[{ label: "女性配音", value: "female" }, { label: "男性配音", value: "male" }]}
                                     onChange={(value) => onVoiceChange(value === "male" ? "male" : "female")}
@@ -392,7 +439,7 @@ export function RemakeProductionStage({
                             <div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><Video className="size-4 text-muted-foreground" />4 条 Seedance Prompt 与独立视频</div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <Button size="small" icon={<Copy className="size-3.5" />} disabled={!promptsReady} onClick={() => void copyPrompt(project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.videoPrompt}`).join("\n\n"), "4 条完整视频 Prompt 已复制")}>复制全部 Prompt</Button>
-                                <Button type="primary" size="small" icon={<Play className="size-3.5" />} loading={batchStarting} disabled={building || !promptsReady || videosReady || videoActive} onClick={() => void startAllVideos()}>生成全部 4 条</Button>
+                                <Button type="primary" size="small" icon={<Play className="size-3.5" />} loading={batchStarting} disabled={videoCandidateCount === 0} aria-label="批量生成视频" onClick={() => void startAllVideos()}>{videoCandidateCount === 4 ? "生成全部 4 条" : videoCandidateCount ? `生成剩余 ${videoCandidateCount} 条` : "生成剩余视频"}</Button>
                             </div>
                         </div>
                         <div className="grid gap-3">
@@ -400,10 +447,9 @@ export function RemakeProductionStage({
                                 <VideoGroupCard
                                     key={group.id}
                                     group={group}
-                                    building={building && (!buildingGroupId || buildingGroupId === group.id)}
-                                    locked={building}
-                                    promptDisabled={building || !prerequisites.ready || videoActive}
-                                    disabled={!group.videoPrompt || videoActive}
+                                    building={isPromptBuilding(group.id)}
+                                    promptDisabled={isPromptBuilding(group.id) || !prerequisites.ready || isVideoActive(group) || startingGroupsRef.current.has(group.id)}
+                                    disabled={!group.videoPrompt.trim() || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !project.references.product?.url || startingGroupsRef.current.has(group.id)}
                                     onBuild={() => void buildPrompts(group.id)}
                                     onGenerate={() => void startGroupVideo(group.id)}
                                     onCopy={(text) => void copyPrompt(text, `分镜 ${group.id} 完整视频 Prompt 已复制`)}
@@ -426,7 +472,7 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, building, locked, promptDisabled, disabled, onBuild, onGenerate, onCopy }: { group: RemakeRangeGroup; building: boolean; locked: boolean; promptDisabled: boolean; disabled: boolean; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
+function VideoGroupCard({ group, building, promptDisabled, disabled, onBuild, onGenerate, onCopy }: { group: RemakeRangeGroup; building: boolean; promptDisabled: boolean; disabled: boolean; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
     const generation = group.videoGeneration;
     const active = isVideoActive(group) && !generation.needsReview;
     const videoUrl = generation.result?.url ? browserReadableMediaUrl(generation.result.url) : "";
@@ -447,7 +493,7 @@ function VideoGroupCard({ group, building, locked, promptDisabled, disabled, onB
                             {group.videoPrompt ? "重新生成 Prompt" : "生成 Prompt"}
                         </Button>
                     </Tooltip>
-                    <Button size="small" type={generation.status === "completed" ? "default" : "primary"} loading={active} disabled={locked || (!generation.needsReview && disabled && !active)} icon={generation.needsReview || generation.status === "completed" || generation.status === "error" ? <RefreshCw className="size-3.5" /> : <Play className="size-3.5" />} onClick={onGenerate}>
+                    <Button size="small" type={generation.status === "completed" ? "default" : "primary"} loading={active} disabled={building || (!generation.needsReview && (disabled || active))} aria-label={`${generation.needsReview ? "检查" : "生成"}分镜 ${group.id} 视频${generation.needsReview ? "状态" : ""}`} icon={generation.needsReview || generation.status === "completed" || generation.status === "error" ? <RefreshCw className="size-3.5" /> : <Play className="size-3.5" />} onClick={onGenerate}>
                         {generation.needsReview ? "检查状态" : generation.status === "completed" ? "重新生成" : generation.status === "error" ? "重试" : "生成视频"}
                     </Button>
                 </div>
@@ -500,7 +546,7 @@ function productionPrerequisites(project: RemakeProject) {
 }
 
 function isVideoActive(group: RemakeRangeGroup) {
-    return group.videoGeneration.status === "queued" || group.videoGeneration.status === "running";
+    return group.videoGeneration.status === "queued" || group.videoGeneration.status === "running" || Boolean(group.videoGeneration.needsReview);
 }
 
 function videoAsset(stored: UploadedFile, groupId: string): RemakeMediaAsset {

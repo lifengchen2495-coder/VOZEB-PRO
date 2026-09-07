@@ -113,12 +113,12 @@ export async function startRemakeAnalysis(id: string, retry = false): Promise<{ 
     return { project: projectFromPayload(payload), task: normalizeRemakeTask(payload.task) };
 }
 
-export async function buildRemakeProduction(id: string, revision: number, groupId?: string): Promise<RemakeProject> {
+export async function buildRemakeProduction(id: string, revision: number, groupId?: string, inputVersion?: string): Promise<RemakeProject> {
     return projectFromPayload(
         await requestPayload(`/api/remake/projects/${encodeURIComponent(id)}/production`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ revision, groupId }),
+            body: JSON.stringify({ revision, groupId, inputVersion }),
         }),
     );
 }
