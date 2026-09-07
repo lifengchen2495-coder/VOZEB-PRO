@@ -223,7 +223,7 @@ export function RemakeImageStage({
             const prompt = stage === "replacement" ? buildRemakeReplacementPrompt(current, group) : buildRemakeImagePrompt(current, group);
             const references = stage === "replacement" ? remakeReplacementReferenceImages(group, current.references) : remakeGroupReferenceImages(group, current.references);
             const inputVersion = remakeGroupInputVersion(group, current.references, stage);
-            const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage);
+            const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage, { model, prompt, quality: imageConfig.quality });
             const previousAttempt = retryAttemptsRef.current.get(key) || 0;
             const attemptNo = generation.status === "error" ? previousAttempt + 1 : previousAttempt;
             retryAttemptsRef.current.set(key, attemptNo);

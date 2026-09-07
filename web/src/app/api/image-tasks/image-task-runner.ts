@@ -1,6 +1,6 @@
 import { generationModelId } from "@/lib/server/generation-channel";
 import { recordGenerationTaskLogResult } from "@/lib/server/generation-log-task-service";
-import type { ImageTask } from "@/lib/server/image-task-store";
+import type { ImageTask, StoredImageTaskMediaResult } from "@/lib/server/image-task-store";
 
 import { resolveResultSize } from "./image-task-size";
 
@@ -11,20 +11,21 @@ export function stableMediaUrl(value?: string) {
 export async function writeImageGenerationLog(
     task: ImageTask,
     status: "success" | "failed",
-    result: Array<{ dataUrl?: string; remoteUrl?: string; width?: number; height?: number; bytes?: number; mimeType?: string }> | { dataUrl?: string; remoteUrl?: string; width?: number; height?: number; bytes?: number; mimeType?: string } | string,
+    result: Array<Partial<StoredImageTaskMediaResult>> | Partial<StoredImageTaskMediaResult> | string,
     durationMs: number,
     error?: string,
 ) {
     const results = Array.isArray(result) ? result : [result];
     const targetSize = task.config.outputMode === "layers" ? undefined : resolveResultSize(task.config.quality, task.config.size || "auto");
     const assets = results.flatMap((item) => {
-        const resultUrl = typeof item === "string" ? item : item.remoteUrl || item.dataUrl || "";
+        const resultUrl = typeof item === "string" ? item : item.serverUrl || item.dataUrl || item.remoteUrl || "";
         return resultUrl
             ? [
                   {
                       type: "image" as const,
                       url: resultUrl,
                       remoteUrl: typeof item === "string" ? undefined : item.remoteUrl,
+                      serverUrl: typeof item === "string" ? undefined : item.serverUrl,
                       ...(typeof item === "string"
                           ? {}
                           : {

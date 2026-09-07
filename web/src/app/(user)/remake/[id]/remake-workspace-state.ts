@@ -167,8 +167,16 @@ export function remakeGroupInputVersion(group: RemakeRangeGroup, references: Rem
     return JSON.stringify([assetIdentity(group.sourceContactSheet), remakeReferenceVersion(references), stage === "storyboard" ? assetIdentity(group.replacementGeneration.result || undefined) : ""]);
 }
 
-export function remakeImageClientRequestId(projectId: string, group: RemakeRangeGroup, references: RemakeReferenceAssets, stage: "replacement" | "storyboard" = "storyboard") {
-    return `remake-image:${group.id}:${stage}:${stableTextHash(`${projectId}\n${remakeGroupInputVersion(group, references, stage)}`)}`;
+export function remakeImageClientRequestId(
+    projectId: string,
+    group: RemakeRangeGroup,
+    references: RemakeReferenceAssets,
+    stage: "replacement" | "storyboard",
+    request: { model: string; prompt: string; quality?: string },
+) {
+    // 模型、提示词和画质改变后属于新请求，不能复用旧输入的失败或成功任务。
+    const identity = JSON.stringify([projectId, remakeGroupInputVersion(group, references, stage), request.model, request.prompt, request.quality || ""]);
+    return `remake-image:${group.id}:${stage}:${stableTextHash(identity)}`;
 }
 
 export function remakeImageGenerationSlotId(groupId: string, stage: "replacement" | "storyboard" = "storyboard") {
