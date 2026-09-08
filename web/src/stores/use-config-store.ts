@@ -9,6 +9,7 @@ import type { GlobalAiOpcPresetId } from "@/lib/globalaiopc-catalog";
 import { resolveChannelModelAdvancedConfig } from "@/lib/channel-protocol-registry";
 import { inferModelCapability, normalizeModelId } from "@/lib/model-capability";
 import { materializeLogicalModelPointCosts } from "@/lib/model-point-cost";
+import type { ModelBillingRules } from "@/lib/model-billing";
 import type { LogicalModelCapabilityProfile } from "@/lib/auth/store-types";
 
 type ApiCallFormat = "openai" | "gemini";
@@ -108,6 +109,7 @@ export type AiConfig = {
     count: string;
     canvasImageCount: string;
     modelPointCosts: Record<string, number>;
+    modelBillingRules?: ModelBillingRules;
     generationPointMultipliers: GenerationPointMultipliers;
     generationConcurrency: GenerationConcurrencySettings;
     advancedConfig?: SystemChannelAdvancedConfig;
@@ -130,6 +132,7 @@ type GenerationConcurrencySettings = {
 
 export type PublicSystemSettings = {
     modelPointCosts?: Record<string, number>;
+    modelBillingRules?: ModelBillingRules;
     generationPointMultipliers?: GenerationPointMultipliers;
     generationConcurrency?: GenerationConcurrencySettings;
     generationDefaults?: {
@@ -188,6 +191,7 @@ export const defaultConfig: AiConfig = {
     count: "1",
     canvasImageCount: "1",
     modelPointCosts: {},
+    modelBillingRules: {},
     generationPointMultipliers: {
         imageQuality: { auto: 1, low: 1, medium: 1, high: 1 },
         videoQuality: { "480": 1, "720": 1, "1080": 1 },
@@ -284,6 +288,7 @@ export function applyPublicSystemSettings(config: AiConfig, settings?: PublicSys
         systemPrompt: "",
         audioInstructions: "",
         modelPointCosts: materializeLogicalModelPointCosts(settings?.modelPointCosts, logicalModels),
+        modelBillingRules: structuredClone(settings?.modelBillingRules || {}),
         generationPointMultipliers: normalizeGenerationPointMultipliers(settings?.generationPointMultipliers),
         generationConcurrency: normalizeGenerationConcurrency(settings?.generationConcurrency),
         canvasImageCount: normalizeCanvasImageCount(settings?.generationDefaults?.canvasImageCount),
