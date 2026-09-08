@@ -10,6 +10,8 @@ import type { LogicalModelCapability } from "@/lib/auth/store";
 import { configuredModelPointCostKeys, resolveConfiguredModelPointCost } from "@/lib/model-point-cost";
 import { LabeledControl } from "@/components/admin/admin-settings-controls";
 import { toNumberOrOne, toNumberOrZero, uniqueList } from "@/components/admin/admin-values";
+import { ModelBillingEditor } from "./admin-model-billing-editor";
+import { resolveModelBillingRule, type ModelBillingRule } from "@/lib/model-billing";
 
 const imageQualityMultiplierOptions = [
     { key: "auto", label: "自动" },
@@ -43,6 +45,7 @@ export function QuotaRuleTable({
     onFreeDailyPointsEnabledChange,
     onFreeDailyPointsChange,
     onModelPointCostChange,
+    onModelBillingRuleChange,
     onModelPointCostDelete,
     onGenerationPointMultiplierChange,
     onGenerationPointMultiplierDelete,
@@ -54,6 +57,7 @@ export function QuotaRuleTable({
     onFreeDailyPointsEnabledChange: (enabled: boolean) => void;
     onFreeDailyPointsChange: (value: number | null) => void;
     onModelPointCostChange: (model: string, value: number | null) => void;
+    onModelBillingRuleChange: (model: string, rule: ModelBillingRule | undefined) => void;
     onModelPointCostDelete: (model: string) => void;
     onGenerationPointMultiplierChange: (group: keyof AuthSettings["generationPointMultipliers"], key: string, value: number | null) => void;
     onGenerationPointMultiplierDelete: (group: keyof AuthSettings["generationPointMultipliers"], key: string) => void;
@@ -81,8 +85,8 @@ export function QuotaRuleTable({
                 </div>
             </section>
             <section className="border-b border-zinc-200 py-4 sm:py-5 dark:border-zinc-800">
-                <div className="text-sm font-semibold text-stone-950 dark:text-stone-100">模型基础扣费</div>
-                <div className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">每次生成先扣除模型基础积分；单独配置的模型使用自己的数值，其他模型使用统一默认值。</div>
+                <div className="text-sm font-semibold text-stone-950 dark:text-stone-100">模型计费方式</div>
+                <div className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">文本模型可选按次或按实际 Token 计费。未设置计费方式的模型继续按次扣除基础积分，未设置基础积分的模型使用统一默认值。</div>
                 <div className="mt-3 grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)] lg:items-end">
                     <LabeledControl label="其他模型每次默认扣除积分">
                         <InputNumber className="w-full" min={0} precision={2} value={settings.modelPointCosts[DEFAULT_MODEL_POINT_COST_KEY] ?? 1} onChange={(value) => onModelPointCostChange(DEFAULT_MODEL_POINT_COST_KEY, toNumberOrOne(value))} />
@@ -105,7 +109,9 @@ export function QuotaRuleTable({
                         onChange={(value) => setActiveCapability(value as LogicalModelCapability)}
                     />
                 </div>
-                <div className="mt-3 text-[11px] text-stone-400 dark:text-stone-500">当前显示{modelCapabilityOptions.find((item) => item.value === activeCapability)?.label}模型；每个数值均表示该模型每次调用扣除的基础积分。</div>
+                <div className="mt-3 text-[11px] text-stone-400 dark:text-stone-500">
+                    当前显示{modelCapabilityOptions.find((item) => item.value === activeCapability)?.label}模型；计费规则以模型 ID 保存。{activeCapability === "text" ? "按 Token 单价单位为积分 / 百万 Token。" : "每个数值表示该模型每次调用的基础积分。"}
+                </div>
                 <div className="mt-3 grid gap-x-5 gap-y-2 md:grid-cols-2">
                     {visibleModels.length ? (
                         visibleModels.map((model) => {
@@ -113,7 +119,7 @@ export function QuotaRuleTable({
                             return (
                                 <div
                                     key={model}
-                                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_76px_28px] items-center gap-2 border-t border-zinc-100 py-2 first:border-t-0 md:[&:nth-child(2)]:border-t-0 dark:border-zinc-900 sm:grid-cols-[minmax(0,1fr)_104px_32px]"
+                                    className={`grid min-w-0 items-start gap-2 border-t border-zinc-100 py-3 first:border-t-0 md:[&:nth-child(2)]:border-t-0 dark:border-zinc-900 ${activeCapability === "text" ? "grid-cols-[minmax(0,1fr)_28px]" : "grid-cols-[minmax(0,1fr)_76px_28px] sm:grid-cols-[minmax(0,1fr)_104px_32px]"}`}
                                 >
                                     <div className="min-w-0">
                                         <div className="flex min-w-0 items-center gap-2">
@@ -128,13 +134,15 @@ export function QuotaRuleTable({
                                             <span className="mt-0.5 block text-xs text-stone-400">手动添加</span>
                                         ) : null}
                                     </div>
-                                    <InputNumber
-                                        className="w-full"
-                                        min={0}
-                                        precision={2}
-                                        value={resolveConfiguredModelPointCost(settings.modelPointCosts, model, settings.logicalModels)}
-                                        onChange={(value) => onModelPointCostChange(model, toNumberOrOne(value))}
-                                    />
+                                    {activeCapability !== "text" ? (
+                                        <InputNumber
+                                            className="w-full"
+                                            min={0}
+                                            precision={2}
+                                            value={resolveConfiguredModelPointCost(settings.modelPointCosts, model, settings.logicalModels)}
+                                            onChange={(value) => onModelPointCostChange(model, toNumberOrOne(value))}
+                                        />
+                                    ) : null}
                                     <Button
                                         className="!h-7 !w-7 !min-w-7 !p-0"
                                         size="small"
@@ -145,8 +153,20 @@ export function QuotaRuleTable({
                                         onClick={() => {
                                             const keys = configuredModelPointCostKeys(settings.modelPointCosts, model, settings.logicalModels);
                                             (keys.length ? keys : [model]).forEach(onModelPointCostDelete);
+                                            onModelBillingRuleChange(model, undefined);
                                         }}
                                     />
+                                    {activeCapability === "text" ? (
+                                        <div className="col-span-full min-w-0">
+                                            <ModelBillingEditor
+                                                model={model}
+                                                rule={resolveModelBillingRule(settings.modelBillingRules, model)}
+                                                requestPoints={resolveConfiguredModelPointCost(settings.modelPointCosts, model, settings.logicalModels)}
+                                                onRuleChange={(rule) => onModelBillingRuleChange(model, rule)}
+                                                onRequestPointsChange={(value) => onModelPointCostChange(model, toNumberOrOne(value))}
+                                            />
+                                        </div>
+                                    ) : null}
                                 </div>
                             );
                         })
@@ -159,7 +179,7 @@ export function QuotaRuleTable({
             </section>
             <section className="pt-4 sm:pt-5">
                 <div className="text-sm font-semibold text-stone-950 dark:text-stone-100">生成参数倍率</div>
-                <div className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">最终扣费 = 模型消耗 × 图片张数/视频任务 × 对应参数倍率。未命中的自定义参数按 1 倍计算。</div>
+                <div className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">按次扣费 = 模型消耗 × 图片张数/视频任务 × 对应参数倍率。未命中的自定义参数按 1 倍计算；按 Token 计费不使用这些倍率。</div>
                 <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(220px,0.8fr)_minmax(220px,0.8fr)_minmax(360px,1.4fr)]">
                     <MultiplierGroup title="图片清晰度" values={imageQualityMultiplierOptions} group="imageQuality" settings={settings.generationPointMultipliers.imageQuality} onChange={onGenerationPointMultiplierChange} />
                     <MultiplierGroup title="视频清晰度" values={videoQualityMultiplierOptions} group="videoQuality" settings={settings.generationPointMultipliers.videoQuality} onChange={onGenerationPointMultiplierChange} />
@@ -170,11 +190,13 @@ export function QuotaRuleTable({
     );
 }
 
-export function listPointCostModels(settings: Pick<AuthSettings, "logicalModels" | "systemChannels" | "modelPointCosts">) {
+export function listPointCostModels(settings: Pick<AuthSettings, "logicalModels" | "systemChannels" | "modelPointCosts" | "modelBillingRules">) {
     const logicalIds = settings.logicalModels.map((model) => model.id);
     const channelModels = uniqueList(settings.systemChannels.flatMap((channel) => channel.models));
     const bindingAliases = new Set(settings.logicalModels.flatMap((model) => model.bindings.map((binding) => binding.upstreamModel.toLowerCase())));
-    const customModels = Object.keys(settings.modelPointCosts || {}).filter((model) => model !== DEFAULT_MODEL_POINT_COST_KEY && (!logicalIds.length || !bindingAliases.has(model.toLowerCase())));
+    const customModels = uniqueList([...Object.keys(settings.modelPointCosts || {}), ...Object.keys(settings.modelBillingRules || {})]).filter(
+        (model) => model !== DEFAULT_MODEL_POINT_COST_KEY && (!logicalIds.length || !bindingAliases.has(model.toLowerCase())),
+    );
     return uniqueList([...(logicalIds.length ? logicalIds : channelModels), ...customModels]);
 }
 

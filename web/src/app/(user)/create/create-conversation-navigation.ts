@@ -1,5 +1,5 @@
-export function createConversationHref(conversationId: string) {
-    return `/create?${new URLSearchParams({ conversationId }).toString()}`;
+export function createConversationHref(conversationId: string, basePath: "/create" | "/commerce/image" = "/create") {
+    return `${basePath}?${new URLSearchParams({ conversationId }).toString()}`;
 }
 
 export function createConversationIdFromSearch(search: string) {

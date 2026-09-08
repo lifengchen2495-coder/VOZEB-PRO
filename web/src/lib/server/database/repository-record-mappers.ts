@@ -1,6 +1,7 @@
 import { formatAccountId } from "@/lib/account-id";
 import { normalizeRegistrationPolicyConsent } from "@/lib/registration-consent";
 import { normalizeAdminPermissions } from "@/lib/admin-permissions";
+import { normalizeTokenBillingRecord } from "@/lib/token-billing-record";
 
 import type {
     AnnouncementRecord,
@@ -147,6 +148,7 @@ export function mapPointRecord(row: Record<string, unknown>): PointRecord {
         requestFingerprint: optionalString(row.request_fingerprint),
         sourceRecordId: optionalString(row.source_record_id),
         sourceDate: row.source_date === null || row.source_date === undefined ? undefined : dateValue(row.source_date),
+        tokenBilling: normalizeTokenBillingRecord(row.token_billing),
         createdAt: isoValue(row.created_at),
     };
 }

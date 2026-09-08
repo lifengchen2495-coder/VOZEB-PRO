@@ -1,0 +1,109 @@
+{
+  "checkedAt": "2026-09-08",
+  "baseUrl": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3",
+  "scope": "核对当前 Base 全部 12 表，按实际流程与字段去重；每个不同流程独立菜单、API 和存储。",
+  "workflows": [
+    {
+      "tableId": "tblE18Cc2DVc2zS8",
+      "name": "15 秒换品换人实操",
+      "records": 21,
+      "menu": "/remake15",
+      "decision": "已有",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblE18Cc2DVc2zS8"
+    },
+    {
+      "tableId": "tblEXezjwaNu1Ror",
+      "name": "15 秒测试版",
+      "records": 21,
+      "menu": "/remake15",
+      "decision": "重复：核心 23 字段相同，额外 image2 实验字段不构成新流程",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblEXezjwaNu1Ror"
+    },
+    {
+      "tableId": "tblR5Va4TmhsYpWy",
+      "name": "1 分钟换品换人",
+      "records": 3,
+      "menu": "/remake60",
+      "decision": "新增：48 帧、脚本适配、两步生图、4 条 15 秒",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblR5Va4TmhsYpWy"
+    },
+    {
+      "tableId": "tblGwMWoSz8RyIhr",
+      "name": "1 分钟换品换人实操",
+      "records": 12,
+      "menu": "/remake60",
+      "decision": "重复：48/49 字段，增加 1-12 替换人物 副本",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblGwMWoSz8RyIhr"
+    },
+    {
+      "tableId": "tblKJ5vP6DByugwa",
+      "name": "1 分钟不换品只换人",
+      "records": 11,
+      "menu": "/remake-person",
+      "decision": "新增严格保留原品；旧 /remake 已含换品步骤，保持其现状",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblKJ5vP6DByugwa"
+    },
+    {
+      "tableId": "tbl1V6EOeaAjxAw2",
+      "name": "不换品只换人副本",
+      "records": 11,
+      "menu": "/remake-person",
+      "decision": "重复：同一业务流程",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tbl1V6EOeaAjxAw2"
+    },
+    {
+      "tableId": "tbl71YEowi1HXga4",
+      "name": "1 分钟换品不换人基础",
+      "records": 12,
+      "menu": "/remake-product",
+      "decision": "新增：48 帧、单步换品、保留原人物",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tbl71YEowi1HXga4"
+    },
+    {
+      "tableId": "tblNxnK8xvSHIrcY",
+      "name": "换品不换人空表",
+      "records": 0,
+      "menu": "/remake-product",
+      "decision": "重复：31 字段名称与类型完全相同",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblNxnK8xvSHIrcY"
+    },
+    {
+      "tableId": "tblTb6y4DGpl59hb",
+      "name": "Omni 服装换品不换人",
+      "records": 10,
+      "menu": "/omni-clothing",
+      "decision": "新增：视频切片、服装参考、保留原人物与背景",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblTb6y4DGpl59hb"
+    },
+    {
+      "tableId": "tblD8YooqpAn5SxW",
+      "name": "Omni 全品类实操",
+      "records": 28,
+      "menu": "/omni-remake",
+      "decision": "新增：分析口型与自然边界、素材与双语逐段计划、视频切片",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblD8YooqpAn5SxW"
+    },
+    {
+      "tableId": "tblYlBYVx0xpNN1h",
+      "name": "爆款素材库主表",
+      "records": 9,
+      "menu": null,
+      "decision": "管理用途，不是独立复刻流程",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblYlBYVx0xpNN1h"
+    },
+    {
+      "tableId": "tblPnNapf9AgefCl",
+      "name": "素材分析明细副表",
+      "records": 10,
+      "menu": null,
+      "decision": "分析用途，不是独立复刻流程",
+      "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblPnNapf9AgefCl"
+    }
+  ],
+  "notes": [
+    "当前 Base 没有独立 30 秒表；Omni 可按来源视频时长切片，不宣称存在未找到的固定 30 秒表。",
+    "旧 /remake 与 /remake15 保留，新增 5 个流程入口。",
+    "源 Prompt 的歧义或冲突在各模块来源文档记录；严格只换产品入口按用户要求锁定人物和背景。",
+    "本次只读原表和教程，未修改飞书字段、记录或触发原表生成。"
+  ]
+}

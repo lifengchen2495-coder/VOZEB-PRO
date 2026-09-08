@@ -30,7 +30,7 @@ export function AdminPointsSection({ controller }: { controller: AdminDashboardC
         <Panel>
             <PanelHeader
                 title="积分规则"
-                description="统一配置免费用户每日额度、模型基础扣费与图片、视频参数倍率。"
+                description="配置每日额度、模型按次或按 Token 计费，以及图片、视频参数倍率。"
                 actions={
                     <Button
                         type="primary"
@@ -44,6 +44,7 @@ export function AdminPointsSection({ controller }: { controller: AdminDashboardC
                                     freeDailyPointsEnabled: current.freeDailyPointsEnabled,
                                     freeDailyPoints: current.freeDailyPoints,
                                     modelPointCosts: current.modelPointCosts,
+                                    modelBillingRules: current.modelBillingRules || {},
                                     generationPointMultipliers: current.generationPointMultipliers,
                                 }),
                                 "积分规则已保存",
@@ -64,6 +65,16 @@ export function AdminPointsSection({ controller }: { controller: AdminDashboardC
                     onFreeDailyPointsEnabledChange={(freeDailyPointsEnabled) => setSettings((current) => ({ ...current, freeDailyPointsEnabled }))}
                     onFreeDailyPointsChange={updateFreeDailyPoints}
                     onModelPointCostChange={updateModelPointCost}
+                    onModelBillingRuleChange={(model, rule) =>
+                        setSettings((current) => {
+                            const modelBillingRules = { ...current.modelBillingRules };
+                            Object.keys(modelBillingRules)
+                                .filter((key) => key.toLowerCase() === model.toLowerCase())
+                                .forEach((key) => delete modelBillingRules[key]);
+                            if (rule) modelBillingRules[model] = rule;
+                            return { ...current, modelBillingRules };
+                        })
+                    }
                     onModelPointCostDelete={deleteModelPointCost}
                     onGenerationPointMultiplierChange={updateGenerationPointMultiplier}
                     onGenerationPointMultiplierDelete={deleteGenerationPointMultiplier}

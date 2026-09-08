@@ -187,6 +187,7 @@ class SettingsRepository {
         if (input.mail !== undefined) add("mail", jsonParam(input.mail));
         if (input.allowUserApiConfig !== undefined) add("allow_user_api_config", input.allowUserApiConfig);
         if (input.modelPointCosts !== undefined) add("model_point_costs", jsonParam(input.modelPointCosts));
+        if (input.modelBillingRules !== undefined) add("model_billing_rules", jsonParam(input.modelBillingRules));
         if (input.generationPointMultipliers !== undefined) add("generation_point_multipliers", jsonParam(input.generationPointMultipliers));
         if (input.generationCostControl !== undefined) add("generation_cost_control", jsonParam(input.generationCostControl));
         if (input.dataLifecycle !== undefined) add("data_lifecycle", jsonParam(input.dataLifecycle));
@@ -289,6 +290,7 @@ function mapSettings(row: Record<string, unknown>): AppSettingsRecord {
         mail: jsonValue(row.mail),
         allowUserApiConfig: row.allow_user_api_config === true,
         modelPointCosts: jsonValue(row.model_point_costs),
+        modelBillingRules: jsonValue(row.model_billing_rules ?? {}),
         generationPointMultipliers: jsonValue(row.generation_point_multipliers),
         generationCostControl: jsonValue(row.generation_cost_control),
         dataLifecycle: jsonValue(row.data_lifecycle),

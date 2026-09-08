@@ -1,5 +1,6 @@
 import type { RegistrationPolicyConsent } from "@/lib/registration-consent";
 import type { AdminPermission } from "@/lib/admin-permissions";
+import type { TokenBillingRecord } from "@/lib/model-billing";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -123,6 +124,7 @@ export type AppSettingsRecord = {
     mail: JsonValue;
     allowUserApiConfig: boolean;
     modelPointCosts: JsonValue;
+    modelBillingRules?: JsonValue;
     generationPointMultipliers: JsonValue;
     generationCostControl: JsonValue;
     dataLifecycle: JsonValue;
@@ -169,6 +171,7 @@ export type PointRecord = {
     requestFingerprint?: string;
     sourceRecordId?: string;
     sourceDate?: string;
+    tokenBilling?: TokenBillingRecord;
     createdAt: string;
 };
 

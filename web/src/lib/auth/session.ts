@@ -122,6 +122,7 @@ export function serializePublicSettings(settings: AuthSettings) {
         registrationEnabled: settings.registrationEnabled,
         emailRegistrationEnabled: settings.emailRegistrationEnabled,
         modelPointCosts: { ...settings.modelPointCosts },
+        modelBillingRules: structuredClone(settings.modelBillingRules || {}),
         generationPointMultipliers: {
             imageQuality: { ...settings.generationPointMultipliers.imageQuality },
             videoQuality: { ...settings.generationPointMultipliers.videoQuality },

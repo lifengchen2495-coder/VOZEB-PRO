@@ -5,7 +5,7 @@ import type { PublicPointRecord } from "@/lib/auth/store-types";
 import { serializeApiParams } from "./request";
 import { expireClientSession } from "./session-expiration";
 
-export type PointRecord = Pick<PublicPointRecord, "id" | "type" | "amount" | "balanceAfter" | "description" | "createdAt">;
+export type PointRecord = Pick<PublicPointRecord, "id" | "type" | "amount" | "balanceAfter" | "description" | "createdAt" | "tokenBilling">;
 
 export type PointRecordListResult = {
     records: PointRecord[];

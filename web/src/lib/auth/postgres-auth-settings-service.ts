@@ -64,6 +64,7 @@ function postgresSettingsPatch(patch: Partial<AuthSettings>, settings: AuthSetti
     if (patch.mail !== undefined) result.mail = asJson(settings.mail);
     if (patch.allowUserApiConfig !== undefined) result.allowUserApiConfig = settings.allowUserApiConfig;
     if (patch.modelPointCosts !== undefined) result.modelPointCosts = asJson(settings.modelPointCosts);
+    if (patch.modelBillingRules !== undefined) result.modelBillingRules = asJson(settings.modelBillingRules || {});
     if (patch.generationPointMultipliers !== undefined) result.generationPointMultipliers = asJson(settings.generationPointMultipliers);
     if (patch.generationCostControl !== undefined) result.generationCostControl = asJson(settings.generationCostControl);
     if (patch.dataLifecycle !== undefined) result.dataLifecycle = asJson(settings.dataLifecycle);

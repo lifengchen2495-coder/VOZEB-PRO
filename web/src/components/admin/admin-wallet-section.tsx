@@ -8,9 +8,11 @@ import { CircleDollarSign, CreditCard, PlugZap, ReceiptText, RefreshCw, WalletCa
 
 import type { AdminDashboardController } from "./use-admin-dashboard-controller";
 import { FinanceFlowItem, FinanceMiniRow } from "./admin-dashboard-elements";
+import { AdminTokenSettlements } from "./admin-token-settlements";
+import { hasAdminPermission } from "@/lib/admin-permissions";
 
 export function AdminWalletSection({ controller }: { controller: AdminDashboardController }) {
-    const { billingSummary, billingSummaryLoading, activeSection, setActiveSection, walletSummary, loadBillingSummary } = controller;
+    const { billingSummary, billingSummaryLoading, activeSection, setActiveSection, walletSummary, loadBillingSummary, currentUser } = controller;
     if (activeSection !== "wallet") return null;
     return (
         <div className="space-y-3 sm:space-y-5">
@@ -80,6 +82,7 @@ export function AdminWalletSection({ controller }: { controller: AdminDashboardC
                     </div>
                 </div>
             </Panel>
+            {hasAdminPermission(currentUser, "billing.manage") ? <AdminTokenSettlements onSettled={() => void loadBillingSummary()} /> : null}
         </div>
     );
 }

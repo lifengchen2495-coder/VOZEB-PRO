@@ -113,11 +113,11 @@ describe("generation task scheduler", () => {
         await expect(getNextGenerationTaskDueAt(1_000)).resolves.toBe(2_000);
 
         expect(String(mocks.transactionQuery.mock.calls[0]?.[0])).toContain("FOR UPDATE SKIP LOCKED");
-        expect(mocks.transactionQuery.mock.calls[0]?.[1]).toEqual([new Date(1_000), 20, "worker-one", ["due"], new Date(91_000), ["image", "video", "audio", "text", "agent"]]);
+        expect(mocks.transactionQuery.mock.calls[0]?.[1]).toEqual([new Date(1_000), 20, "worker-one", ["due"], new Date(91_000), ["image", "video", "audio", "text", "agent", "remake"]]);
         expect(String(mocks.postgresQuery.mock.calls[0]?.[0])).toContain("worker_id = $3");
         expect(mocks.postgresQuery.mock.calls[0]?.[1]).toHaveLength(15);
         expect(String(mocks.postgresQuery.mock.calls[1]?.[0])).toContain("min(GREATEST(next_poll_at");
-        expect(mocks.postgresQuery.mock.calls[1]?.[1]).toEqual([["image", "video", "audio", "text", "agent"], new Date(1_000)]);
+        expect(mocks.postgresQuery.mock.calls[1]?.[1]).toEqual([["image", "video", "audio", "text", "agent", "remake"], new Date(1_000)]);
     });
 
     it("uses adaptive polling and bounded network-error backoff", () => {

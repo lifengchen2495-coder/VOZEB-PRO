@@ -1,4 +1,6 @@
-import { BookMarked, Clapperboard, Compass, FileText, GalleryVerticalEnd, Images, Maximize2, ScanSearch, Sparkles, UserRound } from "lucide-react";
+import { BookMarked, Clapperboard, Compass, FileText, GalleryVerticalEnd, Images, Maximize2, ShoppingBag, Sparkles, UserRound } from "lucide-react";
+
+import { commerceToolForPathname } from "./commerce-tools";
 
 export const navigationGroups = [
     { id: "create", label: "创作" },
@@ -37,11 +39,11 @@ export const navigationTools = [
         icon: Clapperboard,
     },
     {
-        slug: "remake",
-        label: "复刻",
-        description: "电商视频拆解与交接",
+        slug: "commerce",
+        label: "电商创作",
+        description: "视频复刻与电商图生成",
         group: "projects",
-        icon: ScanSearch,
+        icon: ShoppingBag,
     },
     {
         slug: "works",
@@ -91,6 +93,6 @@ export type NavigationToolSlug = (typeof navigationTools)[number]["slug"];
 export type NavigationGroupId = (typeof navigationGroups)[number]["id"];
 
 export function navigationToolForPathname(pathname: string) {
-    const slug = pathname.split("/").filter(Boolean)[0];
+    const slug = commerceToolForPathname(pathname) ? "commerce" : pathname.split("/").filter(Boolean)[0];
     return navigationTools.find((tool) => tool.slug === slug);
 }

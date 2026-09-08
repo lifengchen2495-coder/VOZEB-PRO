@@ -162,6 +162,16 @@ export async function POST(request: Request) {
     };
     const settings = await getAuthSettings();
     const createTask = async () => {
+        // 在提交锁内核对项目预留，阻止已撤销但晚到的九宫格请求创建任务。
+        if (resolvedBody.context?.projectId?.startsWith("bangbang-") || resolvedBody.context?.generationSlotId?.startsWith("bangbang-image:")) {
+            const { validateBangbangImageRequest, BangbangProjectError } = await import("@/lib/server/bangbang-project-service");
+            try {
+                await validateBangbangImageRequest({ userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context?.generationSlotId || "", clientRequestId: resolvedBody.context?.clientRequestId, attemptNo: resolvedBody.context?.attemptNo, prompt: (resolvedBody.prompt || "").trim(), references: resolvedBody.references, model: resolvedBody.config?.model, size: resolvedBody.config?.size });
+            } catch (error) {
+                if (error instanceof BangbangProjectError) return NextResponse.json({ error: error.message }, { status: error.status });
+                throw error;
+            }
+        }
         const configs = sanitizeConfigs(resolvedBody.config, settings);
         const prompt = (resolvedBody.prompt || "").trim();
         const kind = resolvedBody.kind === "edit" ? "edit" : "generation";

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizeTokenBillingRecord } from "@/lib/token-billing-record";
 
 import { formatAccountId, parseAccountId } from "@/lib/account-id";
 import { decryptSecretValue, encryptSecretValue, isEncryptedSecretValue } from "@/lib/server/secret-crypto";
@@ -8,6 +9,7 @@ import { DEFAULT_CREATIVE_SHORTCUT_SKILLS } from "@/lib/server/agent-skills/crea
 import { deriveLogicalModelsConfig, normalizeDefaultModelsConfig, normalizeLogicalModelsConfig } from "@/lib/model-routing-config";
 import { applyChannelProtocol } from "@/lib/channel-protocol-registry";
 import { resolveConfiguredModelPointCost } from "@/lib/model-point-cost";
+import { normalizeModelBillingRules } from "@/lib/model-billing-config";
 import { normalizeSystemChannelAdvancedConfig } from "./store-normalizers-channel";
 import {
     type UserRole,
@@ -247,6 +249,7 @@ export function normalizeSettings(settings: AuthSettings): AuthSettings {
         mail: normalizeMailSettings(settings.mail, site.title),
         allowUserApiConfig: false,
         modelPointCosts: normalizeModelPointCosts(settings.modelPointCosts),
+        modelBillingRules: normalizeModelBillingRules(settings.modelBillingRules),
         generationPointMultipliers: normalizeGenerationPointMultipliers(settings.generationPointMultipliers),
         generationCostControl: normalizeGenerationCostControl(settings.generationCostControl),
         dataLifecycle: normalizeDataLifecycle(settings.dataLifecycle),
@@ -859,6 +862,7 @@ export function normalizePointRecord(value: Partial<StoredPointRecord>): StoredP
         requestFingerprint: typeof value.requestFingerprint === "string" && /^[a-f0-9]{64}$/i.test(value.requestFingerprint.trim()) ? value.requestFingerprint.trim().toLowerCase() : undefined,
         sourceRecordId: normalizeOptionalText(value.sourceRecordId, 120),
         sourceDate: normalizeDate(value.sourceDate) || undefined,
+        tokenBilling: normalizeTokenBillingRecord(value.tokenBilling),
         createdAt: value.createdAt || new Date().toISOString(),
     };
 }

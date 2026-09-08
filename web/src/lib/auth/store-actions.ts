@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { inferModelCapability } from "@/lib/model-capability";
+import { resolveModelBillingRule } from "@/lib/model-billing";
 import { lockAuthMutation } from "@/lib/server/auth-mutation-lock";
 import { createPostgresRepositories, ensurePostgresSchema, isPostgresDatabaseEnabled, withPostgresTransaction } from "@/lib/server/database";
 import { adjustPermanentPointsInPostgresTransaction, consumePoints, creditPermanentPointsInAuthDb, refundPoints, walletClock } from "@/lib/server/points-wallet-service";
@@ -669,6 +670,14 @@ export function toPublicPointRecord(record: StoredPointRecord): PublicPointRecor
 export function displayPointRecordDescription(record: StoredPointRecord) {
     const description = record.description.trim();
     const model = (record.model || "").trim();
+    if (record.tokenBilling) {
+        const billing = record.tokenBilling;
+        if (billing.status === "refunded") return `${model} Token 调用已退款（原预扣）`;
+        if (billing.status === "usage-missing") return `${model} Token 用量待核对（暂保留预扣 ${billing.reservedPoints} 积分）`;
+        if (billing.status === "reserved") return `${model} Token 调用预扣`;
+        return `${model} Token 调用（实际 ${billing.actualPoints ?? 0} 积分，原预扣 ${billing.reservedPoints} 积分）`;
+    }
+    if (record.sourceRecordId && record.idempotencyKey?.startsWith("token-settle:")) return description;
     if (!model) return description;
     if (record.type === "consume") {
         return buildPointRecordDescription(model, legacyPointUsageKindFromModel(model), "consume");
@@ -691,9 +700,11 @@ export async function consumeUserPoints(userId: string, model: string, amount = 
     const user = db?.users.find((item) => item.id === userId);
     if (db && (!user || user.status !== "active")) throw new AuthInputError("用户不可用");
     const settings = db ? db.settings : await getAuthSettings();
+    const billingRule = resolveModelBillingRule(settings.modelBillingRules, normalizedModel);
+    if (billingRule.mode === "token" && usageKind !== "text") throw new AuthInputError("按 Token 计费目前仅支持文本调用，请为该模型配置按次计费");
     const multiplier = resolveModelPointCost(settings.modelPointCosts, normalizedModel, settings.logicalModels);
     const units = Math.min(1000, normalizePointAmount(amount, 1));
-    const cost = normalizePointAmount(units * multiplier, 0);
+    const cost = billingRule.mode === "token" ? billingRule.reservePoints : normalizePointAmount(units * multiplier, 0);
     const operationKey = idempotencyKey?.trim() || `points-consume:${randomUUID()}`;
     const result = await consumePoints({
         userId,
@@ -704,12 +715,13 @@ export async function consumeUserPoints(userId: string, model: string, amount = 
         description: buildPointRecordDescription(normalizedModel, usageKind, "consume"),
         idempotencyKey: operationKey,
         requestFingerprint,
+        ...(billingRule.mode === "token" ? { tokenBilling: { rule: { ...billingRule }, status: "reserved" as const, reservedPoints: cost, usageKind } } : {}),
     });
     return {
         model: normalizedModel,
         units,
         multiplier,
-        cost,
+        cost: result.record.tokenBilling?.actualPoints ?? cost,
         remaining: result.snapshot.totalPoints,
         permanentRemaining: result.snapshot.permanentPoints,
         dailyRemaining: result.snapshot.dailyPoints,
@@ -718,6 +730,8 @@ export async function consumeUserPoints(userId: string, model: string, amount = 
         planId: result.snapshot.activePlanId || (db && user ? resolveUserPlan(db, user).id : DEFAULT_ENTITLEMENT_PLAN_ID),
         recordId: result.record.id,
         idempotencyKey: result.record.idempotencyKey,
+        applied: result.applied,
+        tokenBilling: result.record.tokenBilling,
     };
 }
 

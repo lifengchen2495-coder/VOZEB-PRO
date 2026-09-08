@@ -29,8 +29,12 @@ export function adaptGlobalAiOpcTextRequest(config: SystemChannelAdvancedConfig 
 export function adaptGlobalAiOpcTextResponse(adapter: ProxyAdapter, payload: unknown) {
     const record = object(payload);
     if (!record) return payload;
-    if (adapter === "gemini") return geminiToChatCompletion(record);
-    return claudeToChatCompletion(record);
+    const completion = adapter === "gemini" ? geminiToChatCompletion(record) : claudeToChatCompletion(record);
+    return {
+        ...completion,
+        ...(record.usage !== undefined ? { usage: record.usage } : {}),
+        ...(record.usageMetadata !== undefined ? { usageMetadata: record.usageMetadata } : {}),
+    };
 }
 
 function toGeminiRequest(payload: Record<string, unknown>) {

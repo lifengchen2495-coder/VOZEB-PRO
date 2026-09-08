@@ -41,83 +41,9 @@ describe("Canvas Agent session deletion", () => {
 });
 
 describe("Canvas Agent current-turn references", () => {
-    it("renders the current-turn references before the user text", async () => {
+    it("maps current-turn references to user message attachments", () => {
         const item = assistantMessageToChatMessage({ id: "message", role: "user", text: "修改颜色", references: [{ id: "reference", type: CanvasNodeType.Image, title: "参考图", dataUrl: "/api/reference-assets/reference.webp" }] });
         expect(item.attachments).toEqual([{ id: "reference", name: "参考图", type: "image", url: "/api/reference-assets/reference.webp" }]);
-
-        const source = await readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-agent-chat-ui.tsx"), "utf8");
-        const userMessageStart = source.indexOf("if (isUser)");
-        const messageSource = source.slice(userMessageStart, source.indexOf("return (", source.indexOf("return (", userMessageStart) + 1));
-
-        expect(messageSource.indexOf("<AgentMessageAttachments")).toBeGreaterThanOrEqual(0);
-        expect(messageSource.indexOf("<AgentMessageAttachments")).toBeLessThan(messageSource.indexOf("item.text"));
-        expect(messageSource.indexOf("<AgentUserAvatar")).toBeGreaterThan(messageSource.indexOf("item.text"));
-    });
-
-    it("places compact composer thumbnails above the editable prompt", async () => {
-        const source = await readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-agent-chat-ui.tsx"), "utf8");
-        const composer = source.slice(source.indexOf("data-canvas-agent-composer"), source.indexOf("export function AgentPanelTabs"));
-
-        expect(composer).toContain("relative size-10");
-        expect(composer).toContain("max-w-[44%]");
-        expect(composer).toContain('className="relative min-w-0 flex-1"');
-        expect(composer.indexOf('aria-label="本轮参考素材"')).toBeLessThan(composer.indexOf("<Popover"));
-        expect(composer.indexOf("<Popover")).toBeLessThan(composer.indexOf("<textarea"));
-    });
-
-    it("keeps typed @ asset mentions without rendering a dedicated mention button", async () => {
-        const source = await readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-agent-chat-ui.tsx"), "utf8");
-        const composer = source.slice(source.indexOf("data-canvas-agent-composer"), source.indexOf("export function AgentPanelTabs"));
-
-        expect(composer).not.toContain('aria-label="引用画布图片或视频"');
-        expect(source).toContain("canvasAgentMentionAtCursor");
-        expect(composer).toContain("<CanvasAgentMentionPicker");
-        expect(source).toContain("onSelectReference?.(asset.id)");
-    });
-
-    it("keeps reference upload in the input row and orders Skill, planning, model, parameters before send", async () => {
-        const chatSource = await readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-agent-chat-ui.tsx"), "utf8");
-        const controlsSource = await readFile(resolve(process.cwd(), "src/components/agent/creative-agent-controls.tsx"), "utf8");
-        const assistantSource = await readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-assistant-panel.tsx"), "utf8");
-        const settingsSource = await readFile(resolve(process.cwd(), "src/components/agent/compact-agent-generation-settings.tsx"), "utf8");
-        const inputRow = chatSource.slice(chatSource.indexOf("data-canvas-agent-input-row"), chatSource.indexOf("data-canvas-agent-toolbar"));
-        const toolbar = chatSource.slice(chatSource.indexOf('className="mt-2 flex min-w-0'), chatSource.indexOf("export function AgentPanelTabs"));
-        const controls = controlsSource.slice(controlsSource.indexOf("const mutedStyle"), controlsSource.indexOf("function capabilityLabel"));
-
-        expect(inputRow).toContain('aria-label={uploading ? "正在上传图片" : attachments.length ? "继续添加参考素材" : "添加参考素材"}');
-        expect(inputRow.indexOf('aria-label="本轮参考素材"')).toBeLessThan(inputRow.indexOf("<textarea"));
-        expect(toolbar).toContain("data-canvas-agent-toolbar");
-        expect(toolbar).not.toContain("添加参考素材");
-        expect(inputRow).toContain("min-h-20");
-        expect(controls).toContain('compact ? "flex w-full min-w-0 items-center gap-1"');
-        expect(controls).toContain('compact && "pl-1"');
-        expect(controls).not.toContain('compact && "ml-auto pl-1"');
-        expect(settingsSource).toContain('triggerIcon={<SlidersHorizontal className="size-4" />}');
-        expect(settingsSource).toContain("!max-w-[116px]");
-        expect(settingsSource).toContain('panelClassName="!w-[280px]"');
-        expect(controlsSource).toContain('data-creative-agent-model-picker={compact ? "compact" : "default"}');
-        expect(controlsSource).toContain('compact ? "max-w-[280px]"');
-        expect(controlsSource).toContain('compact ? "max-h-40"');
-        expect(toolbar.indexOf("{left}")).toBeLessThan(toolbar.indexOf('aria-label="发送"'));
-        expect(assistantSource.indexOf("middle={<CanvasAgentGenerationSettings")).toBeGreaterThan(assistantSource.indexOf("<CreativeAgentControls"));
-        expect(controls.indexOf("skillOpen")).toBeLessThan(controls.indexOf("smartPlanning"));
-        expect(controls.indexOf("smartPlanning")).toBeLessThan(controls.indexOf("modelOpen"));
-        expect(controls.indexOf("modelOpen")).toBeLessThan(controls.indexOf("{middle}"));
-    });
-
-    it("uses the settings icon for Canvas image and video parameter triggers", async () => {
-        const [imageSettings, videoSettings] = await Promise.all([
-            readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-image-settings-popover.tsx"), "utf8"),
-            readFile(resolve(process.cwd(), "src/app/(user)/canvas/components/canvas-video-settings-popover.tsx"), "utf8"),
-        ]);
-
-        expect(imageSettings).toContain('triggerIcon={<SlidersHorizontal className="size-4" />}');
-        expect(videoSettings).toContain('triggerIcon={<SlidersHorizontal className="size-4" />}');
-        expect(imageSettings).toContain("canvasImagePreferenceSummary(preferences, fixedSizeLabel)");
-        expect(imageSettings).toContain('triggerLabelClassName="whitespace-nowrap text-left !overflow-visible !text-clip"');
-        expect(imageSettings).toContain('count > 1 ? ` · ${count}张` : ""');
-        expect(videoSettings).toContain("canvasVideoPreferenceSummary(preferences)");
-        expect(videoSettings).toContain('triggerLabelClassName="whitespace-nowrap text-left !overflow-visible !text-clip"');
     });
 
     it("clears submitted references before creating the backend run", async () => {

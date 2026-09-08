@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-08",
+  "source": {
+    "baseToken": "ScUYbyoAbaJptZsnuTbcg6WwnN3",
+    "tableId": "tblKJ5vP6DByugwa",
+    "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+    "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblKJ5vP6DByugwa",
+    "equivalentTableId": "tbl1V6EOeaAjxAw2",
+    "fieldArtifact": ".workflow/remake-person-fields.json",
+    "recordArtifact": ".workflow/remake-person-records.ndjson",
+    "fieldCount": 26,
+    "recordCount": 11,
+    "hasMore": false,
+    "recordsWithOutputPrompts": 3
+  },
+  "workflow": {
+    "frames": 48,
+    "copyBlocks": 16,
+    "groups": ["1-12", "13-24", "25-36", "37-48"],
+    "imageStagesPerGroup": 1,
+    "requiredReferences": ["原始视频", "背景图"],
+    "optionalReferences": ["人物图", "人物补充"],
+    "videoSecondsPerGroup": 15,
+    "systemMergeExtensionSeconds": 60
+  },
+  "verification": {
+    "method": "使用 lark-cli --as user 只读投影查询 11 条记录，并查看第一组生图字段编辑器；取消编辑，没有保存或触发飞书生成。",
+    "observedImagePromptTitle": "电商视频分镜图生成（跟品版）",
+    "observedImageInputs": ["1-12拼图", "人物图", "背景图"],
+    "observedImageOutput": "9:16，2K，4行3列，无间隙分割线",
+    "productRule": "产品位置、角度、状态与展示方式完全不变；人物动作、姿势、眼神、互动、景别、占比均以原分镜为唯一权威。",
+    "referenceRule": "背景必需；人物六宫格可选，只参考外貌和服装，绝不参考动作和眼神。",
+    "faceRule": "原生图规则要求有人脸时高斯模糊；已生成视频提示词禁止模糊和遮挡，最终视频结合人物图恢复清晰外貌。",
+    "adaptations": ["人物补充字段接为可选同一人物参考", "原视频提示词样本含无对应字段的 @产品图，系统改为从十二宫格锁定原产品并拒绝该悬空引用", "系统新增四段鉴权合并下载，原表没有合并列"],
+    "analysisAndCopyRules": "沿用已核验的 48 帧、16 区间结构，并与当前表记录核对；当前表分析与文案字段编辑器未逐字核验。",
+    "runtimePromptOrigin": "visible_field_rules_and_record_output_adaptation"
+  }
+}

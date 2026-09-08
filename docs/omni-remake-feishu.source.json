@@ -1,0 +1,131 @@
+{
+  "checkedAt": "2026-09-08",
+  "baseToken": "ScUYbyoAbaJptZsnuTbcg6WwnN3",
+  "tableId": "tblD8YooqpAn5SxW",
+  "tableUrl": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblD8YooqpAn5SxW",
+  "fields": [
+    {
+      "id": "fldLPGMOTt",
+      "name": "父记录",
+      "type": "link"
+    },
+    {
+      "id": "fldfSO61JR",
+      "name": "产品/人物 补充",
+      "type": "text"
+    },
+    {
+      "id": "fldujcRE9R",
+      "name": "处理状态",
+      "type": "select"
+    },
+    {
+      "id": "fldRTvnDS0",
+      "name": "视频分析Json",
+      "type": "text"
+    },
+    {
+      "id": "fldPQZbkDe",
+      "name": "ID",
+      "type": "auto_number"
+    },
+    {
+      "id": "fldvcjqP9I",
+      "name": "生成视频总计划",
+      "type": "text"
+    },
+    {
+      "id": "fldkj6BJrp",
+      "name": "任务创建时间",
+      "type": "created_at"
+    },
+    {
+      "id": "fldQ41rIVV",
+      "name": "产品图",
+      "type": "attachment"
+    },
+    {
+      "id": "fldHzRlCgz",
+      "name": "视频提示词-汇总",
+      "type": "text"
+    },
+    {
+      "id": "fldZYttAjg",
+      "name": "素材分析结果",
+      "type": "text"
+    },
+    {
+      "id": "fldhm0AlIp",
+      "name": "视频生成片段——提示词分类",
+      "type": "text"
+    },
+    {
+      "id": "fldIKOjUiZ",
+      "name": "背景图",
+      "type": "attachment"
+    },
+    {
+      "id": "fldP3Be2ZC",
+      "name": "开始执行",
+      "type": "checkbox"
+    },
+    {
+      "id": "fldHcO0kif",
+      "name": "视频提示词-中文",
+      "type": "text"
+    },
+    {
+      "id": "fld1EqiAeL",
+      "name": "视频分析结果",
+      "type": "text"
+    },
+    {
+      "id": "fldtSTt9EO",
+      "name": "参考视频",
+      "type": "attachment"
+    },
+    {
+      "id": "fldnCUZnqm",
+      "name": "产品名称",
+      "type": "text"
+    },
+    {
+      "id": "fldfuRcYBO",
+      "name": "人物图",
+      "type": "attachment"
+    }
+  ],
+  "evidence": {
+    "records": 28,
+    "withAnalysisAndPlan": 26,
+    "emptyAnalysis": 2,
+    "hasMore": false,
+    "projectionFile": ".workflow/omni-remake-source-20260908.ndjson",
+    "tutorialDocuments": [
+      "FPORd1Dcyoh3vExp4Qicjfminve",
+      "DPm2drYlgo1wIvxHmb4cb1eWnQh"
+    ],
+    "analysisPrompt": {
+      "field": "视频分析Json",
+      "method": "只读浏览器字段编辑面板中的可见原文；取消退出，未保存",
+      "characters": 8147,
+      "fnv1a": "30e7a8e0"
+    }
+  },
+  "rules": [
+    "单段理想 6–9 秒，可接受 4–10 秒，硬上限 10 秒；不同人物/人数变化优先切分，同人物自然动作过渡尽量合并。",
+    "仅单人嘴部清晰并持续说话时保留原声；双人/多人、手部、空镜、遮挡或需要二次检查默认移除音频。",
+    "没有目标产品的镜头不新增产品；手部镜头不凭空增加完整人物或人脸。",
+    "素材分析、总计划、每段中英文提示词分别保存；产品、人物、背景角色明确区分。",
+    "按 start/end 真实切视频并按音频策略处理，模型输出允许向上选择合法整数时长，合并裁回源片段长度。"
+  ],
+  "adaptations": [
+    "将原嵌套 video_summary/person_info/audio_judgement JSON 映射为简化但严格校验的系统合同；自动音频规则由服务端再次判定。",
+    "原表 SaaS 插件调用替换为系统已配置的完整视频理解、视觉文本与视频参考模型；模型参数和候选能力在提交前校验。",
+    "提供明确全部静音/全部原声覆盖选项；默认遵循源表单人清晰口播规则。",
+    "服务端保存素材、Prompt、任务请求号和尝试，UI 不能伪造成功结果。",
+    "每段最多 10 秒；系统单源文件最多 200 MB，最多 200 段。",
+    "操作进程中断在 30 分钟后标记可重试错误，不假装处理完成；视频任务通过持久任务记录恢复。"
+  ],
+  "validationScope": "本轮使用 mock 模型 HTTP 边界及本地 FFmpeg 验证；未真实调用付费模型、未修改飞书、未部署。"
+}

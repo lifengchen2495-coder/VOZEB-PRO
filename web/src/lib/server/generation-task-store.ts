@@ -791,7 +791,7 @@ export async function withGenerationConcurrencyLimit<T>(userId: string, type: Ge
     concurrencyQueues.set(key, queued);
     await previous;
     try {
-        return (await countActiveStoredGenerationTasks(userId, type, staleMs, excludeTaskId)) >= limit ? null : handler();
+        return (await countActiveStoredGenerationTasks(userId, type, staleMs, excludeTaskId)) >= limit ? null : await handler();
     } finally {
         release();
         if (concurrencyQueues.get(key) === queued) concurrencyQueues.delete(key);

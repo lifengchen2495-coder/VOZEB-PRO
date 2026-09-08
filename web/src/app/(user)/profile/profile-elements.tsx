@@ -289,6 +289,11 @@ export function RecordList({ records }: { records: PointRecord[] }) {
                             </Tag>
                         </div>
                         <div className="mt-0.5 text-[11px] text-stone-500 dark:text-stone-400">余额 {formatCreditAmount(record.balanceAfter)}</div>
+                        {record.tokenBilling?.usage && (
+                            <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                                输入 {record.tokenBilling.usage.inputTokens.toLocaleString()} Token（含缓存 {record.tokenBilling.usage.cachedInputTokens.toLocaleString()}） · 输出 {record.tokenBilling.usage.outputTokens.toLocaleString()} Token
+                            </div>
+                        )}
                     </div>
                 );
             })}

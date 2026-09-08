@@ -98,6 +98,7 @@ ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS agent_skills jsonb NOT NULL DE
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS logical_models jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS free_daily_points_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS free_daily_points numeric(18, 2) NOT NULL DEFAULT 0;
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS model_billing_rules jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS generation_cost_control jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS data_lifecycle jsonb NOT NULL DEFAULT '{}'::jsonb;
 
@@ -590,6 +591,97 @@ CREATE TABLE IF NOT EXISTS remake_projects (
 
 CREATE INDEX IF NOT EXISTS remake_projects_user_updated_idx ON remake_projects (user_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS remake15_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT remake15_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS remake15_projects_user_updated_idx ON remake15_projects (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS remake60_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT remake60_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS remake60_projects_user_updated_idx ON remake60_projects (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS remake_product_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT remake_product_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS remake_product_projects_user_updated_idx ON remake_product_projects (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS remake_person_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT remake_person_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS remake_person_projects_user_updated_idx ON remake_person_projects (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS omni_clothing_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'draft',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT omni_clothing_projects_status CHECK (status IN ('draft', 'ready', 'generating', 'completed', 'error'))
+);
+
+CREATE INDEX IF NOT EXISTS omni_clothing_projects_user_updated_idx ON omni_clothing_projects (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS omni_remake_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT omni_remake_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS omni_remake_projects_user_updated_idx ON omni_remake_projects (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS bangbang_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT bangbang_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS bangbang_projects_user_updated_idx ON bangbang_projects (user_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS drama_project_versions (
     id text PRIMARY KEY,
     project_id text NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
@@ -649,6 +741,7 @@ CREATE TABLE IF NOT EXISTS point_records (
     request_fingerprint text,
     source_record_id text,
     source_date date,
+    token_billing jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT point_records_type CHECK (type IN ('consume', 'refund', 'credit', 'admin-adjust'))
 );
@@ -661,6 +754,7 @@ ALTER TABLE point_records ADD COLUMN IF NOT EXISTS idempotency_key text;
 ALTER TABLE point_records ADD COLUMN IF NOT EXISTS request_fingerprint text;
 ALTER TABLE point_records ADD COLUMN IF NOT EXISTS source_record_id text;
 ALTER TABLE point_records ADD COLUMN IF NOT EXISTS source_date date;
+ALTER TABLE point_records ADD COLUMN IF NOT EXISTS token_billing jsonb;
 UPDATE point_records
 SET
     type = 'credit',

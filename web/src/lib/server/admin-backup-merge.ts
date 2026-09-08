@@ -59,6 +59,7 @@ function mergeSettings(current: AuthSettings, imported: AuthSettings): AuthSetti
         },
         mail: { ...current.mail, ...imported.mail },
         modelPointCosts: { ...current.modelPointCosts, ...imported.modelPointCosts },
+        modelBillingRules: { ...current.modelBillingRules, ...imported.modelBillingRules },
         generationPointMultipliers: {
             imageQuality: { ...current.generationPointMultipliers.imageQuality, ...imported.generationPointMultipliers.imageQuality },
             videoQuality: { ...current.generationPointMultipliers.videoQuality, ...imported.generationPointMultipliers.videoQuality },

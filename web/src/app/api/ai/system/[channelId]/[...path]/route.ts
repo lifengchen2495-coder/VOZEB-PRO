@@ -24,6 +24,10 @@ import { authorizeGenerationMediaProxyRequest } from "@/lib/server/generation-me
 import { SYSTEM_PROXY_JSON_BODY_MAX_BYTES } from "@/lib/server/system-proxy-request-limits";
 import { userOwnsGenerationUpstreamTask } from "@/lib/server/generation-task-authorization";
 import { authorizeSystemAiProxyRequest } from "@/lib/server/system-ai-proxy-policy";
+import { settleTokenPoints } from "@/lib/server/points-wallet-service";
+import { createTokenUsageAccumulator } from "@/lib/server/token-usage";
+import { meterTokenStream, type TokenStreamBilling } from "@/lib/server/token-billing-stream";
+import { resolveModelBillingRule, type TokenUsage } from "@/lib/model-billing";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,7 +100,7 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
     const apiFormat = modelConfig?.apiFormat || channel.apiFormat;
     const globalChannel = isGlobalAiOpcChannel(channel.advancedConfig);
     const globalPreset = resolveGlobalAiOpcPreset(channel.advancedConfig, upstreamModel) || resolveGlobalAiOpcPathPreset(channel.advancedConfig, path);
-    const globalAdaptation = adaptGlobalAiOpcTextRequest(channel.advancedConfig, path, requestBody.body);
+    let globalAdaptation = adaptGlobalAiOpcTextRequest(channel.advancedConfig, path, requestBody.body);
     if (globalAdaptation === "responses-unsupported") return NextResponse.json({ error: "该 GlobalAiOpc 原生文本接口不支持 Responses，已切换 Chat 兼容回退。" }, { status: 404 });
     const pointsRequest =
         classifyPointsRequest(request.method, apiFormat, path, contentType, requestBody.pointsPayload, settings.generationPointMultipliers) ||
@@ -133,6 +137,18 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
         },
     });
     if (!access.allowed) return NextResponse.json({ error: access.error }, { status: access.status });
+    if (pointsRequest && resolveModelBillingRule(settings.modelBillingRules, access.logicalModelId).mode === "token") {
+        if (access.capability !== "text") return NextResponse.json({ error: "按 Token 计费目前仅支持文本调用" }, { status: 400 });
+        // OpenAI Chat 只有显式请求 include_usage 才保证流末帧携带用量。
+        const payload = readRequestBody(contentType, requestBody.pointsPayload);
+        if (payload.stream === true && path.join("/").toLowerCase().endsWith("chat/completions")) {
+            const streamOptions = payload.stream_options && typeof payload.stream_options === "object" ? payload.stream_options : {};
+            const nextPayload = { ...payload, stream_options: { ...streamOptions, include_usage: true } };
+            requestBody = { ...requestBody, body: JSON.stringify(nextPayload) };
+            globalAdaptation = adaptGlobalAiOpcTextRequest(channel.advancedConfig, path, requestBody.body);
+            if (globalAdaptation === "responses-unsupported") return NextResponse.json({ error: "该接口不支持 Responses" }, { status: 400 });
+        }
+    }
     if (access.operation !== "create") {
         const owned = await userOwnsGenerationUpstreamTask({ userId, capability: access.capability, channelId: channel.id, upstreamModel, upstreamTaskId: access.upstreamTaskId });
         if (!owned) return NextResponse.json({ error: "任务不存在或无权访问" }, { status: 404 });
@@ -173,16 +189,57 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
         const refundedUser = await refundUserPoints(userId, pointsResult.model, pointsResult.cost, pointsResult.usageKind, pointsResult.units, undefined, pointsResult.recordId);
         refundedPointsRemaining = typeof refundedUser?.pointsBalance === "number" ? refundedUser.pointsBalance : null;
     };
+    const settleTokenUsage = async (usage: TokenUsage | undefined, failed = false): Promise<TokenStreamBilling> => {
+        const charge = pointsResult!;
+        if (failed) {
+            await refundConsumedPoints();
+            return { type: "vozeb.billing", recordId: charge.recordId, cost: 0, remaining: refundedPointsRemaining ?? charge.remaining, status: "refunded" };
+        }
+        let settled: Awaited<ReturnType<typeof settleTokenPoints>>;
+        try {
+            settled = await settleTokenPoints({ userId, sourceRecordId: charge.recordId, usage });
+        } catch (error) {
+            // 上游已成功时保留预扣和用量诊断，财务可核对超时未结算的流水。
+            console.error("Token settlement pending reconciliation", { recordId: charge.recordId, usage, error: error instanceof Error ? error.message : String(error) });
+            pointsSettled = true;
+            return { type: "vozeb.billing", recordId: charge.recordId, cost: charge.cost, remaining: charge.remaining, status: "reserved" };
+        }
+        const billing = settled.record.tokenBilling!;
+        pointsResult = {
+            ...charge,
+            cost: billing.status === "refunded" ? 0 : billing.actualPoints ?? billing.reservedPoints,
+            remaining: settled.snapshot.totalPoints,
+            permanentRemaining: settled.snapshot.permanentPoints,
+            dailyRemaining: settled.snapshot.dailyPoints,
+            dailyExpiresAt: settled.snapshot.dailyExpiresAt,
+            tokenBilling: billing,
+        };
+        pointsSettled = true;
+        return { type: "vozeb.billing", recordId: charge.recordId, cost: pointsResult.cost, remaining: pointsResult.remaining, status: billing.status };
+    };
+    const settleTokenPayload = async (payload: unknown) => {
+        const accumulator = createTokenUsageAccumulator();
+        accumulator.push(payload);
+        await settleTokenUsage(accumulator.usage(), accumulator.failed);
+        if (accumulator.failed) pointsResult = null;
+    };
     if (pointsRequest) {
         try {
             pointsResult = await consumeUserPoints(userId, access.logicalModelId, pointsRequest.amount, pointsRequest.usageKind, pointsIdempotencyKey, requestFingerprint);
+            if (pointsResult?.tokenBilling && !pointsResult.applied) {
+                return NextResponse.json({ error: "该 Token 计费请求已提交，请查看原任务结果；重新生成时请创建新任务" }, { status: 409 });
+            }
         } catch (error) {
             if (isQuotaExceededError(error)) return NextResponse.json({ error: error.message }, { status: error.status });
             if (isAuthInputError(error)) return NextResponse.json({ error: error.message }, { status: error.status });
             throw error;
         }
     }
-    request.signal.addEventListener("abort", () => void refundConsumedPoints(), { once: true });
+    request.signal.addEventListener("abort", () => void refundConsumedPoints().catch((error) => console.error("System API abort refund failed", error)), { once: true });
+    if (request.signal.aborted) {
+        await refundConsumedPoints();
+        return NextResponse.json({ error: "请求已取消" }, { status: 499 });
+    }
 
     let upstream: Response;
     try {
@@ -214,12 +271,21 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
             pointsResult = null;
             return NextResponse.json({ error: "上游文本接口返回了无效 JSON" }, { status: 502, headers: responseHeaders(upstream.headers, null, refundedPointsRemaining, target) });
         }
+        try {
+            if (pointsResult?.tokenBilling) await settleTokenPayload(payload);
+        } catch (error) {
+            await refundConsumedPoints();
+            console.error("System API native token settlement failed", error);
+            return NextResponse.json({ error: "Token 费用结算失败，请稍后重试" }, { status: 502, headers: responseHeaders(new Headers(), null, refundedPointsRemaining) });
+        }
         pointsSettled = true;
         return NextResponse.json(adaptGlobalAiOpcTextResponse(globalAdaptation.adapter, payload), { status: upstream.status, headers: responseHeaders(upstream.headers, pointsResult, refundedPointsRemaining, target) });
     }
-    if (isJsonResponse(upstream)) {
+    const tokenStream = Boolean(pointsResult?.tokenBilling && (/event-stream|ndjson|jsonl/i.test(upstream.headers.get("content-type") || "") || readRequestBody(contentType, requestBody.pointsPayload).stream === true || path.join("/").toLowerCase().includes(":streamgeneratecontent")));
+    if (isJsonResponse(upstream) || (pointsResult?.tokenBilling && !tokenStream)) {
         try {
             const body = await upstream.arrayBuffer();
+            if (upstream.ok && pointsResult?.tokenBilling) await settleTokenPayload(JSON.parse(new TextDecoder().decode(body)));
             if (upstream.ok) pointsSettled = true;
             return new Response(body, {
                 status: upstream.status,
@@ -232,6 +298,14 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
             console.error("System API proxy response body failed", error instanceof Error ? error.message : error);
             return NextResponse.json({ error: DEFAULT_CHANNEL_CONNECT_ERROR }, { status: 502, headers: responseHeaders(new Headers(), null, refundedPointsRemaining) });
         }
+    }
+    if (upstream.ok && pointsResult?.tokenBilling && upstream.body) {
+        const streamContentType = upstream.headers.get("content-type") || "";
+        const format = /ndjson|jsonl/i.test(streamContentType) || modelConfig?.streaming?.format === "ndjson" ? "ndjson" : "sse";
+        return new Response(meterTokenStream({ body: upstream.body, format, settle: settleTokenUsage, refund: refundConsumedPoints }), {
+            status: upstream.status,
+            headers: responseHeaders(upstream.headers, pointsResult, refundedPointsRemaining, target),
+        });
     }
     if (upstream.ok) pointsSettled = true;
 
@@ -674,6 +748,10 @@ function responseHeaders(headers: Headers, pointsResult?: Awaited<ReturnType<typ
         nextHeaders.set("x-vozeb-pro-points-daily", String(pointsResult.dailyRemaining));
         nextHeaders.set("x-vozeb-pro-points-daily-expires-at", pointsResult.dailyExpiresAt);
         if (pointsResult.recordId) nextHeaders.set("x-vozeb-pro-points-record-id", pointsResult.recordId);
+        if (pointsResult.tokenBilling) {
+            nextHeaders.set("x-vozeb-pro-billing-mode", "token");
+            nextHeaders.set("x-vozeb-pro-billing-status", pointsResult.tokenBilling.status);
+        }
     } else if (typeof refundedPointsRemaining === "number") {
         nextHeaders.set("x-vozeb-pro-points-remaining", String(refundedPointsRemaining));
     }

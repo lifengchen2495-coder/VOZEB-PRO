@@ -1,3 +1,5 @@
+import { cleanOmniWorkflowMediaReferences } from "@/lib/server/omni-workflow-media-cleanup";
+import { cleanBangbangMediaReferences } from "@/lib/server/bangbang-media-cleanup";
 import type { CanvasProject } from "@/lib/canvas-project-contract";
 import { readJsonDataFile, withJsonDataFileLocks, writeJsonDataFile } from "@/lib/server/data-adapter";
 import { ensurePostgresSchema, getDatabaseProvider, withPostgresTransaction, type QueryExecutor } from "@/lib/server/database";
@@ -7,13 +9,45 @@ import type { StoredGenerationTaskRecord } from "@/lib/server/generation-task-st
 import { getLocalMediaRegistrations, type LocalMediaRegistration } from "@/lib/server/local-media-registry";
 import { deleteRegisteredLocalMediaSnapshots } from "@/lib/server/local-media-storage";
 import { defaultRemakePipeline, emptyRemakeCopyState, emptyRemakeRangeGroups, isRemakeNoNarrationCopy, normalizeRemakeProjectWorkflow, type RemakeMediaAsset, type RemakePipeline, type RemakeProject } from "@/lib/server/remake-project-contract";
+import {
+    defaultRemakePipeline as defaultRemake15Pipeline,
+    emptyRemakeCopyState as emptyRemake15CopyState,
+    emptyRemakeRangeGroups as emptyRemake15RangeGroups,
+    isRemakeNoNarrationCopy as isRemake15NoNarrationCopy,
+    normalizeRemakeProjectWorkflow as normalizeRemake15ProjectWorkflow,
+    type RemakeProject as Remake15Project,
+} from "@/lib/server/remake15-project-contract";
 import { cleanCanvasProjectMediaReferences, cleanUserMediaReferences, containsUserMediaReference } from "@/lib/server/user-media-reference-cleanup";
 
-const FILES = ["auth.json", "canvas-projects.json", "creative-runtime.json", "drama-projects.json", "remake-projects.json", "generation-logs.json", "generation-tasks.json", "library-assets.json", "local-media-assets.json"] as const;
+import { defaultRemakePipeline as defaultRemake60Pipeline, emptyRemakeCopyState as emptyRemake60CopyState, emptyRemakeRangeGroups as emptyRemake60RangeGroups, isRemakeNoNarrationCopy as isRemake60NoNarrationCopy, normalizeRemakeProjectWorkflow as normalizeRemake60ProjectWorkflow, type RemakeProject as Remake60Project } from "@/lib/server/remake60-project-contract";
+
+import { defaultRemakePipeline as defaultRemakeProductPipeline, emptyRemakeCopyState as emptyRemakeProductCopyState, emptyRemakeRangeGroups as emptyRemakeProductRangeGroups, isRemakeNoNarrationCopy as isRemakeProductNoNarrationCopy, normalizeRemakeProjectWorkflow as normalizeRemakeProductProjectWorkflow, type RemakeProject as RemakeProductProject } from "@/lib/server/remake-product-project-contract";
+
+import { defaultRemakePipeline as defaultRemakePersonPipeline, emptyRemakeCopyState as emptyRemakePersonCopyState, emptyRemakeRangeGroups as emptyRemakePersonRangeGroups, isRemakeNoNarrationCopy as isRemakePersonNoNarrationCopy, normalizeRemakeProjectWorkflow as normalizeRemakePersonProjectWorkflow, type RemakeProject as RemakePersonProject } from "@/lib/server/remake-person-project-contract";
+
+const FILES = [
+    "auth.json",
+    "canvas-projects.json",
+    "creative-runtime.json",
+    "drama-projects.json",
+    "remake-projects.json",
+    "remake15-projects.json",
+    "remake60-projects.json",
+    "remake-product-projects.json",
+    "remake-person-projects.json",
+    "omni-clothing-projects.json",
+    "omni-remake-projects.json",
+    "bangbang-projects.json",
+    "generation-logs.json",
+    "generation-tasks.json",
+    "library-assets.json",
+    "local-media-assets.json",
+] as const;
 
 type CanvasProjectFile = { version: 1; projects: Array<{ userId: string; project: CanvasProject }> };
 type ProjectFile = { version: 1; projects: Array<{ userId: string; project: Record<string, unknown> }> };
 type RemakeProjectFile = { version: 1; projects: Array<{ userId: string; project: RemakeProject }> };
+type Remake15ProjectFile = { version: 1; projects: Array<{ userId: string; project: Remake15Project }> };
 type LibraryAssetFile = { version: 1; assets: unknown[] };
 type LocalMediaFile = { version: 1; assets: LocalMediaRegistration[] };
 
@@ -96,6 +130,13 @@ async function removePostgresReferences(client: QueryExecutor, userId: string, s
     removed += await cleanPostgresCanvasProjects(client, userId, storageKeys);
     removed += await cleanPostgresJsonProjects(client, "drama_projects", "project_json", userId, storageKeys);
     removed += await cleanPostgresRemakeProjects(client, userId, storageKeys);
+    removed += await cleanPostgresRemake15Projects(client, userId, storageKeys);
+    removed += await cleanAdditionalWorkflowProjects<Remake60Project>(client, "remake60_projects", userId, storageKeys, cleanRemake60ProjectMediaReferences);
+    removed += await cleanAdditionalWorkflowProjects<RemakeProductProject>(client, "remake_product_projects", userId, storageKeys, cleanRemakeProductProjectMediaReferences);
+    removed += await cleanAdditionalWorkflowProjects<RemakePersonProject>(client, "remake_person_projects", userId, storageKeys, cleanRemakePersonProjectMediaReferences);
+    removed += await cleanAdditionalWorkflowProjects<import("@/lib/omni-clothing-contract").OmniClothingProject>(client, "omni_clothing_projects", userId, storageKeys, cleanOmniWorkflowMediaReferences);
+    removed += await cleanAdditionalWorkflowProjects<import("@/lib/omni-remake-contract").OmniProject>(client, "omni_remake_projects", userId, storageKeys, cleanOmniWorkflowMediaReferences);
+    removed += await cleanAdditionalWorkflowProjects<import("@/lib/bangbang-contract").BangbangProject>(client, "bangbang_projects", userId, storageKeys, cleanBangbangMediaReferences);
     removed += await cleanPostgresJsonProjects(client, "drama_project_versions", "snapshot", userId, storageKeys);
 
     const logAssets = await client.query<{ generation_log_id: string }>(
@@ -207,6 +248,23 @@ async function cleanPostgresRemakeProjects(client: QueryExecutor, userId: string
     return changed;
 }
 
+async function cleanPostgresRemake15Projects(client: QueryExecutor, userId: string, storageKeys: string[]) {
+    const result = await client.query<{ id: string; project_json: Remake15Project }>(
+        `SELECT id, project_json FROM remake15_projects
+         WHERE user_id = $1 AND ${matchesJsonColumns("remake15_projects", ["project_json"])}
+         FOR UPDATE`,
+        [userId, storageKeys],
+    );
+    let changed = 0;
+    for (const row of result.rows) {
+        const cleaned = cleanRemake15ProjectMediaReferences(row.project_json, storageKeys);
+        if (!cleaned.changed) continue;
+        await client.query("UPDATE remake15_projects SET project_json = $3::jsonb, updated_at = $4 WHERE user_id = $1 AND id = $2", [userId, row.id, JSON.stringify(cleaned.value), new Date(cleaned.value.updatedAt)]);
+        changed += 1;
+    }
+    return changed;
+}
+
 async function cleanPostgresJsonProjects(client: QueryExecutor, table: "drama_projects" | "drama_project_versions", column: "project_json" | "snapshot", userId: string, storageKeys: string[]) {
     const result = await client.query<{ id: string; value: Record<string, unknown> }>(
         `SELECT id, ${column} AS value FROM ${table}
@@ -292,6 +350,58 @@ function cleanFileState(state: Awaited<ReturnType<typeof readFileState>>, userId
         }),
     };
     const logs = { ...state.logs, logs: state.logs.logs.map((log) => (log.userId === userId ? cleanCounted(log, storageKeys, assetIds) : log)) };
+    const remake15 = {
+        ...state.remake15,
+        projects: state.remake15.projects.map((record) => {
+            if (record.userId !== userId) return record;
+            const cleaned = cleanRemake15ProjectMediaReferences(record.project, storageKeys);
+            if (!cleaned.changed) return record;
+            removedReferences += 1;
+            return { ...record, project: cleaned.value };
+        }),
+    };
+    const remake60 = { ...state.remake60, projects: state.remake60.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanRemake60ProjectMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
+    const remakeProduct = { ...state.remakeProduct, projects: state.remakeProduct.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanRemakeProductProjectMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
+    const remakePerson = { ...state.remakePerson, projects: state.remakePerson.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanRemakePersonProjectMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
+    const omniClothing = { ...state.omniClothing, projects: state.omniClothing.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanOmniWorkflowMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
+    const omniRemake = { ...state.omniRemake, projects: state.omniRemake.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanOmniWorkflowMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
+    const bangbang = { ...state.bangbang, projects: state.bangbang.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanBangbangMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
     const tasks = state.tasks.map((task) => {
         if (task.userId !== userId) return task;
         const inputDeleted = containsUserMediaReference(task.payload, storageKeys);
@@ -308,7 +418,7 @@ function cleanFileState(state: Awaited<ReturnType<typeof readFileState>>, userId
               return cleaned.value;
           })
         : state.auth.users;
-    return { state: { ...state, runtime, library, canvas, drama, remake, logs, tasks, auth: { ...state.auth, users } }, removedReferences };
+    return { state: { ...state, runtime, library, canvas, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, logs, tasks, auth: { ...state.auth, users } }, removedReferences };
 
     function cleanCounted<T>(value: T, keys: string[], ids: string[]) {
         const cleaned = cleanUserMediaReferences(value, keys, ids);
@@ -322,18 +432,25 @@ function ownedBy(value: unknown, userId: string) {
 }
 
 async function readFileState() {
-    const [auth, canvas, runtime, drama, remake, logs, tasks, library, media] = await Promise.all([
+    const [auth, canvas, runtime, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, logs, tasks, library, media] = await Promise.all([
         readJsonDataFile<Record<string, unknown>>("auth.json", {}),
         readJsonDataFile<CanvasProjectFile>("canvas-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<RuntimeFileDatabase>("creative-runtime.json", { version: 1, nextEventId: 1, conversations: [], messages: [], assets: [], events: [] }),
         readJsonDataFile<ProjectFile>("drama-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<RemakeProjectFile>("remake-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<Remake15ProjectFile>("remake15-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: Remake60Project }> }>("remake60-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: RemakeProductProject }> }>("remake-product-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: RemakePersonProject }> }>("remake-person-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/omni-clothing-contract").OmniClothingProject }> }>("omni-clothing-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/omni-remake-contract").OmniProject }> }>("omni-remake-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/bangbang-contract").BangbangProject }> }>("bangbang-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<GenerationLogDatabase>("generation-logs.json", { version: 1, logs: [] }),
         readJsonDataFile<StoredGenerationTaskRecord[]>("generation-tasks.json", []),
         readJsonDataFile<LibraryAssetFile>("library-assets.json", { version: 1, assets: [] }),
         readJsonDataFile<LocalMediaFile>("local-media-assets.json", { version: 1, assets: [] }),
     ]);
-    return { auth, canvas, runtime, drama, remake, logs, tasks, library, media };
+    return { auth, canvas, runtime, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, logs, tasks, library, media };
 }
 
 async function writeFileState(state: Awaited<ReturnType<typeof readFileState>>) {
@@ -347,6 +464,13 @@ function fileStateEntries(state: Awaited<ReturnType<typeof readFileState>>) {
         "creative-runtime.json": state.runtime,
         "drama-projects.json": state.drama,
         "remake-projects.json": state.remake,
+        "remake15-projects.json": state.remake15,
+        "remake60-projects.json": state.remake60,
+        "remake-product-projects.json": state.remakeProduct,
+        "remake-person-projects.json": state.remakePerson,
+        "omni-clothing-projects.json": state.omniClothing,
+        "omni-remake-projects.json": state.omniRemake,
+        "bangbang-projects.json": state.bangbang,
         "generation-logs.json": state.logs,
         "generation-tasks.json": state.tasks,
         "library-assets.json": state.library,
@@ -456,6 +580,96 @@ function cleanRemakeProjectMediaReferences(project: RemakeProject, storageKeys: 
     } as const;
 }
 
+function cleanRemake15ProjectMediaReferences(project: Remake15Project, storageKeys: string[]) {
+    const normalized = normalizeRemake15ProjectWorkflow(project);
+    const sourceVideoRemoved = mediaAssetDeleted(normalized.sourceVideo, storageKeys);
+    const framesRemoved = normalized.frames.some((frame) => containsUserMediaReference({ storageKey: frame.storageKey, url: frame.frameUrl }, storageKeys));
+    const productRemoved = mediaAssetDeleted(normalized.references.product, storageKeys);
+    const characterRemoved = mediaAssetDeleted(normalized.references.character, storageKeys);
+    const characterSupplementRemoved = mediaAssetDeleted(normalized.references.characterSupplement, storageKeys);
+    const backgroundRemoved = mediaAssetDeleted(normalized.references.background, storageKeys);
+    const audioRemoved = mediaAssetDeleted(normalized.references.audio, storageKeys);
+    const narrationAudioRemoved = audioRemoved && !isRemake15NoNarrationCopy(normalized.sourceCopy);
+    const referenceInputRemoved = productRemoved || characterRemoved || characterSupplementRemoved || backgroundRemoved;
+    let contactSheetRemoved = false;
+    let replacementResultRemoved = false;
+    let storyboardResultRemoved = false;
+    let videoResultRemoved = false;
+    const groups = normalized.groups.map((group) => {
+        const removeContactSheet = mediaAssetDeleted(group.sourceContactSheet, storageKeys);
+        const removeReplacement = mediaAssetDeleted(group.replacementGeneration.result, storageKeys);
+        const removeStoryboard = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        const removeVideo = mediaAssetDeleted(group.videoGeneration.result, storageKeys);
+        contactSheetRemoved ||= removeContactSheet;
+        replacementResultRemoved ||= removeReplacement;
+        storyboardResultRemoved ||= removeStoryboard;
+        videoResultRemoved ||= removeVideo;
+        const replacementInvalid = removeContactSheet || removeReplacement || referenceInputRemoved;
+        const storyboardInvalid = replacementInvalid || removeStoryboard;
+        if (!replacementInvalid && !storyboardInvalid && !narrationAudioRemoved && !removeVideo) return group;
+        return {
+            ...group,
+            sourceContactSheet: removeContactSheet ? undefined : group.sourceContactSheet,
+            replacementGeneration: replacementInvalid ? { status: "idle" as const, prompt: "" } : group.replacementGeneration,
+            imageGeneration: storyboardInvalid ? { status: "idle" as const, prompt: "" } : group.imageGeneration,
+            videoPrompt: storyboardInvalid || narrationAudioRemoved ? "" : group.videoPrompt,
+            videoGeneration: storyboardInvalid || narrationAudioRemoved || removeVideo ? { status: "idle" as const } : group.videoGeneration,
+        };
+    });
+    const generatedResultRemoved = replacementResultRemoved || storyboardResultRemoved;
+    const changed = sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved || videoResultRemoved;
+    if (!changed) return { value: project, changed: false } as const;
+
+    const references = {
+        product: productRemoved ? undefined : normalized.references.product,
+        character: characterRemoved ? undefined : normalized.references.character,
+        characterSupplement: characterSupplementRemoved ? undefined : normalized.references.characterSupplement,
+        background: backgroundRemoved ? undefined : normalized.references.background,
+        audio: audioRemoved ? undefined : normalized.references.audio,
+    };
+    const revision = Math.max(0, Number.isInteger(project.revision) ? project.revision : 0) + 1;
+    if (!sourceVideoRemoved && !framesRemoved) {
+        return {
+            value: withUpdatedAt({
+                ...normalized,
+                revision,
+                productScript: referenceInputRemoved || contactSheetRemoved ? "" : normalized.productScript,
+                storyboardScript: referenceInputRemoved || contactSheetRemoved ? "" : normalized.storyboardScript,
+                references,
+                groups,
+                pipeline: invalidateRemakeMediaPipeline(normalized.pipeline, {
+                    references: referenceInputRemoved || contactSheetRemoved,
+                    images: generatedResultRemoved || referenceInputRemoved || contactSheetRemoved,
+                    prompts: narrationAudioRemoved,
+                }),
+            }),
+            changed: true,
+        } as const;
+    }
+
+    const error = sourceVideoRemoved ? "源视频已从媒体库删除，请重新上传后分析" : "部分抽帧已从媒体库删除，请重新分析";
+    const pipeline = defaultRemake15Pipeline({ hasSourceVideo: !sourceVideoRemoved && Boolean(normalized.sourceVideo), analysisStatus: "error" });
+    pipeline.steps.analysis = { status: "error", error };
+    return {
+        value: withUpdatedAt({
+            ...normalized,
+            revision,
+            sourceVideo: sourceVideoRemoved ? undefined : normalized.sourceVideo,
+            sourceCopy: "",
+            productScript: "",
+            storyboardScript: "",
+            frames: [],
+            copyBlocks: [],
+            references: { ...references, audio: undefined },
+            groups: emptyRemake15RangeGroups(),
+            copy: emptyRemake15CopyState(),
+            pipeline,
+            analysis: { status: "error" as const, error },
+        }),
+        changed: true,
+    } as const;
+}
+
 function mediaAssetDeleted(asset: RemakeMediaAsset | undefined, storageKeys: string[]) {
     return Boolean(asset && containsUserMediaReference({ storageKey: asset.storageKey, url: asset.url }, storageKeys));
 }
@@ -481,4 +695,296 @@ function normalizeKeys(values: string[]) {
 
 function emptyResult() {
     return { deletedFiles: 0, deletedBytes: 0, blocked: [] as Array<{ id: string; storageKey: string; referenceCount: number }>, removedReferences: 0 };
+}
+
+function cleanRemake60ProjectMediaReferences(project: Remake60Project, storageKeys: string[]) {
+    const normalized = normalizeRemake60ProjectWorkflow(project);
+    const sourceVideoRemoved = mediaAssetDeleted(normalized.sourceVideo, storageKeys);
+    const framesRemoved = normalized.frames.some((frame) => containsUserMediaReference({ storageKey: frame.storageKey, url: frame.frameUrl }, storageKeys));
+    const productRemoved = mediaAssetDeleted(normalized.references.product, storageKeys);
+    const characterRemoved = mediaAssetDeleted(normalized.references.character, storageKeys);
+    const characterSupplementRemoved = mediaAssetDeleted(normalized.references.characterSupplement, storageKeys);
+    const backgroundRemoved = mediaAssetDeleted(normalized.references.background, storageKeys);
+    const audioRemoved = mediaAssetDeleted(normalized.references.audio, storageKeys);
+    const narrationAudioRemoved = audioRemoved && !isRemake60NoNarrationCopy(normalized.sourceCopy);
+    const referenceInputRemoved = productRemoved || characterRemoved || characterSupplementRemoved || backgroundRemoved;
+    let contactSheetRemoved = false;
+    let replacementResultRemoved = false;
+    let storyboardResultRemoved = false;
+    let videoResultRemoved = false;
+    const groups = normalized.groups.map((group) => {
+        const removeContactSheet = mediaAssetDeleted(group.sourceContactSheet, storageKeys);
+        const removeReplacement = mediaAssetDeleted(group.replacementGeneration.result, storageKeys);
+        const removeStoryboard = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        const removeVideo = mediaAssetDeleted(group.videoGeneration.result, storageKeys);
+        contactSheetRemoved ||= removeContactSheet;
+        replacementResultRemoved ||= removeReplacement;
+        storyboardResultRemoved ||= removeStoryboard;
+        videoResultRemoved ||= removeVideo;
+        const replacementInvalid = removeContactSheet || removeReplacement || referenceInputRemoved;
+        const storyboardInvalid = replacementInvalid || removeStoryboard;
+        if (!replacementInvalid && !storyboardInvalid && !narrationAudioRemoved && !removeVideo) return group;
+        return {
+            ...group,
+            sourceContactSheet: removeContactSheet ? undefined : group.sourceContactSheet,
+            replacementGeneration: replacementInvalid ? { status: "idle" as const, prompt: "" } : group.replacementGeneration,
+            imageGeneration: storyboardInvalid ? { status: "idle" as const, prompt: "" } : group.imageGeneration,
+            videoPrompt: storyboardInvalid || narrationAudioRemoved ? "" : group.videoPrompt,
+            videoGeneration: storyboardInvalid || narrationAudioRemoved || removeVideo ? { status: "idle" as const } : group.videoGeneration,
+        };
+    });
+    const generatedResultRemoved = replacementResultRemoved || storyboardResultRemoved;
+    const mergedRemoved = mediaAssetDeleted(project.mergedVideo, storageKeys);
+    const changed = mergedRemoved || sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved || videoResultRemoved;
+    if (!changed) return { value: project, changed: false } as const;
+
+    const references = {
+        product: productRemoved ? undefined : normalized.references.product,
+        character: characterRemoved ? undefined : normalized.references.character,
+        characterSupplement: characterSupplementRemoved ? undefined : normalized.references.characterSupplement,
+        background: backgroundRemoved ? undefined : normalized.references.background,
+        audio: audioRemoved ? undefined : normalized.references.audio,
+    };
+    const revision = Math.max(0, Number.isInteger(project.revision) ? project.revision : 0) + 1;
+    if (!sourceVideoRemoved && !framesRemoved) {
+        return {
+            value: withUpdatedAt({
+                ...normalized,
+                revision,
+                mergedVideo: undefined,
+                mergedVideoInputVersion: undefined,
+                productScript: referenceInputRemoved || contactSheetRemoved ? "" : normalized.productScript,
+                storyboardScript: referenceInputRemoved || contactSheetRemoved ? "" : normalized.storyboardScript,
+                references,
+                groups,
+                pipeline: invalidateRemakeMediaPipeline(normalized.pipeline, {
+                    references: referenceInputRemoved || contactSheetRemoved,
+                    images: generatedResultRemoved || referenceInputRemoved || contactSheetRemoved,
+                    prompts: narrationAudioRemoved,
+                }),
+            }),
+            changed: true,
+        } as const;
+    }
+
+    const error = sourceVideoRemoved ? "源视频已从媒体库删除，请重新上传后分析" : "部分抽帧已从媒体库删除，请重新分析";
+    const pipeline = defaultRemake60Pipeline({ hasSourceVideo: !sourceVideoRemoved && Boolean(normalized.sourceVideo), analysisStatus: "error" });
+    pipeline.steps.analysis = { status: "error", error };
+    return {
+        value: withUpdatedAt({
+            ...normalized,
+            revision,
+            mergedVideo: undefined,
+            mergedVideoInputVersion: undefined,
+            sourceVideo: sourceVideoRemoved ? undefined : normalized.sourceVideo,
+            sourceCopy: "",
+            productScript: "",
+            storyboardScript: "",
+            frames: [],
+            copyBlocks: [],
+            references: { ...references, audio: undefined },
+            groups: emptyRemake60RangeGroups(),
+            copy: emptyRemake60CopyState(),
+            pipeline,
+            analysis: { status: "error" as const, error },
+        }),
+        changed: true,
+    } as const;
+}
+
+
+function cleanRemakeProductProjectMediaReferences(project: RemakeProductProject, storageKeys: string[]) {
+    const normalized = normalizeRemakeProductProjectWorkflow(project);
+    const sourceVideoRemoved = mediaAssetDeleted(normalized.sourceVideo, storageKeys);
+    const framesRemoved = normalized.frames.some((frame) => containsUserMediaReference({ storageKey: frame.storageKey, url: frame.frameUrl }, storageKeys));
+    const productRemoved = mediaAssetDeleted(normalized.references.product, storageKeys);
+    const characterRemoved = mediaAssetDeleted(normalized.references.character, storageKeys);
+    const characterSupplementRemoved = mediaAssetDeleted(normalized.references.characterSupplement, storageKeys);
+    const backgroundRemoved = mediaAssetDeleted(normalized.references.background, storageKeys);
+    const audioRemoved = mediaAssetDeleted(normalized.references.audio, storageKeys);
+    const narrationAudioRemoved = audioRemoved && !isRemakeProductNoNarrationCopy(normalized.sourceCopy);
+    const referenceInputRemoved = productRemoved || characterRemoved || characterSupplementRemoved || backgroundRemoved;
+    let contactSheetRemoved = false;
+    let replacementResultRemoved = false;
+    let storyboardResultRemoved = false;
+    let videoResultRemoved = false;
+    const groups = normalized.groups.map((group) => {
+        const removeContactSheet = mediaAssetDeleted(group.sourceContactSheet, storageKeys);
+        const removeReplacement = mediaAssetDeleted(group.replacementGeneration.result, storageKeys);
+        const removeStoryboard = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        const removeVideo = mediaAssetDeleted(group.videoGeneration.result, storageKeys);
+        contactSheetRemoved ||= removeContactSheet;
+        replacementResultRemoved ||= removeReplacement;
+        storyboardResultRemoved ||= removeStoryboard;
+        videoResultRemoved ||= removeVideo;
+        const replacementInvalid = removeContactSheet || removeReplacement || referenceInputRemoved;
+        const storyboardInvalid = replacementInvalid || removeStoryboard;
+        if (!replacementInvalid && !storyboardInvalid && !narrationAudioRemoved && !removeVideo) return group;
+        return {
+            ...group,
+            sourceContactSheet: removeContactSheet ? undefined : group.sourceContactSheet,
+            replacementGeneration: replacementInvalid ? { status: "idle" as const, prompt: "" } : group.replacementGeneration,
+            imageGeneration: storyboardInvalid ? { status: "idle" as const, prompt: "" } : group.imageGeneration,
+            videoPrompt: storyboardInvalid || narrationAudioRemoved ? "" : group.videoPrompt,
+            videoGeneration: storyboardInvalid || narrationAudioRemoved || removeVideo ? { status: "idle" as const } : group.videoGeneration,
+        };
+    });
+    const generatedResultRemoved = replacementResultRemoved || storyboardResultRemoved;
+    const mergedRemoved = mediaAssetDeleted(project.mergedVideo, storageKeys);
+    const changed = mergedRemoved || sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved || videoResultRemoved;
+    if (!changed) return { value: project, changed: false } as const;
+
+    const references = {
+        product: productRemoved ? undefined : normalized.references.product,
+        character: characterRemoved ? undefined : normalized.references.character,
+        characterSupplement: characterSupplementRemoved ? undefined : normalized.references.characterSupplement,
+        background: backgroundRemoved ? undefined : normalized.references.background,
+        audio: audioRemoved ? undefined : normalized.references.audio,
+    };
+    const revision = Math.max(0, Number.isInteger(project.revision) ? project.revision : 0) + 1;
+    if (!sourceVideoRemoved && !framesRemoved) {
+        return {
+            value: withUpdatedAt({
+                ...normalized,
+                revision,
+                mergedVideo: undefined,
+                mergedVideoInputVersion: undefined,
+                references,
+                groups,
+                pipeline: invalidateRemakeMediaPipeline(normalized.pipeline, {
+                    references: referenceInputRemoved || contactSheetRemoved,
+                    images: generatedResultRemoved || referenceInputRemoved || contactSheetRemoved,
+                    prompts: narrationAudioRemoved,
+                }),
+            }),
+            changed: true,
+        } as const;
+    }
+
+    const error = sourceVideoRemoved ? "源视频已从媒体库删除，请重新上传后分析" : "部分抽帧已从媒体库删除，请重新分析";
+    const pipeline = defaultRemakeProductPipeline({ hasSourceVideo: !sourceVideoRemoved && Boolean(normalized.sourceVideo), analysisStatus: "error" });
+    pipeline.steps.analysis = { status: "error", error };
+    return {
+        value: withUpdatedAt({
+            ...normalized,
+            revision,
+            mergedVideo: undefined,
+            mergedVideoInputVersion: undefined,
+            sourceVideo: sourceVideoRemoved ? undefined : normalized.sourceVideo,
+            sourceCopy: "",
+            frames: [],
+            copyBlocks: [],
+            references: { ...references, audio: undefined },
+            groups: emptyRemakeProductRangeGroups(),
+            copy: emptyRemakeProductCopyState(),
+            pipeline,
+            analysis: { status: "error" as const, error },
+        }),
+        changed: true,
+    } as const;
+}
+
+
+function cleanRemakePersonProjectMediaReferences(project: RemakePersonProject, storageKeys: string[]) {
+    const normalized = normalizeRemakePersonProjectWorkflow(project);
+    const sourceVideoRemoved = mediaAssetDeleted(normalized.sourceVideo, storageKeys);
+    const framesRemoved = normalized.frames.some((frame) => containsUserMediaReference({ storageKey: frame.storageKey, url: frame.frameUrl }, storageKeys));
+    const productRemoved = mediaAssetDeleted(normalized.references.product, storageKeys);
+    const characterRemoved = mediaAssetDeleted(normalized.references.character, storageKeys);
+    const characterSupplementRemoved = mediaAssetDeleted(normalized.references.characterSupplement, storageKeys);
+    const backgroundRemoved = mediaAssetDeleted(normalized.references.background, storageKeys);
+    const audioRemoved = mediaAssetDeleted(normalized.references.audio, storageKeys);
+    const narrationAudioRemoved = audioRemoved && !isRemakePersonNoNarrationCopy(normalized.sourceCopy);
+    const referenceInputRemoved = productRemoved || characterRemoved || characterSupplementRemoved || backgroundRemoved;
+    let contactSheetRemoved = false;
+    let replacementResultRemoved = false;
+    let storyboardResultRemoved = false;
+    let videoResultRemoved = false;
+    const groups = normalized.groups.map((group) => {
+        const removeContactSheet = mediaAssetDeleted(group.sourceContactSheet, storageKeys);
+        const removeReplacement = mediaAssetDeleted(group.replacementGeneration.result, storageKeys);
+        const removeStoryboard = mediaAssetDeleted(group.imageGeneration.result, storageKeys);
+        const removeVideo = mediaAssetDeleted(group.videoGeneration.result, storageKeys);
+        contactSheetRemoved ||= removeContactSheet;
+        replacementResultRemoved ||= removeReplacement;
+        storyboardResultRemoved ||= removeStoryboard;
+        videoResultRemoved ||= removeVideo;
+        const replacementInvalid = removeContactSheet || removeReplacement || referenceInputRemoved;
+        const storyboardInvalid = replacementInvalid || removeStoryboard;
+        if (!replacementInvalid && !storyboardInvalid && !narrationAudioRemoved && !removeVideo) return group;
+        return {
+            ...group,
+            sourceContactSheet: removeContactSheet ? undefined : group.sourceContactSheet,
+            replacementGeneration: replacementInvalid ? { status: "idle" as const, prompt: "" } : group.replacementGeneration,
+            imageGeneration: storyboardInvalid ? { status: "idle" as const, prompt: "" } : group.imageGeneration,
+            videoPrompt: storyboardInvalid || narrationAudioRemoved ? "" : group.videoPrompt,
+            videoGeneration: storyboardInvalid || narrationAudioRemoved || removeVideo ? { status: "idle" as const } : group.videoGeneration,
+        };
+    });
+    const generatedResultRemoved = replacementResultRemoved || storyboardResultRemoved;
+    const mergedRemoved = mediaAssetDeleted(project.mergedVideo, storageKeys);
+    const changed = mergedRemoved || sourceVideoRemoved || framesRemoved || referenceInputRemoved || audioRemoved || contactSheetRemoved || generatedResultRemoved || videoResultRemoved;
+    if (!changed) return { value: project, changed: false } as const;
+
+    const references = {
+        product: productRemoved ? undefined : normalized.references.product,
+        character: characterRemoved ? undefined : normalized.references.character,
+        characterSupplement: characterSupplementRemoved ? undefined : normalized.references.characterSupplement,
+        background: backgroundRemoved ? undefined : normalized.references.background,
+        audio: audioRemoved ? undefined : normalized.references.audio,
+    };
+    const revision = Math.max(0, Number.isInteger(project.revision) ? project.revision : 0) + 1;
+    if (!sourceVideoRemoved && !framesRemoved) {
+        return {
+            value: withUpdatedAt({
+                ...normalized,
+                revision,
+                mergedVideo: undefined,
+                mergedVideoInputVersion: undefined,
+                references,
+                groups,
+                pipeline: invalidateRemakeMediaPipeline(normalized.pipeline, {
+                    references: referenceInputRemoved || contactSheetRemoved,
+                    images: generatedResultRemoved || referenceInputRemoved || contactSheetRemoved,
+                    prompts: narrationAudioRemoved,
+                }),
+            }),
+            changed: true,
+        } as const;
+    }
+
+    const error = sourceVideoRemoved ? "源视频已从媒体库删除，请重新上传后分析" : "部分抽帧已从媒体库删除，请重新分析";
+    const pipeline = defaultRemakePersonPipeline({ hasSourceVideo: !sourceVideoRemoved && Boolean(normalized.sourceVideo), analysisStatus: "error" });
+    pipeline.steps.analysis = { status: "error", error };
+    return {
+        value: withUpdatedAt({
+            ...normalized,
+            revision,
+            mergedVideo: undefined,
+            mergedVideoInputVersion: undefined,
+            sourceVideo: sourceVideoRemoved ? undefined : normalized.sourceVideo,
+            sourceCopy: "",
+            frames: [],
+            copyBlocks: [],
+            references: { ...references, audio: undefined },
+            groups: emptyRemakePersonRangeGroups(),
+            copy: emptyRemakePersonCopyState(),
+            pipeline,
+            analysis: { status: "error" as const, error },
+        }),
+        changed: true,
+    } as const;
+}
+
+
+async function cleanAdditionalWorkflowProjects<T extends { updatedAt: string }>(client: QueryExecutor, table: "remake60_projects" | "remake_product_projects" | "remake_person_projects" | "omni_clothing_projects" | "omni_remake_projects" | "bangbang_projects", userId: string, storageKeys: string[], clean: (value: T, keys: string[]) => { value: T; changed: boolean }) {
+    const result = await client.query<{ id: string; project_json: T }>(`SELECT id, project_json FROM ${table} WHERE user_id = $1 AND ${matchesJsonColumns(table, ["project_json"])} FOR UPDATE`, [userId, storageKeys]);
+    let changed = 0;
+    for (const row of result.rows) {
+        const cleaned = clean(row.project_json, storageKeys);
+        if (!cleaned.changed) continue;
+        await client.query(`UPDATE ${table} SET project_json = $3::jsonb, updated_at = $4 WHERE user_id = $1 AND id = $2`, [userId, row.id, JSON.stringify(cleaned.value), new Date(cleaned.value.updatedAt)]);
+        changed += 1;
+    }
+    return changed;
 }

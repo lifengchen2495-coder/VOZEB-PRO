@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-08",
+  "source": {
+    "baseToken": "ScUYbyoAbaJptZsnuTbcg6WwnN3",
+    "tableId": "tblE18Cc2DVc2zS8",
+    "tableName": "Codex+Seedance_ 全品类 (换品_换人) -15秒-实操版",
+    "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tblE18Cc2DVc2zS8",
+    "packageDocumentUrl": "https://ocn18sf3pb4v.feishu.cn/docx/X6xSdNt58ogAbbx7UjxcHbUfn8F",
+    "packageFileName": "ecom-15s-video-public-package.zip",
+    "packageSha256": "eff80ed5b23eca684934227a8ea1acfd6ac51322131728dd2684c482c595bc87",
+    "packagePromptPath": "ecom-15s-video-public/scripts/run_public_pipeline.py"
+  },
+  "verification": {
+    "fieldsReadFromLiveUi": [
+      "新产品-12分镜脚本",
+      "1-12分镜提示词",
+      "1-12 第一步模板图",
+      "1-12 最终分镜图",
+      "1-12视频提示词"
+    ],
+    "recordSampleCount": 21,
+    "method": "通过飞书只读字段编辑器与教程附件核对阶段、引用素材、提示词外壳；取消编辑，未保存原表配置。压缩包仅静态解析，未运行其中程序。",
+    "runtimePromptOrigin": "visible_rules_and_record_samples_reimplementation",
+    "limitation": "原始完整提示词模块在课程后台展开，公开包仅提供保护宏名称。系统版运行时按可见规则和记录输出结构重新实现；不宣称与隐藏模块逐字相同，不将未解析宏发送给普通模型。",
+    "adaptations": [
+      "使用系统已配置的模型、计费与媒体存储。",
+      "保留12分镜和两步生图，增加系统内单条15秒视频生成。",
+      "来源时间码按实际原片；最终成片固定15秒。",
+      "使用三列四行十二宫格，四个三分镜口播区间。"
+    ]
+  },
+  "originalPublicPromptShells": {
+    "analysis": "# 抖音短视频全量拆解（12分镜版 - 混合导向 - V4 - 画面内容优先版）\n\n## 【任务目标】\n\n针对抖音短视频，深度分析视频内容，拆解视频中的**所有镜头**，精准控制为**12个分镜**。\n\n{{短视频12分镜解析Skill}}\n",
+    "new_script": "# 步骤2：根据原12分镜脚本适配新产品 - 完整版提示词\n\n# 任务说明\n\n你是一个专业的电商视频分镜脚本适配专家。你需要根据【原视频脚本】和【产品信息】，输出适配后的12分镜脚本。\n\n【原视频脚本】\n【产品信息】\n【人物图说明】\n\n---\n{{短视频12分镜新产品脚本Skill}}\n",
+    "shot_prompts": "# TikTok短视频十二宫格分镜优化提示词（V12 - 12分镜版）\n\n## 【任务目标】\n\n根据**12分镜脚本 **直接优化12个分镜，生成**十二宫格提示词**。\n\n【新产品-12分镜脚本】\n\n{{短视频12分镜提示词Skill}}\n",
+    "template_image": "# 十二宫格分镜图 （一比一还原版）\n\n## 【任务目标】\n\n根据**原图十二宫格分镜图**进行处理，实现**一比一还原原图画面**：\n1. **直接读取原图分镜画面**：以原图实际画面为准，不依赖脚本描述\n2. **清理画面**：去除每个分镜中的字幕、水印、平台UI元素\n3. **去除产品**：根据脚本【1-12分镜提示词输出结果】\"是否有产品\"判断，完全移除产品但保留产品位置状态\n\n【1-12分镜提示词输出结果】\n\n{{12分镜模板图Skill}}\n",
+    "final_image": "# 案例40：电商视频十二宫格分镜生成（产品+人物融合版 - V10）\n\n## 【任务目标】\n\n根据**12分镜场景图**、**产品多宫格图**、**人物六宫格图**（选填）、**12分镜脚本 **四个输入，生成**单张9:16竖屏图片，画面内部采用4×3网格布局，包含12个分镜区域**，禁止生成有白底图的分镜，必须是真实场景的背景。\n\n【12分镜脚本】\n\n{{12分镜最终生成图Skill}}\n",
+    "video_prompt": "# 步骤14：视频提示词生成（十二宫格转视频 V37.4 - 抖音版本）\n\n## 【任务目标】\n\n根据**人物六宫格图（可选）**、**十二宫格提示词 **、**十二宫格图**、**产品图**、**文案 （可选）**五个输入，生成**15秒抖音短视频提示词**，用于Seedance视频生成。\n\n【十二宫格提示词】\n【文案】\n\n{{12分镜视频生成提示词Skill}}\n"
+  }
+}

@@ -10,6 +10,8 @@ import { auditActorFromRequest, safeRecordAuditLog } from "@/lib/server/audit-lo
 import { invalidatePublicSiteSettings } from "@/lib/server/site-metadata";
 import { channelProtocolValidationErrors } from "@/lib/channel-protocol-registry";
 import { hasAllAdminPermissions, hasAnyAdminPermission, type AdminPermission } from "@/lib/admin-permissions";
+import { normalizeModelBillingRules } from "@/lib/model-billing-config";
+import { inferModelCapability } from "@/lib/model-capability";
 
 export const runtime = "nodejs";
 
@@ -41,6 +43,13 @@ export async function PATCH(request: Request) {
         if (typeof body.freeDailyPoints === "number") patch.freeDailyPoints = body.freeDailyPoints;
         if (body.mail) patch.mail = body.mail;
         if (body.modelPointCosts && typeof body.modelPointCosts === "object") patch.modelPointCosts = body.modelPointCosts;
+        if (body.modelBillingRules !== undefined) {
+            try {
+                patch.modelBillingRules = normalizeModelBillingRules(body.modelBillingRules);
+            } catch (error) {
+                throw new AuthInputError(error instanceof Error ? error.message : "模型计费规则无效");
+            }
+        }
         if (body.generationPointMultipliers && typeof body.generationPointMultipliers === "object") patch.generationPointMultipliers = body.generationPointMultipliers;
         if (body.generationCostControl && typeof body.generationCostControl === "object") patch.generationCostControl = body.generationCostControl;
         if (body.dataLifecycle && typeof body.dataLifecycle === "object") patch.dataLifecycle = body.dataLifecycle;
@@ -66,6 +75,13 @@ export async function PATCH(request: Request) {
             patch.defaultModels = normalizedDefaults;
         }
         if (Array.isArray(body.agentSkills)) patch.agentSkills = body.agentSkills;
+        if (patch.modelBillingRules) {
+            const logicalModels = patch.logicalModels || currentSettings.logicalModels;
+            for (const [model, rule] of Object.entries(patch.modelBillingRules)) {
+                const logical = logicalModels?.find((item) => item.id.toLowerCase() === model.toLowerCase());
+                if (rule.mode === "token" && (logical?.capability || inferModelCapability(model)) !== "text") throw new AuthInputError(`模型 ${model} 暂不支持按 Token 计费，目前仅支持文本模型`);
+            }
+        }
         if (!Object.keys(patch).length) return NextResponse.json({ error: "没有可更新的设置" }, { status: 400 });
 
         const settings = await setAuthSettings(patch);
@@ -100,6 +116,7 @@ const SETTINGS_PERMISSION_BY_FIELD = {
     freeDailyPointsEnabled: "billing.manage",
     freeDailyPoints: "billing.manage",
     modelPointCosts: "billing.manage",
+    modelBillingRules: "billing.manage",
     generationPointMultipliers: "billing.manage",
     entitlements: "billing.manage",
     generationCostControl: "upstream.manage",

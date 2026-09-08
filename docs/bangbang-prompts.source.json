@@ -1,0 +1,237 @@
+{
+  "version": "2026-09-08.2",
+  "sourceDocument": "https://ov09gvv1wfr.feishu.cn/wiki/V1iFwBoYCic1T1ksCmac5Yvynpf",
+  "archives": [
+    {
+      "name": "bangbang-script-original.zip",
+      "sha256": "60269234053d50b0f02ea7be63f4adf1db66523dbca2ec5fe77c472d7a7e5036"
+    },
+    {
+      "name": "bangbang-skill-original.zip",
+      "sha256": "f2b3a51343505ab3b57c4f9b06bf410b1c9cee4bc29cba21502b59e50995dbe8"
+    }
+  ],
+  "templates": [
+    {
+      "skill": "bangbang-script",
+      "file": "03_structure_understanding.md",
+      "originalSha256": "697080b41716cef9bae0881e7083c097d98f865e107347f6899bede4c9ab0b43",
+      "installedSha256": "697080b41716cef9bae0881e7083c097d98f865e107347f6899bede4c9ab0b43",
+      "originalBytes": 22978,
+      "installedBytes": 22978,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-script",
+      "file": "04_traffic_logic.md",
+      "originalSha256": "d4f7f306dee5172bc1f24b15d165b198def01fc8919304640654fe9bbdbe41e2",
+      "installedSha256": "d4f7f306dee5172bc1f24b15d165b198def01fc8919304640654fe9bbdbe41e2",
+      "originalBytes": 12809,
+      "installedBytes": 12809,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-script",
+      "file": "05_frame_breakdown.md",
+      "originalSha256": "bee08a6177a898636ad52f886b19222b3d724d5303d380e11685bd88c9d1939e",
+      "installedSha256": "bee08a6177a898636ad52f886b19222b3d724d5303d380e11685bd88c9d1939e",
+      "originalBytes": 13787,
+      "installedBytes": 13787,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-script",
+      "file": "06_fission_direction.md",
+      "originalSha256": "d4c0f2020f4c2d423f4c48d496a84b8b9536d6ace84bb55488ee62a528336485",
+      "installedSha256": "d4c0f2020f4c2d423f4c48d496a84b8b9536d6ace84bb55488ee62a528336485",
+      "originalBytes": 11484,
+      "installedBytes": 11484,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-script",
+      "file": "07_complete_script.md",
+      "originalSha256": "6d8facd1f4ca73341a75318ca02532aa0ee94b994d124c681701dee57b0613e9",
+      "installedSha256": "6f0d9f147c79b934648f8238091aeea20389c79bf399e129acc749fe20c22840",
+      "originalBytes": 4410,
+      "installedBytes": 8322,
+      "installedDiffers": true,
+      "originalMarkers": [
+        "{{短剧新创意脚本skill}}"
+      ],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-script",
+      "file": "08_char_requirement.md",
+      "originalSha256": "79daf55116d6a49b30528f95ee229abd85434078c29bf885399f2314215fd23d",
+      "installedSha256": "79daf55116d6a49b30528f95ee229abd85434078c29bf885399f2314215fd23d",
+      "originalBytes": 268,
+      "installedBytes": 268,
+      "installedDiffers": false,
+      "originalMarkers": [
+        "{{短剧需求清单待准备}}"
+      ],
+      "installedMarkers": [
+        "{{短剧需求清单待准备}}"
+      ]
+    },
+    {
+      "skill": "bangbang-script",
+      "file": "09_storyboard_plan.md",
+      "originalSha256": "aaddcaeb6652d5f258d84bc004f58c20d43b5be393c9c84ac426880c1c3c30d5",
+      "installedSha256": "aaddcaeb6652d5f258d84bc004f58c20d43b5be393c9c84ac426880c1c3c30d5",
+      "originalBytes": 21720,
+      "installedBytes": 21720,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "10_storyboard_frames.md",
+      "originalSha256": "61872c2df96139b79f24264a4535fe4f9b8990b5cd21d1dde0f97b82740b859e",
+      "installedSha256": "a22ea8f143ff66be96e15398bb88cc5958b72f862d2a7df1d7afe175cdf77384",
+      "originalBytes": 2559,
+      "installedBytes": 4631,
+      "installedDiffers": true,
+      "originalMarkers": [
+        "{{组号范围}}",
+        "{{组数}}",
+        "{{长剧情分镜生成循环通用}}"
+      ],
+      "installedMarkers": [
+        "{{组号范围}}",
+        "{{组数}}"
+      ]
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "11_optimize_g1.md",
+      "originalSha256": "dadee7b5095d3bf9e5bc0bc35390c27d2feff4c77afb835cde11906be4a41be8",
+      "installedSha256": "85415c0f4cfc268fc658c244884c8b2763509498666dcdc8c90b419af3dad907",
+      "originalBytes": 21519,
+      "installedBytes": 21860,
+      "installedDiffers": true,
+      "originalMarkers": [
+        "{{短剧分镜提示词9-1}}"
+      ],
+      "installedMarkers": [
+        "{{短剧分镜提示词9-1}}"
+      ]
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "11_optimize_g2.md",
+      "originalSha256": "3a034bf705a283c61c75097c2e117a8679313100c03d1c992a05a7286fd4a0d5",
+      "installedSha256": "13657a3961fc197f7f164ac102c8c09f49602e83a6c9e165c8fe1afd3f181bd4",
+      "originalBytes": 21519,
+      "installedBytes": 21860,
+      "installedDiffers": true,
+      "originalMarkers": [
+        "{{短剧分镜提示词9-2}}"
+      ],
+      "installedMarkers": [
+        "{{短剧分镜提示词9-2}}"
+      ]
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "11_optimize_g3.md",
+      "originalSha256": "8d17f0ed571d2db7a68b250b7713025b15c525687d576ad56e42d4a97674367f",
+      "installedSha256": "fd05456ba0fe126f2cdeb6bbeac612849b487c498ec52fc8f09739d9893de66b",
+      "originalBytes": 21519,
+      "installedBytes": 21860,
+      "installedDiffers": true,
+      "originalMarkers": [
+        "{{短剧分镜提示词9-3}}"
+      ],
+      "installedMarkers": [
+        "{{短剧分镜提示词9-3}}"
+      ]
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "11_optimize_g4.md",
+      "originalSha256": "4befd34093a2092255118623080fe3b01a265e70e27446ff8f9227308cc76efb",
+      "installedSha256": "cb70af7fb62e56e53553315131fb5d1c8df8fb23439682c6e08d2c7578944db9",
+      "originalBytes": 21453,
+      "installedBytes": 21794,
+      "installedDiffers": true,
+      "originalMarkers": [
+        "{{短剧分镜提示词9-4}}"
+      ],
+      "installedMarkers": [
+        "{{短剧分镜提示词9-4}}"
+      ]
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "11_storyboard_optimize.md",
+      "originalSha256": "75898fced586ceb147b4258d29e22b9e565fd782b04796294ef014b1ca62f8c6",
+      "installedSha256": "75898fced586ceb147b4258d29e22b9e565fd782b04796294ef014b1ca62f8c6",
+      "originalBytes": 21340,
+      "installedBytes": 21340,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "12_grid_first.md",
+      "originalSha256": "779b4c6da88987b8df6b50205883617e164ddbf429ca255ff46ad3c833921860",
+      "installedSha256": "779b4c6da88987b8df6b50205883617e164ddbf429ca255ff46ad3c833921860",
+      "originalBytes": 1232,
+      "installedBytes": 1232,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "12_grid_image_followup.md",
+      "originalSha256": "2d5d4bc18b1e40dce26c250c197762a41842c771302b97dd75ff061e0a0ce335",
+      "installedSha256": "2d5d4bc18b1e40dce26c250c197762a41842c771302b97dd75ff061e0a0ce335",
+      "originalBytes": 649,
+      "installedBytes": 649,
+      "installedDiffers": false,
+      "originalMarkers": [],
+      "installedMarkers": []
+    },
+    {
+      "skill": "bangbang-skill",
+      "file": "13_video_prompt.md",
+      "originalSha256": "5fa9f9fc497836f088252d6672b893c2ae1c7a83be350e0e03755b29b2f5050f",
+      "installedSha256": "a69afbeeb0d5343ce973c642a22629f38720655fec04cf36e0f03fc28026cbda",
+      "originalBytes": 14485,
+      "installedBytes": 14676,
+      "installedDiffers": true,
+      "originalMarkers": [],
+      "installedMarkers": []
+    }
+  ],
+  "adaptations": [
+    "原版和本机适配版全文保留在 bangbang-runtime-prompt-sources.ts；运行时优先采用本机适配版。",
+    "07_complete_script 和 10_storyboard_frames 的原版隐藏模板未提供；采用本机已补齐的可审计文本规则，并未声称恢复隐藏 Skill。",
+    "08_char_requirement 在本机仍只有隐藏标记；人物清单要求由平台接入补充，明确列出身份、性别、年龄、稳定外观、逐人物四宫格模板与参考图绑定。",
+    "运行时将示例角色、商品替换为独立示例变量；实际产出只允许使用项目上下文，不继承示例角色或商品事实。",
+    "优化提示词中的第1组范围改为当前完整规划范围；跟进图中的前一组参考改为本场景首图锚点。",
+    "模板规定的 Markdown 完整产出保存在 JSON text 字段，结构字段供程序校验与下游使用，完整上游原文逐阶段传递。",
+    "产品原创模式新增独立 directions / script 模板，声明为平台新增内容，不沿用原片分析或裂变证据要求，也不声称来自附件隐藏 Skill。运行上下文排除原视频、拆帧及前四步分析产出；下游复用原创剧本兼容的规划、展开、优化与视频提示词规则。",
+    "产品原创模板先视觉识别实际产品图；功效、参数、价格与优惠仅采用用户确认信息，缺失名称用图中产品或中性可见品类，不根据包装广告或外观猜测商品事实。原创剧本使用独立的第一层创作设定与时长安排，列目标时长、故事类型、节奏安排与已确认产品事实；其余三层继续保留完整骨架、产品展示声明与脚本正文。"
+  ],
+  "applicationTemplates": [
+    { "id": "product-original-directions", "source": "platform-authored", "sourceAnchor": "web/src/lib/server/bangbang-prompts.ts:PRODUCT_ORIGINAL_PROMPTS.directions", "date": "2026-09-08", "scope": "产品图片原创多个短剧方向，第一个推荐" },
+    { "id": "product-original-script", "source": "platform-authored", "sourceAnchor": "web/src/lib/server/bangbang-prompts.ts:PRODUCT_ORIGINAL_PROMPTS.script", "date": "2026-09-08", "scope": "按用户选定方向创作完整四层短剧脚本，无需对标视频" },
+    { "id": "product-original-fact-boundary", "source": "platform-authored", "sourceAnchor": "web/src/lib/server/bangbang-prompts.ts:PRODUCT_FACT_RULES", "date": "2026-09-08", "scope": "产品视觉观察与用户确认事实分离，供全部原创环节遵守" }
+  ],
+  "applicationRuleSource": "web/src/lib/server/bangbang-prompts.ts"
+}

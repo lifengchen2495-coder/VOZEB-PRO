@@ -4,6 +4,7 @@ export type { AdminPermission } from "@/lib/admin-permissions";
 import type { AdminPermission } from "@/lib/admin-permissions";
 import type { GlobalAiOpcPresetId } from "@/lib/globalaiopc-catalog";
 import type { RegistrationPolicyConsent } from "@/lib/registration-consent";
+import type { ModelBillingRules, TokenBillingRecord } from "@/lib/model-billing";
 import { VOZEB_QQ_GROUP_URL } from "@/constant/community";
 
 export type ApiCallFormat = "openai" | "gemini";
@@ -418,6 +419,7 @@ export type PublicPointRecord = {
     idempotencyKey?: string;
     sourceRecordId?: string;
     sourceDate?: string;
+    tokenBilling?: TokenBillingRecord;
     createdAt: string;
 };
 
@@ -468,6 +470,7 @@ export type AuthSettings = {
     mail: MailSettings;
     allowUserApiConfig: boolean;
     modelPointCosts: ModelPointCosts;
+    modelBillingRules?: ModelBillingRules;
     generationPointMultipliers: GenerationPointMultipliers;
     generationCostControl: GenerationCostControlSettings;
     dataLifecycle: DataLifecycleSettings;

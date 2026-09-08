@@ -35,6 +35,13 @@ import { assertYumengVideoReferences, buildYumengVideoRequest } from "@/lib/yume
 import { normalizeVideoProviderImageReferences } from "@/lib/server/video-reference-image";
 import { normalizeRemakeVideoAudioReferences } from "@/lib/server/remake-video-audio";
 import { getRemakeProjectForUser, RemakeProjectServiceError } from "@/lib/server/remake-project-service";
+import { getRemakeProjectForUser as getRemake15ProjectForUser, RemakeProjectServiceError as Remake15ProjectServiceError } from "@/lib/server/remake15-project-service";
+
+import { getRemakeProjectForUser as getRemake60ProjectForUser, RemakeProjectServiceError as Remake60ProjectServiceError } from "@/lib/server/remake60-project-service";
+import { getRemakeProjectForUser as getRemakeProductProjectForUser, RemakeProjectServiceError as RemakeProductProjectServiceError } from "@/lib/server/remake-product-project-service";
+import { getRemakeProjectForUser as getRemakePersonProjectForUser, RemakeProjectServiceError as RemakePersonProjectServiceError } from "@/lib/server/remake-person-project-service";
+import { validateOmniClothingVideoRequest, OmniClothingError } from "@/lib/server/omni-clothing-project-service";
+import { validateOmniVideoRequest, OmniProjectError } from "@/lib/server/omni-remake-project-service";
 
 const CREATE_PATHS = ["/video/generations", "/videos/generations", "/videos/videos", "/videos"];
 type CreateVideoTaskBody = { config?: Record<string, unknown>; prompt?: string; references?: VideoGenerationReference[]; source?: string; context?: GenerationTaskContext };
@@ -77,7 +84,16 @@ export async function POST(request: Request) {
             if (!channels.length || !requestedPrompt.trim()) return NextResponse.json({ error: "视频任务参数不完整或渠道不支持" }, { status: 400 });
             const remakeProjectId = clean(body.context?.projectId);
             const remakeSlotId = clean(body.context?.generationSlotId);
-            const isRemakeVideoRequest = remakeProjectId.startsWith("remake-") || remakeSlotId.startsWith("remake-video:");
+            const fixedRemake = [
+                { projectPrefix: "remake60-", slotPrefix: "remake60-video:", get: getRemake60ProjectForUser },
+                { projectPrefix: "remake-product-", slotPrefix: "remake-product-video:", get: getRemakeProductProjectForUser },
+                { projectPrefix: "remake-person-", slotPrefix: "remake-person-video:", get: getRemakePersonProjectForUser },
+            ].find((entry) => remakeProjectId.startsWith(entry.projectPrefix) || remakeSlotId.startsWith(entry.slotPrefix));
+            const isRemakeVideoRequest = !fixedRemake && (remakeProjectId.startsWith("remake-") || remakeSlotId.startsWith("remake-video:"));
+            const isOmniClothingRequest = remakeProjectId.startsWith("omni-clothing-") || remakeSlotId.startsWith("omni-clothing-video:");
+            const isOmniRemakeRequest = remakeProjectId.startsWith("omni-remake-") || remakeSlotId.startsWith("omni-remake-video:");
+            let workflowDuration: number | undefined;
+            const isRemake15VideoRequest = remakeProjectId.startsWith("remake15-") || remakeSlotId.startsWith("remake15-video:");
             let prompt = requestedPrompt.trim();
             if (isRemakeVideoRequest) {
                 if (!remakeProjectId.startsWith("remake-") || !remakeSlotId.startsWith("remake-video:")) return NextResponse.json({ error: "复刻视频任务的项目或分镜标识不完整" }, { status: 400 });
@@ -93,6 +109,46 @@ export async function POST(request: Request) {
                     throw error;
                 }
             }
+            if (isRemake15VideoRequest) {
+                if (!remakeProjectId.startsWith("remake15-") || remakeSlotId !== "remake15-video:1-12") return NextResponse.json({ error: "15 秒复刻视频任务的项目或分镜标识不完整" }, { status: 400 });
+                if (body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== 15) return NextResponse.json({ error: "15 秒复刻视频仅支持生成 15 秒视频" }, { status: 400 });
+                try {
+                    const project = await getRemake15ProjectForUser(user.id, remakeProjectId);
+                    const group = project.groups.find((item) => item.id === "1-12");
+                    if (!group) return NextResponse.json({ error: "15 秒复刻视频任务的分镜组不存在" }, { status: 400 });
+                    if (!group.videoPrompt.trim()) return NextResponse.json({ error: "复刻视频提示词尚未生成，请先生成并保存提示词" }, { status: 409 });
+                    if (requestedPrompt !== group.videoPrompt) return NextResponse.json({ error: "复刻视频提示词与已保存原文不一致，请刷新项目后重试" }, { status: 409 });
+                    prompt = group.videoPrompt;
+                } catch (error) {
+                    if (error instanceof Remake15ProjectServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+                    throw error;
+                }
+            }
+            try {
+                if (fixedRemake) {
+                    if (!remakeProjectId.startsWith(fixedRemake.projectPrefix) || !remakeSlotId.startsWith(fixedRemake.slotPrefix)) return NextResponse.json({ error: "复刻视频任务的项目或分镜标识不完整" }, { status: 400 });
+                    if (body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== 15) return NextResponse.json({ error: "每组十二宫格只能生成 15 秒视频" }, { status: 400 });
+                    const project = await fixedRemake.get(user.id, remakeProjectId);
+                    const group = project.groups.find((item) => fixedRemake.slotPrefix + item.id === remakeSlotId);
+                    if (!group?.videoPrompt.trim()) return NextResponse.json({ error: "请先生成并保存该分组的视频提示词" }, { status: 409 });
+                    if (requestedPrompt !== group.videoPrompt) return NextResponse.json({ error: "复刻视频提示词与已保存原文不一致，请刷新项目后重试" }, { status: 409 });
+                    prompt = group.videoPrompt;
+                    workflowDuration = 15;
+                }
+                if (isOmniClothingRequest) {
+                    if (!remakeProjectId.startsWith("omni-clothing-") || !remakeSlotId.startsWith("omni-clothing-video:")) return NextResponse.json({ error: "Omni 服装项目或片段标识不完整" }, { status: 400 });
+                    const checked = await validateOmniClothingVideoRequest(user.id, remakeProjectId, remakeSlotId, requestedPrompt, body.references || [], body.config?.videoSeconds, { attemptNo: positiveAttemptNo(body.context?.attemptNo), clientRequestId: body.context?.clientRequestId, model: requestedModel });
+                    prompt = checked.prompt; workflowDuration = checked.durationSeconds;
+                }
+                if (isOmniRemakeRequest) {
+                    if (!remakeProjectId.startsWith("omni-remake-") || !remakeSlotId.startsWith("omni-remake-video:")) return NextResponse.json({ error: "Omni 全品类项目或片段标识不完整" }, { status: 400 });
+                    const checked = await validateOmniVideoRequest({ userId: user.id, projectId: remakeProjectId, slotId: remakeSlotId, prompt: requestedPrompt, references: body.references, seconds: body.config?.videoSeconds, size: body.config?.size, attemptNo: positiveAttemptNo(body.context?.attemptNo), clientRequestId: body.context?.clientRequestId, model: requestedModel });
+                    prompt = checked.prompt; workflowDuration = checked.durationSeconds;
+                }
+            } catch (error) {
+                if (error instanceof Remake60ProjectServiceError || error instanceof RemakeProductProjectServiceError || error instanceof RemakePersonProjectServiceError || error instanceof OmniClothingError || error instanceof OmniProjectError) return NextResponse.json({ error: error.message }, { status: error.status });
+                throw error;
+            }
             const publicOrigin = requestPublicOrigin(request);
             let references: VideoGenerationReference[];
             try {
@@ -107,8 +163,8 @@ export async function POST(request: Request) {
             } catch (error) {
                 return NextResponse.json({ error: error instanceof Error ? error.message : "视频参考素材转换失败" }, { status: 400 });
             }
-            const providerPrompt = isRemakeVideoRequest ? prompt : withVideoReferenceFidelity(prompt, references);
-            const requestedParameters = resolveVideoGenerationParameters(body.config || {}, settings.generationDefaults);
+            const providerPrompt = isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake || isOmniClothingRequest || isOmniRemakeRequest ? prompt : withVideoReferenceFidelity(prompt, references);
+            const requestedParameters = resolveVideoGenerationParameters(isRemake15VideoRequest || workflowDuration ? { ...body.config, videoSeconds: isRemake15VideoRequest ? 15 : workflowDuration } : body.config || {}, settings.generationDefaults);
             const attemptNo = positiveAttemptNo(body.context?.attemptNo);
             const billingRequestId = attemptNo ? systemAiIdempotencyKey("video-attempt", user.id, concurrencyRequestId, String(attemptNo)) : concurrencyRequestId;
             let lastError: unknown;
@@ -130,6 +186,8 @@ export async function POST(request: Request) {
                 };
                 let providerReferences = references;
                 try {
+                    if (isRemake15VideoRequest && parameters.videoSeconds !== 15) throw new Error("当前渠道不支持 15 秒复刻视频，请选择支持 15 秒的视频模型");
+                    if (workflowDuration && parameters.videoSeconds !== workflowDuration) throw new Error(`当前渠道不支持本片段的 ${workflowDuration} 秒时长，请选择兼容的视频模型`);
                     assertCapabilityConstraints(channel.capabilityProfile, {
                         capability: "video",
                         referenceCount: references.filter((reference) => reference.type === "image").length,
@@ -157,11 +215,7 @@ export async function POST(request: Request) {
                         if (channel.advancedConfig?.protocol === "yumeng") assertYumengVideoReferences(channel.model, references);
                         assertReferenceUrls(channel.advancedConfig, references, Boolean(globalPreset));
                     }
-                    if (
-                        isRemakeVideoRequest &&
-                        (channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video") &&
-                        references.some((reference) => reference.type === "audio")
-                    ) {
+                    if ((isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake) && (channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video") && references.some((reference) => reference.type === "audio")) {
                         providerReferences = await normalizeRemakeVideoAudioReferences({ references, userId: user.id, internalOrigin: origin, publicOrigin, projectId: remakeProjectId });
                     }
                 } catch (error) {

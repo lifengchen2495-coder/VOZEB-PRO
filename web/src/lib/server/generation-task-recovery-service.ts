@@ -23,6 +23,15 @@ import { toSafeGenerationReviewReason } from "@/lib/server/generation-errors";
 import { getAuthSettings } from "@/lib/auth/store";
 import { getRemakeAnalysisTask } from "@/lib/server/remake-analysis-task-store";
 import { runRemakeAnalysisTask } from "@/lib/server/remake-analysis-runtime";
+import { getRemakeAnalysisTask as getRemake15AnalysisTask } from "@/lib/server/remake15-analysis-task-store";
+import { runRemakeAnalysisTask as runRemake15AnalysisTask } from "@/lib/server/remake15-analysis-runtime";
+
+import { getRemakeAnalysisTask as getRemake60AnalysisTask } from "@/lib/server/remake60-analysis-task-store";
+import { runRemakeAnalysisTask as runRemake60AnalysisTask } from "@/lib/server/remake60-analysis-runtime";
+import { getRemakeAnalysisTask as getRemakeProductAnalysisTask } from "@/lib/server/remake-product-analysis-task-store";
+import { runRemakeAnalysisTask as runRemakeProductAnalysisTask } from "@/lib/server/remake-product-analysis-runtime";
+import { getRemakeAnalysisTask as getRemakePersonAnalysisTask } from "@/lib/server/remake-person-analysis-task-store";
+import { runRemakeAnalysisTask as runRemakePersonAnalysisTask } from "@/lib/server/remake-person-analysis-runtime";
 
 type RecoveryResult = "pending" | "result_ready" | "completed" | "failed" | "needs_review" | "deferred";
 
@@ -65,7 +74,14 @@ async function processGenerationTaskLease(lease: GenerationTaskLease, workerId: 
 }
 
 async function processRemakeLease(lease: GenerationTaskLease, workerId: string, origin: string, cookie: string): Promise<RecoveryResult> {
-    const task = await getRemakeAnalysisTask(lease.id);
+    const handlers = [
+        { prefix: "remake15-analysis-", get: getRemake15AnalysisTask, run: runRemake15AnalysisTask },
+        { prefix: "remake60-analysis-", get: getRemake60AnalysisTask, run: runRemake60AnalysisTask },
+        { prefix: "remake-product-analysis-", get: getRemakeProductAnalysisTask, run: runRemakeProductAnalysisTask },
+        { prefix: "remake-person-analysis-", get: getRemakePersonAnalysisTask, run: runRemakePersonAnalysisTask },
+    ];
+    const handler = handlers.find((entry) => lease.id.startsWith(entry.prefix)) || { get: getRemakeAnalysisTask, run: runRemakeAnalysisTask };
+    const task = await handler.get(lease.id);
     if (!task) {
         await releaseGenerationTaskLease("remake", lease.id, workerId, { executionPhase: "completed", nextPollAt: undefined, lastUpstreamStatus: "missing" });
         return "failed";
@@ -78,7 +94,7 @@ async function processRemakeLease(lease: GenerationTaskLease, workerId: string, 
         await releaseGenerationTaskLease("remake", lease.id, workerId, { executionPhase: "completed", nextPollAt: undefined, lastUpstreamStatus: task.status });
         return task.status === "success" ? "completed" : "failed";
     }
-    const result = await runRemakeAnalysisTask({ task, origin, cookie });
+    const result = await handler.run({ task, origin, cookie });
     await releaseGenerationTaskLease("remake", lease.id, workerId, {
         executionPhase: "completed",
         nextPollAt: undefined,
@@ -502,7 +518,7 @@ async function processImageLease(lease: GenerationTaskLease, workerId: string, o
         const step = task.upstream?.id ? await queryImageTaskUpstreamStep(task, origin, cookie, cookie ? "" : task.userId) : await createImageTaskUpstreamStep(task, origin, publicOrigin, cookie, cookie ? "" : task.userId);
         const now = Date.now();
         if (step.state === "failed") {
-            if (step.retryReason === "upstream_failed" && !task.generationSlotId?.startsWith("remake:")) {
+            if (step.retryReason === "upstream_failed" && !["remake:", "remake15:", "remake60:", "remake-product:", "remake-person:"].some((prefix) => task.generationSlotId?.startsWith(prefix))) {
                 const retry = await prepareImageTaskAutomaticRetry(task, step.error);
                 if (retry) {
                     await releaseGenerationTaskLease(

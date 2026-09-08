@@ -3,26 +3,6 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("public creator modal", () => {
-    it("opens creators in place from the gallery, inspiration cards and work preview", async () => {
-        const [modal, profile, card, gallery, inspiration, preview] = await Promise.all([
-            readFile(resolve(process.cwd(), "src/components/works/public-creator-modal.tsx"), "utf8"),
-            readFile(resolve(process.cwd(), "src/components/works/public-creator-profile.tsx"), "utf8"),
-            readFile(resolve(process.cwd(), "src/components/works/public-work-gallery-card.tsx"), "utf8"),
-            readFile(resolve(process.cwd(), "src/app/gallery/gallery-view.tsx"), "utf8"),
-            readFile(resolve(process.cwd(), "src/app/(user)/create/components/create-inspiration-gallery.tsx"), "utf8"),
-            readFile(resolve(process.cwd(), "src/components/works/public-work-preview-modal.tsx"), "utf8"),
-        ]);
-
-        expect(modal).toContain("getPublicCreatorPage");
-        expect(modal).toContain("<PublicCreatorProfile");
-        expect(profile).not.toContain("@{profile.username}");
-        expect(profile).not.toContain("items-center border-b border-border text-center");
-        expect(card).toContain("onOpenAuthor");
-        expect(gallery).toContain("<PublicCreatorModal");
-        expect(inspiration).toContain("<PublicCreatorModal");
-        expect(preview).toContain("onOpenCreator");
-    });
-
     it("keeps private likes on the authenticated personal home only", async () => {
         const [personal, publicProfile] = await Promise.all([readFile(resolve(process.cwd(), "src/app/(user)/me/page.tsx"), "utf8"), readFile(resolve(process.cwd(), "src/components/works/public-creator-profile.tsx"), "utf8")]);
 

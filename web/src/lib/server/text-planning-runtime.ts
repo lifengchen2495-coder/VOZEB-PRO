@@ -7,6 +7,7 @@ import { extractJsonObjectText } from "@/lib/server/structured-model-output";
 import { SYSTEM_AI_LOGICAL_MODEL_HEADER, SYSTEM_AI_POINTS_IDEMPOTENCY_HEADER, SYSTEM_AI_UPSTREAM_MODEL_HEADER, systemAiBillingHeaders } from "@/lib/server/system-ai-billing";
 import { interpolateModelPath, resolveTextProtocol } from "@/lib/server/text-protocol-resolver";
 import { resolveChannelModelConfig } from "@/lib/channel-protocol-registry";
+import { applyTokenStreamBilling } from "@/lib/server/token-billing-stream";
 
 export type TextPlanningProtocol = "responses" | "chat" | "gemini" | "custom";
 export type TextPlanningCandidate = {
@@ -291,6 +292,9 @@ async function readStructuredResponse(input: StructuredTextRequest, request: Pro
     const streamed = request.stream ? createStreamAccumulator(request.protocol, input.tool.name, request.resultField, input.allowNaturalLanguage) : undefined;
     const body = request.stream ? await readResponseBody(response, streamed) : await response.text();
     const raw = typeof body === "string" ? body : body.raw;
+    if (request.stream && response.headers.get("x-vozeb-pro-billing-mode") === "token") {
+        response = new Response(null, { status: response.status, headers: applyTokenStreamBilling(response.headers, raw) });
+    }
     let payload: Record<string, unknown> | null = null;
     try {
         const parsed = JSON.parse(raw.replace(/^\uFEFF/u, "").trim());

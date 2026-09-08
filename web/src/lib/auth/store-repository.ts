@@ -2,6 +2,7 @@ import { createPostgresRepositories, ensurePostgresSchema, isPostgresDatabaseEna
 import { formatAccountId } from "@/lib/account-id";
 import { normalizeRegistrationPolicyConsent } from "@/lib/registration-consent";
 import { normalizeAdminPermissions } from "@/lib/admin-permissions";
+import { normalizeTokenBillingRecord } from "@/lib/token-billing-record";
 import { readJsonDataFile, writeJsonDataFile } from "@/lib/server/data-adapter";
 import { decryptSecretValue, encryptSecretValue } from "@/lib/server/secret-crypto";
 import {
@@ -317,6 +318,7 @@ export function mapPostgresSettings(settingsRow: Record<string, unknown> | undef
         mail: dbJson(settingsRow?.mail, fallback.mail),
         allowUserApiConfig: dbBool(settingsRow?.allow_user_api_config, fallback.allowUserApiConfig),
         modelPointCosts: dbJson(settingsRow?.model_point_costs, fallback.modelPointCosts),
+        modelBillingRules: dbJson(settingsRow?.model_billing_rules, fallback.modelBillingRules || {}),
         generationPointMultipliers: dbJson(settingsRow?.generation_point_multipliers, fallback.generationPointMultipliers),
         generationCostControl: dbJson(settingsRow?.generation_cost_control, fallback.generationCostControl),
         dataLifecycle: dbJson(settingsRow?.data_lifecycle, fallback.dataLifecycle),
@@ -423,6 +425,7 @@ export function mapPostgresPointRecord(row: Record<string, unknown>): StoredPoin
         requestFingerprint: dbOptionalText(row.request_fingerprint),
         sourceRecordId: dbOptionalText(row.source_record_id),
         sourceDate: row.source_date ? dbDate(row.source_date) : undefined,
+        tokenBilling: normalizeTokenBillingRecord(row.token_billing),
         createdAt: dbIso(row.created_at),
     };
 }
@@ -512,9 +515,9 @@ export async function upsertPostgresSettings(db: QueryExecutor, settings: AuthSe
         INSERT INTO app_settings (
             id, site, registration_enabled, email_registration_enabled, free_daily_points_enabled, mail, allow_user_api_config,
             model_point_costs, generation_point_multipliers, generation_cost_control, data_lifecycle, entitlements_enabled, default_plan_id, generation_concurrency, generation_defaults,
-            logical_models, default_models, agent_skills, free_daily_points
+            logical_models, default_models, agent_skills, free_daily_points, model_billing_rules
         )
-        VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         ON CONFLICT (id) DO UPDATE SET
             site = EXCLUDED.site,
             registration_enabled = EXCLUDED.registration_enabled,
@@ -523,6 +526,7 @@ export async function upsertPostgresSettings(db: QueryExecutor, settings: AuthSe
             mail = EXCLUDED.mail,
             allow_user_api_config = EXCLUDED.allow_user_api_config,
             model_point_costs = EXCLUDED.model_point_costs,
+            model_billing_rules = EXCLUDED.model_billing_rules,
             generation_point_multipliers = EXCLUDED.generation_point_multipliers,
             generation_cost_control = EXCLUDED.generation_cost_control,
             data_lifecycle = EXCLUDED.data_lifecycle,
@@ -554,6 +558,7 @@ export async function upsertPostgresSettings(db: QueryExecutor, settings: AuthSe
             dbJsonParam(settings.defaultModels),
             dbJsonParam(settings.agentSkills),
             settings.freeDailyPoints,
+            dbJsonParam(settings.modelBillingRules || {}),
         ],
     );
 }
@@ -691,8 +696,8 @@ export async function insertPostgresQuotaUsage(db: QueryExecutor, quotaUsage: St
 export async function insertPostgresPointRecords(db: QueryExecutor, records: StoredPointRecord[]) {
     for (const record of records) {
         await db.query(
-            `INSERT INTO point_records (id, user_id, type, amount, balance_after, permanent_amount, daily_amount, permanent_balance_after, daily_balance_after, description, model, idempotency_key, request_fingerprint, source_record_id, source_date, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            `INSERT INTO point_records (id, user_id, type, amount, balance_after, permanent_amount, daily_amount, permanent_balance_after, daily_balance_after, description, model, idempotency_key, request_fingerprint, source_record_id, source_date, created_at, token_billing)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
              ON CONFLICT (id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 type = EXCLUDED.type,
@@ -708,6 +713,7 @@ export async function insertPostgresPointRecords(db: QueryExecutor, records: Sto
                 request_fingerprint = EXCLUDED.request_fingerprint,
                 source_record_id = EXCLUDED.source_record_id,
                 source_date = EXCLUDED.source_date,
+                token_billing = EXCLUDED.token_billing,
                 created_at = EXCLUDED.created_at`,
             [
                 record.id,
@@ -726,6 +732,7 @@ export async function insertPostgresPointRecords(db: QueryExecutor, records: Sto
                 record.sourceRecordId || null,
                 record.sourceDate || null,
                 record.createdAt,
+                record.tokenBilling ? JSON.stringify(record.tokenBilling) : null,
             ],
         );
     }

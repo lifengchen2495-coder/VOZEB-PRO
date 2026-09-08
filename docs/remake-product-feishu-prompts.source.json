@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-08",
+  "source": {
+    "baseToken": "ScUYbyoAbaJptZsnuTbcg6WwnN3",
+    "tableId": "tbl71YEowi1HXga4",
+    "tableName": "Codex+Seedance_ 全品类 (换品_不换人) -1分钟-基础版",
+    "url": "https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=tbl71YEowi1HXga4",
+    "equivalentEmptyTableId": "tblNxnK8xvSHIrcY",
+    "recordArtifact": ".workflow/remake-product-records.ndjson",
+    "recordCount": 12,
+    "hasMore": false
+  },
+  "workflow": {
+    "frames": 48,
+    "copyBlocks": 16,
+    "groups": ["1-12", "13-24", "25-36", "37-48"],
+    "imageStagesPerGroup": 1,
+    "references": ["原始视频", "产品图", "产品信息"],
+    "videoSecondsPerGroup": 15,
+    "mergedVideoField": "合并1分钟-codex"
+  },
+  "verification": {
+    "method": "使用 lark-cli --as user 投影读取全部 12 条记录，并只读查看 1-12 生图字段编辑器；取消编辑，没有保存或触发飞书生成。",
+    "imageInputFields": ["产品图", "1-12拼图"],
+    "imageLayout": "9:16，4 行 3 列，2K",
+    "observedImagePromptTitle": "十二宫格分镜图 - 清理画面 + 重绘 + 换人物 + 换产品",
+    "observedConflictingRules": ["只有出现人物（有人脸/有身体）时才换成统一的新人物", "必须换角度、换景别"],
+    "observedProductRule": "只有人物或手部持有产品时替换；没有人物或手里没有产品的镜头不放产品。",
+    "adaptation": "按用户要求与菜单目标纠正原表混入的换人和换场景指令，严格保持原人物身份、服装、背景、景别和动作。单次生图直接引用来源十二宫格及产品图，不添加新产品脚本或模板图阶段。",
+    "runtimePromptOrigin": "visible_field_rules_and_record_output_adaptation",
+    "analysisAndCopyRules": "分析与文案规则沿用已核验的 48 帧、16 区间结构，并与当前表记录输出核对；当前表这两个字段的编辑器规则未逐字核验。",
+    "limitation": "运行时为系统适配规则，不宣称与原表冲突指令逐字相同；合并列存在但读取的记录尚无合并成品。"
+  }
+}

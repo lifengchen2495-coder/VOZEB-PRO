@@ -1,6 +1,6 @@
 "use client";
 
-import { Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ChevronRight, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
@@ -11,6 +11,7 @@ import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { SiteLogo } from "@/components/layout/site-logo";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { navigationToolForPathname } from "@/constant/navigation-tools";
+import { commerceToolForPathname } from "@/constant/commerce-tools";
 import { DEFAULT_SITE_TITLE, resolveSiteTitle } from "@/lib/site-brand";
 import { usePublicSessionStore } from "@/stores/use-public-session-store";
 
@@ -27,9 +28,10 @@ export function AppWorkspaceShell({ children }: { children: ReactNode }) {
     const site = usePublicSessionStore((state) => state.payload?.settings?.site) || { title: DEFAULT_SITE_TITLE, logoUrl: "/logo.svg" };
     const siteTitle = resolveSiteTitle(site.title);
     const tool = navigationToolForPathname(pathname);
+    const commerceTool = commerceToolForPathname(pathname);
     const fullscreen = isFullscreenWorkspacePath(pathname);
     const rootSlug = pathname.split("/").filter(Boolean)[0] || "";
-    const pageTitle = tool?.label || PAGE_TITLES[rootSlug] || "工作空间";
+    const pageTitle = commerceTool?.label || tool?.label || PAGE_TITLES[rootSlug] || "工作空间";
 
     if (fullscreen) return <div className="h-dvh min-h-0 overflow-hidden">{children}</div>;
 
@@ -61,7 +63,13 @@ export function AppWorkspaceShell({ children }: { children: ReactNode }) {
                         >
                             {sidebarExpanded ? <PanelLeftClose className="size-[17px]" /> : <PanelLeftOpen className="size-[17px]" />}
                         </button>
-                        <div className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+                            {commerceTool ? (
+                                <>
+                                    <Link href="/commerce" className="shrink-0 rounded text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:text-sm">电商创作</Link>
+                                    <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                </>
+                            ) : null}
                             <div className="truncate text-sm font-semibold text-[#20242a] dark:text-[#f3f5f7]">{pageTitle}</div>
                         </div>
                     </div>

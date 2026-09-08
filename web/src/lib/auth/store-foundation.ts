@@ -155,6 +155,7 @@ export const DEFAULT_SETTINGS: AuthSettings = {
     mail: DEFAULT_MAIL_SETTINGS,
     allowUserApiConfig: false,
     modelPointCosts: {},
+    modelBillingRules: {},
     generationPointMultipliers: DEFAULT_GENERATION_POINT_MULTIPLIERS,
     generationCostControl: DEFAULT_GENERATION_COST_CONTROL,
     dataLifecycle: DEFAULT_DATA_LIFECYCLE,
