@@ -33,6 +33,9 @@ export function DramaWorkflowPanel({
     episode,
     stage,
     busy: pipelineBusy = false,
+    textModel,
+    textModelReady = true,
+    onAnalysisBusyChange,
     onStageChange,
     onAdoptingChange,
 }: {
@@ -40,6 +43,9 @@ export function DramaWorkflowPanel({
     episode: DramaEpisode;
     stage: DramaWorkflowStage;
     busy?: boolean;
+    textModel?: string;
+    textModelReady?: boolean;
+    onAnalysisBusyChange?: (busy: boolean) => void;
     onStageChange: (stage: DramaProjectStage) => void;
     onAdoptingChange: (busy: boolean) => void;
 }) {
@@ -90,7 +96,10 @@ export function DramaWorkflowPanel({
     };
     const run = async (action: WorkflowAction) => {
         if (actionDisabled) return;
+        const generates = action === "analyze" || action === "generate";
+        if (generates && !textModelReady) return message.warning("请先选择可用的文本模型");
         setBusy(action);
+        if (generates) onAnalysisBusyChange?.(true);
         if (action === "adopt") onAdoptingChange(true);
         const editRevision = edits.current;
         const hadEdits = dirty;
@@ -104,8 +113,9 @@ export function DramaWorkflowPanel({
             if (action === "adopt") request = { action, artifactId: selected!.id, expectedInput };
             else if (action === "analyze") {
                 if (stage === "script") throw new Error("请在剧本入口开始原稿分析");
-                request = { action, stage, episodeId: scope, expectedInput, requestId: nanoid(), instructions };
+                request = { action, stage, episodeId: scope, expectedInput, requestId: nanoid(), instructions, textModel };
             } else request = { action, stage, episodeId: scope, data, instructions, intent, expectedInput, requestId: nanoid() };
+            if (request.action === "generate") request.textModel = textModel;
             const result = await requestDramaWorkflow(project.id, request);
             if (useUserStore.getState().user?.id !== userId) return;
             let mergeConflict: DramaWorkflowMergeConflict | undefined;
@@ -129,6 +139,7 @@ export function DramaWorkflowPanel({
             message.error(error instanceof Error ? error.message : "分析操作失败");
         } finally {
             if (active.current) setBusy(null);
+            if (generates) onAnalysisBusyChange?.(false);
             if (action === "adopt") onAdoptingChange(false);
         }
     };
@@ -142,7 +153,7 @@ export function DramaWorkflowPanel({
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <Tag color={adopted ? (adoptedIsStale ? "orange" : "green") : "default"}>{adopted ? (adoptedIsStale ? `已应用 v${adopted.version} · 待复核` : `已应用 v${adopted.version}`) : "尚无分析结果"}</Tag>
-                    <Button icon={<Sparkles className="size-4" />} loading={busy === "analyze" || busy === "generate"} disabled={actionDisabled || (analysisStage && !hasScript)} onClick={() => void run(analysisStage ? "analyze" : "generate")}>
+                    <Button icon={<Sparkles className="size-4" />} loading={busy === "analyze" || busy === "generate"} disabled={actionDisabled || !textModelReady || (analysisStage && !hasScript)} onClick={() => void run(analysisStage ? "analyze" : "generate")}>
                         {analysisStage ? selected ? "AI 重新分析" : "AI 分析这一阶段" : "AI 生成候选稿"}
                     </Button>
                 </div>

@@ -184,6 +184,7 @@ export type DramaProject = {
     props: DramaProp[];
     clues: DramaClue[];
     defaultVideoMode: DramaVideoMode;
+    textModel?: string;
     videoPromptInstructions?: string;
     episodes: DramaEpisode[];
     sourceAssets?: DramaSourceAsset[];

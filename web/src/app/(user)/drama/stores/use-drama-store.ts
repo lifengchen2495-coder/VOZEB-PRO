@@ -27,7 +27,7 @@ type DramaStore = {
     loadProject: (id: string, force?: boolean) => Promise<DramaProject>;
     createProject: (input: CreateDramaProjectInput) => Promise<string>;
     deleteProject: (id: string) => Promise<void>;
-    updateProject: (id: string, patch: Partial<Pick<DramaProject, "title" | "summary" | "style" | "ratio" | "status" | "creativeConversationId" | "defaultVideoMode" | "videoPromptInstructions">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<DramaProject, "title" | "summary" | "style" | "ratio" | "status" | "creativeConversationId" | "defaultVideoMode" | "videoPromptInstructions" | "textModel">>) => void;
     flushProjectSave: (id: string) => Promise<DramaProject>;
     flushProject: (id: string) => Promise<DramaProject>;
     mutateWorkflowProject: (id: string, updater: (project: DramaProject) => DramaProject) => void;

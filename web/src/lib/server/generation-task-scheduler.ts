@@ -26,9 +26,9 @@ export type GenerationTaskLease = Pick<
 >;
 
 export type GenerationTaskSchedulePatch = Partial<Pick<GenerationTaskLease, "executionPhase" | "upstreamTaskId" | "channelId" | "provider" | "queryPath" | "submittedAt" | "nextPollAt" | "lastPollAt" | "lastUpstreamStatus" | "resultPayload">>;
-type GenerationTaskScheduleOptions = { cancellation?: boolean; resetUpstreamIdentity?: boolean };
+type GenerationTaskScheduleOptions = { cancellation?: boolean; resetUpstreamIdentity?: boolean; onlyIfUnscheduled?: boolean };
 
-const SCHEDULABLE_TYPES = new Set<GenerationTaskType>(["image", "video", "audio", "text", "agent", "remake"]);
+const SCHEDULABLE_TYPES = new Set<GenerationTaskType>(["image", "video", "audio", "text", "agent", "remake", "drama"]);
 const ACTIVE_PHASES = new Set<GenerationTaskExecutionPhase>(["created", "submitting", "submitted", "polling", "result_ready", "persisting"]);
 const REVIEW_PHASES = new Set<GenerationTaskExecutionPhase>(["review_pending", "reviewing"]);
 const CANCELLATION_PHASES = new Set<GenerationTaskExecutionPhase>(["cancel_requested", "cancel_polling"]);
@@ -45,8 +45,9 @@ export async function scheduleGenerationTask(type: GenerationTaskType, id: strin
                  last_upstream_status = COALESCE($11, last_upstream_status), result_payload = COALESCE($12::jsonb, result_payload)
              WHERE id = $1 AND task_type = $2
                AND ($13::boolean OR status <> 'cancelled' OR execution_phase NOT IN ('cancel_requested', 'cancel_polling'))
+               AND (NOT $14::boolean OR (status = 'pending' AND next_poll_at IS NULL AND worker_id IS NULL))
              RETURNING *`,
-            [...scheduleValues(id, type, normalized), options.cancellation === true],
+            [...scheduleValues(id, type, normalized), options.cancellation === true, options.onlyIfUnscheduled === true],
         );
         return result.rows[0] ? mapLease(result.rows[0]) : null;
     }
@@ -55,6 +56,7 @@ export async function scheduleGenerationTask(type: GenerationTaskType, id: strin
         const next = tasks.map((task) => {
             if (task.id !== id || task.type !== type) return task;
             if (!canApplySchedulePatch(task, options)) return task;
+            if (options.onlyIfUnscheduled && (task.status !== "pending" || task.nextPollAt !== undefined || task.workerId)) return task;
             const updated = applyPatch(task, normalized);
             result = toLease(updated);
             return updated;
@@ -341,5 +343,5 @@ function isPhase(value: unknown): value is GenerationTaskExecutionPhase {
 }
 
 function isTaskType(value: unknown): value is GenerationTaskType {
-    return value === "text" || value === "image" || value === "video" || value === "audio" || value === "agent" || value === "render" || value === "remake";
+    return value === "text" || value === "image" || value === "video" || value === "audio" || value === "agent" || value === "render" || value === "remake" || value === "drama";
 }

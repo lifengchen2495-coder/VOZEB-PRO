@@ -1,8 +1,10 @@
 import type { CreateDramaProjectInput, DramaCostSummary, DramaEpisode, DramaProject, DramaProjectSummary, DramaProjectVersion, DramaVisualReview } from "@/lib/drama-project-contract";
 import type { DramaWorkflowRequest, DramaWorkflowResponse } from "@/lib/drama-workflow-request";
 import { syncUserPointsFromHeaders } from "@/services/api/points";
+import { requestDramaAnalysis } from "@/services/api/drama-analysis";
 
 export async function requestDramaWorkflow(projectId: string, input: DramaWorkflowRequest): Promise<DramaWorkflowResponse> {
+    if (input.action === "generate" || input.action === "analyze") return requestDramaAnalysis<DramaWorkflowResponse>(`/api/drama/projects/${encodeURIComponent(projectId)}/workflow`, input);
     const response = await fetch(`/api/drama/projects/${encodeURIComponent(projectId)}/workflow`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
     syncUserPointsFromHeaders(response.headers, "system");
     const payload = (await response.json().catch(() => ({}))) as { data?: DramaWorkflowResponse; msg?: string };

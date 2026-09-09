@@ -1,6 +1,6 @@
 import type { GenerationTaskExecutionPhase } from "@/lib/server/generation-task-scheduler";
 
-export type GenerationTaskType = "text" | "image" | "video" | "audio" | "agent" | "render" | "remake";
+export type GenerationTaskType = "text" | "image" | "video" | "audio" | "agent" | "render" | "remake" | "drama";
 export type GenerationTaskStatus = "pending" | "running" | "success" | "error" | "paused" | "cancelled";
 
 export type GenerationTaskContext = {

@@ -207,6 +207,7 @@ export function normalizeProject(value: unknown, current: DramaProject, options:
         throw error;
     }
     if (input.videoPromptInstructions !== undefined && (typeof input.videoPromptInstructions !== "string" || input.videoPromptInstructions.length > 50_000)) throw new DramaProjectServiceError("视频提示词生成指令必须是 50,000 字以内的文本", 400);
+    if (input.textModel !== undefined && (typeof input.textModel !== "string" || input.textModel.length > 200)) throw new DramaProjectServiceError("文本模型必须是 200 字以内的文本", 400);
     const episodes = array(input.episodes)
         .map((value, index) => normalizeEpisode(value, index, options.restoreWorkflow ? undefined : current.episodes.find((episode) => episode.id === cleanText(object(value).id))))
         .filter((episode): episode is DramaEpisode => Boolean(episode));
@@ -231,6 +232,7 @@ export function normalizeProject(value: unknown, current: DramaProject, options:
         clues: normalizeClues(input.clues),
         defaultVideoMode: videoMode(input.defaultVideoMode),
         videoPromptInstructions: input.videoPromptInstructions === undefined ? current.videoPromptInstructions : optionalText(input.videoPromptInstructions),
+        textModel: input.textModel === undefined ? current.textModel : optionalText(input.textModel),
         episodes,
         sourceAssets: normalizeSourceAssets(input.sourceAssets),
         createdAt: current.createdAt,

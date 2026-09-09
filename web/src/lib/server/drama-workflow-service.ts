@@ -26,11 +26,13 @@ export function parseDramaWorkflowRequest(value: unknown): DramaWorkflowRequest 
     if (typeof input.requestId !== "string" || !/^[\w:-]{1,150}$/.test(input.requestId)) throw new DramaWorkflowError("请求编号无效");
     if (input.instructions !== undefined && (typeof input.instructions !== "string" || input.instructions.length > 10000)) throw new DramaWorkflowError("补充要求不能超过 10000 字");
     if (input.episodeId !== undefined && (typeof input.episodeId !== "string" || input.episodeId.length > 200)) throw new DramaWorkflowError("剧集编号无效");
+    if (input.textModel !== undefined && (typeof input.textModel !== "string" || !input.textModel.trim() || input.textModel.length > 200)) throw new DramaWorkflowError("请选择有效的文本模型");
     const shared = {
         episodeId: input.episodeId as string | undefined,
         expectedInput: input.expectedInput,
         requestId: input.requestId,
         instructions: input.instructions as string | undefined,
+        ...(input.textModel === undefined ? {} : { textModel: (input.textModel as string).trim() }),
     };
     if (input.action === "analyze") return { ...shared, action: "analyze", stage: input.stage as "story" | "characters" | "beats", intent: "analysis" };
     return { ...shared, action: input.action, stage: input.stage as DramaWorkflowStage, ...(input.intent === undefined ? {} : { intent: input.intent }), data: input.data };
@@ -68,7 +70,7 @@ async function executeDramaWorkflowAction(userId: string, projectId: string, inp
     }
     const intent = input.action === "analyze" ? "analysis" : input.intent;
     const id = `workflow-${createHash("sha256")
-        .update(JSON.stringify([projectId, input.action, input.requestId, input.stage, input.episodeId, input.expectedInput, input.instructions, input.data, intent]))
+        .update(JSON.stringify([projectId, input.action, input.requestId, input.stage, input.episodeId, input.expectedInput, input.instructions, input.data, intent, ...(input.textModel === undefined ? [] : [input.textModel])]))
         .digest("hex")
         .slice(0, 40)}`;
     const existing = snapshot.workflow?.artifacts.find((artifact) => artifact.id === id);

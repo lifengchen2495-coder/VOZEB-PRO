@@ -4,7 +4,8 @@ import type { DramaProject } from "@/lib/drama-project-contract";
 import { createDramaWorkflowArtifact, dramaWorkflowInput, latestDramaWorkflowArtifact } from "@/lib/drama-workflow";
 import type { DramaWorkflowIntent, DramaWorkflowStage } from "@/lib/drama-workflow-contract";
 import { resolveInternalOrigin } from "@/lib/server/internal-origin";
-import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
+import { maintenanceWorkerContextHeaders, requestRuntimeCredential } from "@/lib/server/maintenance-auth";
+import { resolveDramaTextModel } from "@/lib/server/drama-text-model";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { isStructuredTextFailure, rankTextPlanningCandidates, requestStructuredText, TextPlanningRequestError } from "@/lib/server/text-planning-runtime";
 
@@ -97,16 +98,28 @@ export function dramaWorkflowMessages(project: DramaProject, stage: DramaWorkflo
     ];
 }
 
-export async function generateDramaWorkflowData(input: { request: Request; userId: string; project: DramaProject; stage: DramaWorkflowStage; intent?: DramaWorkflowIntent; episodeId?: string; instructions?: string; requestId: string; data?: unknown }) {
+export async function generateDramaWorkflowData(input: {
+    request: Request;
+    userId: string;
+    project: DramaProject;
+    stage: DramaWorkflowStage;
+    intent?: DramaWorkflowIntent;
+    episodeId?: string;
+    instructions?: string;
+    requestId: string;
+    textModel?: string;
+    data?: unknown;
+}) {
     const intent = input.intent || "creation";
     const messages = dramaWorkflowMessages(input.project, input.stage, input.episodeId, input.instructions, input.data, intent);
     const schema = intent === "analysis" ? DRAMA_ANALYSIS_SCHEMAS[input.stage as Exclude<DramaWorkflowStage, "script">] : DRAMA_WORKFLOW_SCHEMAS[input.stage];
     const normalizeData = (value: unknown) => createDramaWorkflowArtifact(input.project, { stage: input.stage, intent, episodeId: input.episodeId, data: value, source: "ai" }).data;
     const settings = await getAuthSettings();
-    const model = settings.defaultModels.textModel;
-    const candidates = rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", model).map((candidate) => ({ ...candidate, channelId: candidate.channel.id })));
-    if (!model || !candidates.length) throw new TextPlanningRequestError("请先配置可用的默认文本模型", 400, false);
-    const cookie = input.request.headers.get("cookie") || "";
+    const { model, candidates: resolvedCandidates } = resolveDramaTextModel(settings, input.textModel);
+    const candidates = rankTextPlanningCandidates(resolvedCandidates.map((candidate) => ({ ...candidate, channelId: candidate.channel.id })));
+    const credential = requestRuntimeCredential(input.request, input.userId);
+    const workerHeaders = maintenanceWorkerContextHeaders(credential) || {};
+    const cookie = Object.keys(workerHeaders).length ? "" : credential;
     const attemptId = randomUUID();
     const refunds = new Map<string, Promise<unknown>>();
     const refund = async (headers: Headers) => {
@@ -135,8 +148,8 @@ export async function generateDramaWorkflowData(input: { request: Request; userI
                 candidate,
                 messages,
                 tool: { name: `${intent === "analysis" ? "analyze" : "write"}_drama_${input.stage}`, description: intent === "analysis" ? "从剧本原稿忠实提取本阶段分析结果" : "返回本阶段结构化创作候选稿", parameters: schema },
-                headers: { "Content-Type": "application/json", cookie, ...systemAiBillingHeaders(model, `${key}:tool`, candidate.upstreamModel) },
-                fallbackHeaders: { "Content-Type": "application/json", cookie, ...systemAiBillingHeaders(model, `${key}:json`, candidate.upstreamModel) },
+                headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}), ...workerHeaders, ...systemAiBillingHeaders(model, `${key}:tool`, candidate.upstreamModel) },
+                fallbackHeaders: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}), ...workerHeaders, ...systemAiBillingHeaders(model, `${key}:json`, candidate.upstreamModel) },
                 preferNativeTools: false,
                 allowRepair: true,
                 stream: true,

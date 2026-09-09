@@ -2,11 +2,13 @@ import { resolveDramaShotDuration } from "@/lib/server/drama-shot-config";
 
 export type DramaAnalyzeBody = {
     requestId?: string;
+    projectId?: string;
     phase?: "content" | "visual" | "video-prompts";
     videoPromptInstructions?: string;
     script?: string;
     summary?: string;
     style?: string;
+    textModel?: string;
     videoModel?: string;
     episode?: unknown;
     characters?: unknown;
@@ -39,13 +41,15 @@ export function normalizeDramaVisualInput(body: DramaAnalyzeBody) {
                 sceneId: dramaAnalysisText(shot.sceneId),
                 propIds: texts(shot.propIds),
                 clueIds: texts(shot.clueIds),
-                ...(body.phase === "video-prompts" ? {
-                    imagePrompt: dramaAnalysisText(shot.imagePrompt),
-                    startFramePrompt: dramaAnalysisText(shot.startFramePrompt),
-                    endFramePrompt: dramaAnalysisText(shot.endFramePrompt),
-                    cameraMotion: dramaAnalysisText(shot.cameraMotion),
-                    continuity: Object.fromEntries(Object.entries(object(shot.continuity)).filter(([, value]) => typeof value === "string")),
-                } : {}),
+                ...(body.phase === "video-prompts"
+                    ? {
+                          imagePrompt: dramaAnalysisText(shot.imagePrompt),
+                          startFramePrompt: dramaAnalysisText(shot.startFramePrompt),
+                          endFramePrompt: dramaAnalysisText(shot.endFramePrompt),
+                          cameraMotion: dramaAnalysisText(shot.cameraMotion),
+                          continuity: Object.fromEntries(Object.entries(object(shot.continuity)).filter(([, value]) => typeof value === "string")),
+                      }
+                    : {}),
             },
         ];
     });

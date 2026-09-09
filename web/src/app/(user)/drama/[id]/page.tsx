@@ -15,13 +15,15 @@ import { clearDramaMediaTaskRef, dramaMediaTaskIsCurrent, type DramaMediaTaskKin
 import { dramaVisualAnalysisFingerprint } from "@/lib/drama-analysis-reconcile";
 import { analyzeDramaScriptFlow } from "@/lib/drama-script-analysis-flow";
 import { requestDramaWorkflow } from "@/services/api/drama-projects";
-import { useEffectiveConfig } from "@/stores/use-config-store";
+import { requestDramaAnalysis } from "@/services/api/drama-analysis";
+import { selectableModelsByCapability, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useDramaStore } from "../stores/use-drama-store";
 import type { DramaContentAnalysis, DramaProject, DramaProjectVersion, DramaShot, DramaVisualAnalysis } from "../types";
 import { useDramaAudioQueue } from "./use-drama-audio-queue";
 import { DramaAgentPanel } from "./drama-agent-panel";
 import { DramaWorkflowPanel } from "./drama-workflow-panel";
+import { DramaTextModelControl } from "./drama-text-model-control";
 import { DramaAssetsPanel } from "./drama-assets-panel";
 import { DramaStageHeader, stableTaskUrl } from "./drama-editor-elements";
 import { DramaGenerationPanel } from "./drama-generation-panel";
@@ -73,6 +75,9 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     const listVersions = useDramaStore((state) => state.listVersions);
     const restoreVersion = useDramaStore((state) => state.restoreVersion);
     const config = useEffectiveConfig();
+    const textModel = project.textModel || config.textModel;
+    const textModelReady = Boolean(textModel) && selectableModelsByCapability(config, "text").includes(textModel);
+    const [workflowAnalyzing, setWorkflowAnalyzing] = useState(false);
     const startingShotRef = useRef("");
     const storyboardTaskRef = useRef("");
     const [stage, setStage] = useState<DramaProjectStage>("script");
@@ -113,7 +118,8 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     }, [episode.id]);
     useDramaAudioQueue(project, episode, config, updateShot);
     const analyzeScript = async () => {
-        if (analysisRunning.current || designing) return;
+        if (analysisRunning.current || designing || workflowAnalyzing || editingVideoPrompts) return;
+        if (!textModelReady) return message.warning("请先选择可用的文本模型");
         if (!episode.script.trim()) return message.warning("请先粘贴或导入本集剧本");
         analysisRunning.current = true;
         setAnalyzing(true);
@@ -138,11 +144,13 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                     current();
                     useDramaStore.getState().mutateWorkflowProject(project.id, update);
                 },
-                workflow: (input) => requestDramaWorkflow(project.id, input),
+                workflow: (input) => requestDramaWorkflow(project.id, input.action === "analyze" || input.action === "generate" ? { ...input, textModel } : input),
                 content: (snapshot, episodeId) =>
                     requestScriptAnalysis<DramaContentAnalysis>({
                         requestId: `drama-content:${project.id}:${episodeId}:${nanoid()}`,
                         phase: "content",
+                        textModel,
+                        projectId: snapshot.id,
                         script: snapshot.episodes.find((item) => item.id === episodeId)!.script,
                         summary: snapshot.summary,
                         style: snapshot.style,
@@ -156,6 +164,8 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                         ),
                         requestId: `drama-visual:${project.id}:${episodeId}:${nanoid()}`,
                         phase: "visual",
+                        textModel,
+                        projectId: snapshot.id,
                     }),
                 saveVersion: (snapshot) => createVersion(snapshot, "AI 一键分析前"),
                 progress: setAnalysisProgress,
@@ -176,6 +186,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
         }
     };
     const designVisuals = async () => {
+        if (!textModelReady) return message.warning("请先选择可用的文本模型");
         if (!episode.shots.length) return message.warning("请先完成内容解析");
         if (episode.contentStale) return message.warning("剧本或上游设定已改变，请先重新提取内容结构");
         setDesigning(true);
@@ -184,20 +195,15 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
             const currentEpisode = snapshot.episodes.find((item) => item.id === episode.id);
             if (!currentEpisode?.shots.length || currentEpisode.contentStale) throw new Error("请先重新提取并审核本集内容");
             const expectedInput = dramaVisualAnalysisFingerprint(snapshot, episode.id);
-            const response = await fetch("/api/drama/analyze", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    ...dramaVideoPromptInput(snapshot, currentEpisode),
-                    requestId: `drama-visual:${project.id}:${episode.id}:${nanoid()}`,
-                    phase: "visual",
-                }),
+            const data = await requestScriptAnalysis<DramaVisualAnalysis>({
+                ...dramaVideoPromptInput(snapshot, currentEpisode),
+                projectId: project.id,
+                requestId: `drama-visual:${project.id}:${episode.id}:${nanoid()}`,
+                phase: "visual",
+                textModel,
             });
-            syncUserPointsFromHeaders(response.headers, "system");
-            const payload = (await response.json().catch(() => ({}))) as { data?: DramaVisualAnalysis; msg?: string };
-            if (!response.ok || !payload.data) throw new Error(payload.msg || "AI 视觉方案生成失败");
             await createVersion(snapshot, "视觉方案生成前");
-            applyVisualAnalysis(project.id, episode.id, payload.data, expectedInput);
+            applyVisualAnalysis(project.id, episode.id, data, expectedInput);
             setStage("storyboard");
             message.success("已按审核内容生成视觉方案");
         } catch (error) {
@@ -488,6 +494,8 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                         >
                             {assetsOpen ? <DramaAssetsPanel project={project} episode={episode} /> : null}
 
+                            {!assetsOpen ? <DramaTextModelControl config={config} value={textModel} disabled={analyzing || workflowAnalyzing || designing || editingVideoPrompts} onChange={(textModel) => updateProject(project.id, { textModel })} /> : null}
+
                             {analyzing ? <Alert className="mb-3" type="info" showIcon title={analysisProgress} description="AI 正在读取已导入的剧本，自动整理故事、人物、本集节奏和分镜。完成的结果会逐步保存。" /> : null}
                             {analysisError && !analyzing ? (
                                 <Alert className="mb-3" type="warning" showIcon title="分析尚未完成" description={`${analysisError}。已完成的分析已保留，返回剧本输入后可继续。`} action={<Button onClick={() => changeStage("script")}>返回剧本</Button>} />
@@ -499,7 +507,10 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                     project={project}
                                     episode={episode}
                                     stage={stage}
-                                    busy={analyzing}
+                                    busy={analyzing || workflowAnalyzing}
+                                    textModel={textModel}
+                                    textModelReady={textModelReady}
+                                    onAnalysisBusyChange={setWorkflowAnalyzing}
                                     onStageChange={changeStage}
                                     onAdoptingChange={setAdoptingWorkflow}
                                 />
@@ -525,7 +536,15 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                             ) : null}
 
                             {!assetsOpen && (stage === "review" || stage === "storyboard" || stage === "generate") ? (
-                                <DramaVideoPromptInstructions key={project.id} project={project} episode={episode} disabled={designing || analyzing || episode.contentStale} onBusyChange={setEditingVideoPrompts} />
+                                <DramaVideoPromptInstructions
+                                    key={project.id}
+                                    project={project}
+                                    episode={episode}
+                                    textModel={textModel}
+                                    textModelReady={textModelReady}
+                                    disabled={designing || analyzing || workflowAnalyzing || episode.contentStale}
+                                    onBusyChange={setEditingVideoPrompts}
+                                />
                             ) : null}
 
                             {!assetsOpen && stage === "review" ? (
@@ -688,9 +707,5 @@ function DramaScriptGlobalBar({
 }
 
 async function requestScriptAnalysis<T>(input: Record<string, unknown>): Promise<T> {
-    const response = await fetch("/api/drama/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
-    syncUserPointsFromHeaders(response.headers, "system");
-    const payload = (await response.json().catch(() => ({}))) as { data?: T; msg?: string };
-    if (!response.ok || !payload.data) throw new Error(payload.msg || "AI 剧本分析失败");
-    return payload.data;
+    return requestDramaAnalysis<T>("/api/drama/analyze", input);
 }

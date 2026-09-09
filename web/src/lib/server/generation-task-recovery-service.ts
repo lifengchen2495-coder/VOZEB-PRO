@@ -32,6 +32,8 @@ import { getRemakeAnalysisTask as getRemakeProductAnalysisTask } from "@/lib/ser
 import { runRemakeAnalysisTask as runRemakeProductAnalysisTask } from "@/lib/server/remake-product-analysis-runtime";
 import { getRemakeAnalysisTask as getRemakePersonAnalysisTask } from "@/lib/server/remake-person-analysis-task-store";
 import { runRemakeAnalysisTask as runRemakePersonAnalysisTask } from "@/lib/server/remake-person-analysis-runtime";
+import { getDramaAnalysisTask } from "@/lib/server/drama-analysis-task-store";
+import { runDramaAnalysisTask } from "@/lib/server/drama-analysis-task-runtime";
 
 type RecoveryResult = "pending" | "result_ready" | "completed" | "failed" | "needs_review" | "deferred";
 
@@ -45,9 +47,9 @@ export async function runGenerationTaskRecoveryBatch(input: { origin: string; pu
         void renewGenerationTaskLeases(workerId, taskIds, 90_000).catch((error) => console.error("Generation worker lease heartbeat failed", { workerId, error }));
     }, 25_000);
     try {
-        const remakes = leases.filter((lease) => lease.type === "remake");
-        const persistence = leases.filter((lease) => lease.type !== "remake" && needsPersistence(lease));
-        const queries = leases.filter((lease) => lease.type !== "remake" && !needsPersistence(lease));
+        const remakes = leases.filter((lease) => lease.type === "remake" || lease.type === "drama");
+        const persistence = leases.filter((lease) => lease.type !== "remake" && lease.type !== "drama" && needsPersistence(lease));
+        const queries = leases.filter((lease) => lease.type !== "remake" && lease.type !== "drama" && !needsPersistence(lease));
         const results = [
             ...(await runWithConcurrency(queries, 20, (lease) => processGenerationTaskLease(lease, workerId, input.origin, input.publicOrigin || input.origin, input.cookie || "", input.userRequested === true))),
             ...(await runWithConcurrency(persistence, 4, (lease) => processGenerationTaskLease(lease, workerId, input.origin, input.publicOrigin || input.origin, input.cookie || "", input.userRequested === true))),
@@ -66,11 +68,20 @@ async function processGenerationTaskLease(lease: GenerationTaskLease, workerId: 
     if (lease.type === "audio") return processAudioLease(lease, workerId, origin, cookie, userRequested);
     if (lease.type === "agent") return processAgentLease(lease, workerId, origin, cookie);
     if (lease.type === "remake") return processRemakeLease(lease, workerId, origin, cookie);
+    if (lease.type === "drama") return processDramaLease(lease, workerId, origin);
     if (lease.type !== "video") {
         await releaseGenerationTaskLease(lease.type, lease.id, workerId, { executionPhase: "needs_review", nextPollAt: undefined, lastUpstreamStatus: "worker_handler_missing" });
         return "needs_review";
     }
     return processVideoLease(lease, workerId, origin, cookie, userRequested);
+}
+
+async function processDramaLease(lease: GenerationTaskLease, workerId: string, origin: string): Promise<RecoveryResult> {
+    const task = await getDramaAnalysisTask(lease.id);
+    const valid = task && task.userId === lease.userId && task.id === lease.payload.id && task.inputHash === lease.payload.inputHash;
+    const result = valid ? await runDramaAnalysisTask({ task, origin }) : "failed";
+    await releaseGenerationTaskLease("drama", lease.id, workerId, { executionPhase: result === "pending" ? "result_ready" : "completed", nextPollAt: result === "pending" ? Date.now() + 1000 : undefined, lastPollAt: Date.now(), lastUpstreamStatus: result });
+    return result;
 }
 
 async function processRemakeLease(lease: GenerationTaskLease, workerId: string, origin: string, cookie: string): Promise<RecoveryResult> {
