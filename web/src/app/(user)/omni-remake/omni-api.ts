@@ -26,6 +26,6 @@ async function uploadVideo(params: URLSearchParams, file: File): Promise<OmniMed
     return payload.data;
 }
 export function omniEditable(project: OmniProject) {
-    const { title, sourceVideo, productName, instructions, videoPromptInstructions, productStrategy, replaceCharacter, replaceBackground, audioMode, references, modelSelection } = project;
-    return { title, sourceVideo, productName, instructions, videoPromptInstructions, productStrategy, replaceCharacter, replaceBackground, audioMode, references, modelSelection };
+    const { title, sourceVideo, productName, instructions, videoPromptInstructions, stageInstructions, productStrategy, replaceCharacter, replaceBackground, audioMode, references, modelSelection } = project;
+    return { title, sourceVideo, productName, instructions, videoPromptInstructions, stageInstructions, productStrategy, replaceCharacter, replaceBackground, audioMode, references, modelSelection };
 }

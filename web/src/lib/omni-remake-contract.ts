@@ -2,6 +2,8 @@ import type { VideoGenerationReference } from "@/lib/video-reference-contract";
 
 export type OmniMedia = { url: string; storageKey?: string; mimeType: string; originalName?: string; bytes?: number; duration?: number; width?: number; height?: number };
 export type OmniVideoState = { status: "idle" | "queued" | "running" | "completed" | "error"; attemptNo: number; generationDurationSeconds?: number; taskId?: string; clientRequestId?: string; manualUploadId?: string; result?: OmniMedia; error?: string; needsReview?: boolean };
+export type OmniWorkflowStage = "analysis" | "analysisText" | "materialAnalysis" | "plan" | "classification" | "promptSummary" | "promptTranslation";
+export type OmniPromptGroup = { id: string; label: string; segmentIds: string[]; referenceIds: string[]; audioStrategy: OmniSegment["audioStrategy"]; prompt: string; promptZh?: string };
 export type OmniSegment = {
     id: string;
     start: number;
@@ -13,6 +15,13 @@ export type OmniSegment = {
     personCount: number;
     needsSecondCheck: boolean;
     audioStrategy: "preserve_audio" | "remove_audio";
+    needsLipSync?: boolean;
+    audioStrategyReason?: string;
+    secondCheckReason?: string;
+    riskNotes?: string[];
+    productVisible?: boolean;
+    referenceIds?: string[];
+    promptGroupId?: string;
     sourceClip?: OmniMedia;
     prompt: string;
     promptZh: string;
@@ -29,6 +38,7 @@ export type OmniProject = {
     productName: string;
     instructions: string;
     videoPromptInstructions?: string;
+    stageInstructions?: Partial<Record<OmniWorkflowStage, string>>;
     productStrategy: "replace" | "preserve";
     replaceCharacter: boolean;
     replaceBackground: boolean;
@@ -37,17 +47,22 @@ export type OmniProject = {
     modelSelection: { analysis: string; prompt: string; video: string };
     analysisRaw: string;
     analysisSummary: string;
+    analysisText?: string;
     materialAnalysis: string;
     plan: string;
+    classification?: string;
+    promptSummary?: string;
+    promptTranslation?: string;
+    promptGroups?: OmniPromptGroup[];
     segments: OmniSegment[];
-    operation?: { id: string; kind: "analysis" | "prepare" | "merge"; startedAt: string; promptMode?: "template" | "ai" };
+    operation?: { id: string; kind: OmniWorkflowStage | "prepare" | "merge"; startedAt: string; promptMode?: "template" | "ai" };
     error?: string;
     mergedVideo?: OmniMedia;
 };
 export type OmniProjectList = { items: OmniProject[]; total: number; page: number; pageSize: number };
-export type OmniInputPatch = Partial<Pick<OmniProject, "title" | "sourceVideo" | "productName" | "instructions" | "videoPromptInstructions" | "productStrategy" | "replaceCharacter" | "replaceBackground" | "audioMode" | "references" | "modelSelection">>;
-export const OMNI_SOURCE_TABLE_ID = "tblD8YooqpAn5SxW";
-export const OMNI_SOURCE_URL = `https://ocn18sf3pb4v.feishu.cn/base/ScUYbyoAbaJptZsnuTbcg6WwnN3?table=${OMNI_SOURCE_TABLE_ID}`;
+export type OmniInputPatch = Partial<Pick<OmniProject, "title" | "sourceVideo" | "productName" | "instructions" | "videoPromptInstructions" | "stageInstructions" | "productStrategy" | "replaceCharacter" | "replaceBackground" | "audioMode" | "references" | "modelSelection">>;
+export const OMNI_SOURCE_TABLE_ID = "tblBlQu3fCuvFSCP";
+export const OMNI_SOURCE_URL = `https://ocn18sf3pb4v.feishu.cn/base/ZxmYbuEfeaY97GsdjZtcv96Bnt0?table=${OMNI_SOURCE_TABLE_ID}`;
 export const OMNI_MAX_SEGMENT_SECONDS = 10;
 
 export function createOmniProject(id: string, title: string): OmniProject {
@@ -69,68 +84,27 @@ export function createOmniProject(id: string, title: string): OmniProject {
         modelSelection: { analysis: "", prompt: "", video: "" },
         analysisRaw: "",
         analysisSummary: "",
+        analysisText: "",
         materialAnalysis: "",
         plan: "",
+        classification: "",
+        promptSummary: "",
+        promptTranslation: "",
+        promptGroups: [],
         segments: [],
     };
 }
 
-export function parseOmniAnalysis(raw: string, duration: number, audioMode: OmniProject["audioMode"]): { summary: string; segments: OmniSegment[] } {
-    if (!Number.isFinite(duration) || duration <= 0) throw new Error("原视频时长不正确");
-    const payload = JSON.parse(raw) as Record<string, unknown>;
-    const rows = payload.segments;
-    if (!Array.isArray(rows) || !rows.length || rows.length > 200) throw new Error("视频分析必须包含 1 至 200 个连续片段");
-    let previousEnd = 0;
-    const segments = rows.map((rawRow, index) => {
-        const row = object(rawRow);
-        const start = Number(row.start);
-        const end = Number(row.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end - start > OMNI_MAX_SEGMENT_SECONDS + 0.02 || end > duration + 0.05 || Math.abs(start - previousEnd) > 0.05)
-            throw new Error(`片段 ${index + 1} 的时间必须连续且不超过 10 秒`);
-        const description = typeof row.description === "string" ? row.description.trim() : "";
-        if (
-            !description ||
-            description.length > 6000 ||
-            typeof row.hasFace !== "boolean" ||
-            typeof row.speaking !== "boolean" ||
-            !Number.isInteger(row.personCount) ||
-            Number(row.personCount) < 0 ||
-            Number(row.personCount) > 20 ||
-            typeof row.needsSecondCheck !== "boolean"
-        )
-            throw new Error(`片段 ${index + 1} 的画面和口型分析不完整`);
-        if (row.audioStrategy !== "preserve_audio" && row.audioStrategy !== "remove_audio") throw new Error(`片段 ${index + 1} 缺少有效音频策略`);
-        const roundedStart = Math.round(previousEnd * 1000) / 1000;
-        const roundedEnd = Math.round((index === rows.length - 1 && Math.abs(end - duration) <= 0.05 ? duration : end) * 1000) / 1000;
-        if (roundedEnd <= roundedStart || roundedEnd - roundedStart > OMNI_MAX_SEGMENT_SECONDS + 0.0001) throw new Error(`片段 ${index + 1} 校正后的时长超过 10 秒`);
-        previousEnd = roundedEnd;
-        return {
-            id: `S${String(index + 1).padStart(2, "0")}`,
-            start: roundedStart,
-            end: roundedEnd,
-            duration: Math.round((roundedEnd - roundedStart) * 1000) / 1000,
-            description,
-            hasFace: row.hasFace,
-            speaking: row.speaking,
-            personCount: Number(row.personCount),
-            needsSecondCheck: row.needsSecondCheck,
-            audioStrategy: audioMode === "silent" ? "remove_audio" : audioMode === "source" ? "preserve_audio" : row.hasFace && row.speaking && row.personCount === 1 && !row.needsSecondCheck ? "preserve_audio" : "remove_audio",
-            prompt: "",
-            promptZh: "",
-            video: { status: "idle", attemptNo: 0 },
-        } as OmniSegment;
-    });
-    if (Math.abs(previousEnd - duration) > 0.05) throw new Error("分析片段没有覆盖完整视频结尾");
-    return { summary: typeof payload.summary === "string" ? payload.summary.slice(0, 10000) : "", segments };
-}
+export { parseOmniAnalysis } from "./omni-remake-analysis";
 
 export function omniVideoReferences(project: OmniProject, segment: OmniSegment): VideoGenerationReference[] {
     if (!segment.sourceClip?.url) return [];
     return [
         { type: "video", role: "reference", url: segment.sourceClip.url },
-        ...project.references.product.map((asset) => ({ type: "image" as const, role: "reference" as const, url: asset.url })),
-        ...(project.replaceCharacter ? project.references.character.map((asset) => ({ type: "image" as const, role: "reference" as const, url: asset.url })) : []),
-        ...(project.replaceBackground ? project.references.background.map((asset) => ({ type: "image" as const, role: "reference" as const, url: asset.url })) : []),
+        ...(["product", "character", "background"] as const).flatMap((role) => {
+            if ((role === "character" && !project.replaceCharacter) || (role === "background" && !project.replaceBackground)) return [];
+            return project.references[role].flatMap((asset, index) => segment.referenceIds && !segment.referenceIds.includes(`${role}:${index + 1}`) ? [] : [{ type: "image" as const, role: "reference" as const, url: asset.url }]);
+        }),
     ];
 }
 
@@ -147,6 +121,7 @@ export function omniInputVersion(project: OmniProject) {
         project.productName,
         project.instructions,
         project.videoPromptInstructions?.trim() || "",
+        Object.entries(project.stageInstructions || {}).sort(([a], [b]) => a.localeCompare(b)).map(([stage, instruction]) => [stage, instruction?.trim() || ""]),
         project.productStrategy,
         project.replaceCharacter,
         project.replaceBackground,

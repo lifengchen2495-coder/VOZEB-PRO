@@ -1,4 +1,14 @@
 import type { CreateDramaProjectInput, DramaCostSummary, DramaEpisode, DramaProject, DramaProjectSummary, DramaProjectVersion, DramaVisualReview } from "@/lib/drama-project-contract";
+import type { DramaWorkflowRequest, DramaWorkflowResponse } from "@/lib/drama-workflow-request";
+import { syncUserPointsFromHeaders } from "@/services/api/points";
+
+export async function requestDramaWorkflow(projectId: string, input: DramaWorkflowRequest): Promise<DramaWorkflowResponse> {
+    const response = await fetch(`/api/drama/projects/${encodeURIComponent(projectId)}/workflow`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+    syncUserPointsFromHeaders(response.headers, "system");
+    const payload = (await response.json().catch(() => ({}))) as { data?: DramaWorkflowResponse; msg?: string };
+    if (!response.ok || !payload.data) throw new Error(payload.msg || "创作请求失败");
+    return payload.data;
+}
 
 export type DramaProjectSummaryResponse = { projects: DramaProjectSummary[]; total: number; page: number; pageSize: number };
 

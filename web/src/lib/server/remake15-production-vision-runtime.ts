@@ -7,6 +7,7 @@ import type { ResolvedLogicalModel } from "@/lib/server/logical-model-router";
 import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
 import { remakeContactSheetDimensionError } from "@/lib/server/remake-contact-sheet-validation";
 import { fetchRemakeProductionImage } from "@/lib/server/remake-production-image-fetch";
+import { maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
 import { resolveTextProtocol } from "@/lib/server/text-protocol-resolver";
 
 // 源图需先读取后缩放拼板，大小上限独立于压缩后的模型输入限制。
@@ -84,9 +85,9 @@ export class RemakeProductionVisionError extends Error {
     }
 }
 
-export function resolveRemakeProductionVisionProtocol(candidate: ResolvedLogicalModel): ResolvedVisionProtocol | null {
-    if (candidate.capabilityProfile?.supportsReferenceImage !== true) return null;
-    if (candidate.capabilityProfile.maxReferenceImages !== undefined && candidate.capabilityProfile.maxReferenceImages < 1) return null;
+export function resolveRemakeProductionVisionProtocol(candidate: ResolvedLogicalModel, allowTextOnly = false): ResolvedVisionProtocol | null {
+    if (!allowTextOnly && candidate.capabilityProfile?.supportsReferenceImage !== true) return null;
+    if (!allowTextOnly && candidate.capabilityProfile?.maxReferenceImages !== undefined && candidate.capabilityProfile.maxReferenceImages < 1) return null;
     try {
         const protocol = resolveTextProtocol({
             model: candidate.upstreamModel,
@@ -172,11 +173,13 @@ export async function requestRemakeProductionVisionPrompt(input: {
     boards: RemakeProductionVisualBoard[];
     headers?: HeadersInit;
     signal?: AbortSignal;
+    allowTextOnly?: boolean;
+    maxOutputTokens?: number;
 }): Promise<RemakeProductionVisionCall> {
-    const protocol = resolveRemakeProductionVisionProtocol(input.candidate);
+    const protocol = resolveRemakeProductionVisionProtocol(input.candidate, input.allowTextOnly === true && input.boards.length === 0);
     if (!protocol) throw new RemakeProductionVisionError("当前文本候选不支持受信任的多模态图片协议", 503);
     if (
-        input.boards.length < 1 ||
+        (input.boards.length < 1 && input.allowTextOnly !== true) ||
         input.boards.length > (input.candidate.capabilityProfile?.maxReferenceImages ?? 8) ||
         input.boards.some((board, index) => board.ordinal !== index + 1 || !board.bytes.length || board.bytes.length > REMAKE_PRODUCTION_VISUAL_BOARD_MAX_BYTES)
     ) {
@@ -188,13 +191,15 @@ export async function requestRemakeProductionVisionPrompt(input: {
     const startedAt = Date.now();
     const headers = new Headers(input.headers);
     headers.set("content-type", "application/json");
-    if (input.cookie) headers.set("cookie", input.cookie);
+    const workerHeaders = maintenanceWorkerContextHeaders(input.cookie);
+    if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
+    else if (input.cookie) headers.set("cookie", input.cookie);
     const timeoutSignal = AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text"));
     const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
     const response = await fetchInternalApi(modelProxyUrl(input.origin, input.candidate.channelId, protocol.path), {
         method: "POST",
         headers,
-        body: JSON.stringify(buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards)),
+        body: JSON.stringify(buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.maxOutputTokens)),
         cache: "no-store",
         signal,
     });
@@ -211,7 +216,7 @@ export async function requestRemakeProductionVisionPrompt(input: {
     return { text: prompt, headers: response.headers, protocol: protocol.kind, elapsedMs: Date.now() - startedAt };
 }
 
-function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: RemakeProductionVisualBoard[]) {
+function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: RemakeProductionVisualBoard[], maxOutputTokens?: number) {
     const systemText = messages
         .filter((message) => message.role === "system")
         .map((message) => message.content)
@@ -223,6 +228,7 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
     if (protocol === "responses") {
         return {
             model,
+            ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
             input: [
                 ...(systemText ? [{ role: "system", content: systemText }] : []),
                 {
@@ -234,6 +240,7 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
     }
     if (protocol === "gemini") {
         return {
+            ...(maxOutputTokens ? { generationConfig: { maxOutputTokens } } : {}),
             contents: [
                 {
                     role: "user",
@@ -245,6 +252,7 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
     }
     return {
         model,
+        ...(maxOutputTokens ? { max_tokens: maxOutputTokens } : {}),
         messages: [
             ...(systemText ? [{ role: "system", content: systemText }] : []),
             {

@@ -5,6 +5,8 @@ import { invalidateRemakeMergedVideo } from "./remake60-merge-contract";
 import { nanoid } from "nanoid";
 
 import { remakeProductionInputSnapshot, type RemakeProductionInputProject } from "@/lib/remake60-production-input";
+import { renderRemakeCopyReport } from "./remake60-production-prompt";
+import { restoreRemakeCopyReport } from "./remake-copy-report-recovery";
 
 import {
     buildRemakeCopyBlocks,
@@ -103,7 +105,7 @@ export function listRemakeProjectSummariesForUser(userId: string, input: { page?
 export async function getRemakeProjectForUser(userId: string, id: string) {
     const project = await getRemakeProject(cleanText(id, 160), userId);
     if (!project) throw new RemakeProjectServiceError("复刻项目不存在", 404);
-    return normalizeRemakeProjectWorkflow(project);
+    return restoreRemakeCopyReport(normalizeRemakeProjectWorkflow(project), renderRemakeCopyReport);
 }
 
 export async function createRemakeProjectForUser(userId: string, value: unknown) {
@@ -219,10 +221,12 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
             stats: { ...copy.stats, unchangedBlocks, completedBlocks: 0, correctedBlocks, emptyBlocks },
         };
     }
-    const productionInputsChanged = hasOwn(input, "frames") || hasOwn(input, "copyBlocks") || sourceCopyChanged || strategy !== current.copyStrategy || promptModelChanged || (hasOwn(input, "voice") && normalizeVoice(input.voice) !== current.voice);
+    const copyInputsChanged = hasOwn(input, "frames") || hasOwn(input, "copyBlocks") || sourceCopyChanged || strategy !== current.copyStrategy;
+    const productionInputsChanged = copyInputsChanged || promptModelChanged || (hasOwn(input, "voice") && normalizeVoice(input.voice) !== current.voice);
     if (productionInputsChanged && !sourceChanged) {
         groups = groups.map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } }));
-        copy = { ...copy, rawReport: "", error: undefined };
+        // 配音和 Prompt 模型只影响视频下游，不改变已完成的文案预处理。
+        if (copyInputsChanged) copy = { ...copy, rawReport: "", error: undefined };
     } else if (videoModelChanged) {
         groups = groups.map((group) => ({ ...group, videoGeneration: { status: "idle" as const } }));
     }

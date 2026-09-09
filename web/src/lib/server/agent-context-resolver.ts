@@ -11,6 +11,10 @@ export function resolveDramaPlannerSnapshot(snapshot: unknown) {
         ...(text(source.currentStage) ? { currentStage: text(source.currentStage) } : {}),
         project,
         episode: currentEpisode,
+        adoptedWriting: records(record(source.workflow).artifacts)
+            .filter((item) => item.status === "adopted" && (!item.episodeId || item.episodeId === episode.id))
+            .filter((item, _index, items) => !items.some((other) => other.stage === item.stage && other.episodeId === item.episodeId && Number(other.version) > Number(item.version)))
+            .map((item) => pick(item, ["stage", "version", "data"])),
         characters: Array.isArray(source.characters) ? source.characters : [],
         scenes: Array.isArray(source.scenes) ? source.scenes : [],
         props: Array.isArray(source.props) ? source.props : [],

@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
-import { omniManualSegmentPrompts, omniPlanningPrompt, parseOmniAnalysis, parseOmniPlan, type OmniMedia, type OmniProject, type OmniSegment } from "@/lib/omni-remake-contract";
+import { parseOmniAnalysis, type OmniMedia, type OmniProject, type OmniSegment, type OmniWorkflowStage } from "@/lib/omni-remake-contract";
+import { OMNI_WORKFLOW_STAGES, invalidateOmniFromStage, omniReferenceCatalog, omniStageLabel, omniStageMessages, omniStagePrerequisite, parseOmniStageResult } from "@/lib/omni-remake-workflow";
 import { runFfmpeg, runFfprobe } from "./ffmpeg";
 import { downloadMediaToFile } from "./media-download";
 import { writeReferenceMediaFile } from "./reference-asset-store";
@@ -14,6 +15,8 @@ import { strictJsonObjectText } from "./structured-model-output";
 import { toSafeGenerationErrorMessage } from "./generation-errors";
 import { maintenanceWorkerContextHeaders } from "./maintenance-auth";
 import { deleteUserLocalMediaAssets } from "./local-media-storage";
+import { resolveOmniAnalysisModels, understandOmniVideo } from "./omni-remake-video-understanding";
+import { rankTextPlanningCandidates } from "./text-planning-runtime";
 
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 type OperationInput = { project: OmniProject; userId: string; origin: string; credential: string };
@@ -28,25 +31,34 @@ export async function runOmniOperation(input: OperationInput) {
     let committed = false;
     try {
         let patch: Partial<OmniProject>;
-        if (operation.kind === "analysis") throw new Error("自动视频分析已停用，请导入在外部完成的分析 JSON");
         if (operation.kind === "merge") patch = { mergedVideo: await mergeOmniClips(input, directory, created) };
-        else {
+        else if (operation.kind === "analysis" || operation.kind === "prepare") {
             if (!input.project.sourceVideo) throw new Error("请先上传参考视频");
             await ownedOmniMedia(input.userId, input.project.sourceVideo, "video");
             const sourcePath = join(directory, "source.mp4");
             await download(input.project.sourceVideo.url, sourcePath, input);
             const probe = await probeOmniVideo(sourcePath);
-            {
+            if (operation.kind === "analysis") {
+                const project = { ...input.project, sourceVideo: { ...input.project.sourceVideo, ...probe } };
+                const result = await understandOmniVideo({
+                    sourcePath,
+                    workDirectory: directory,
+                    duration: probe.duration,
+                    userId: input.userId,
+                    operationId: operation.id,
+                    origin: input.origin,
+                    credential: input.credential,
+                    model: project.modelSelection.analysis,
+                    messages: omniStageMessages(project, "analysis"),
+                });
+                charges.push({ model: result.model, headers: result.headers });
+                const analysis = parseOmniAnalysis(result.raw, probe.duration, project.audioMode);
+                patch = { ...invalidateOmniFromStage(project, "analysis"), sourceVideo: project.sourceVideo, analysisRaw: result.raw, analysisSummary: analysis.summary, segments: analysis.segments };
+            } else {
                 assertOmniPreparationReady(input.project);
                 parseOmniAnalysis(input.project.analysisRaw, probe.duration, input.project.audioMode);
-                for (const media of [...input.project.references.product, ...(input.project.replaceCharacter ? input.project.references.character : []), ...(input.project.replaceBackground ? input.project.references.background : [])]) await ownedOmniMedia(input.userId, media, "image");
-                const prepared = operation.promptMode === "ai" ? await planOmniSegments(input, charges) : {
-                    materialAnalysis: input.project.materialAnalysis || "参考素材按产品、人物与背景角色整理；请在外部生成前核对。",
-                    plan: input.project.plan || "按片段顺序使用来源视频与对应参考图，在 Google 手动生成后回传各段结果。",
-                    segments: input.project.segments.map((segment) => segment.prompt.trim() && segment.promptZh.trim() ? segment : { ...segment, ...omniManualSegmentPrompts(input.project, segment) }),
-                };
                 const segments = [];
-                for (const segment of prepared.segments) {
+                for (const segment of input.project.segments) {
                     const clipPath = join(directory, `${segment.id}.mp4`);
                     await runFfmpeg(
                         [
@@ -86,8 +98,16 @@ export async function runOmniOperation(input: OperationInput) {
                     const sourceClip = await persistVideo(clipPath, `${segment.id}-source.mp4`, input, created);
                     segments.push({ ...segment, sourceClip: { ...sourceClip, ...measured }, video: { status: "idle" as const, attemptNo: segment.video.attemptNo } });
                 }
-                patch = { sourceVideo: { ...input.project.sourceVideo, ...probe }, materialAnalysis: prepared.materialAnalysis, plan: prepared.plan, segments, mergedVideo: undefined };
+                patch = { sourceVideo: { ...input.project.sourceVideo, ...probe }, segments, mergedVideo: undefined };
             }
+        } else if (OMNI_WORKFLOW_STAGES.includes(operation.kind)) {
+            const stage = operation.kind;
+            const prerequisite = omniStagePrerequisite(input.project, stage);
+            if (prerequisite) throw new Error(prerequisite);
+            const result = await runOmniTextStage(input, stage, charges);
+            patch = { ...invalidateOmniFromStage(input.project, stage), ...result };
+        } else {
+            throw new Error("Omni 处理步骤不正确");
         }
         await finishOmniOperation(input.userId, input.project.id, operation.id, { ...patch, error: undefined });
         committed = true;
@@ -117,75 +137,76 @@ export async function runOmniOperation(input: OperationInput) {
 
 export function assertOmniPreparationReady(project: OmniProject) {
     if (!project.segments.length || !project.analysisRaw) throw new Error("请先完成视频分析");
-    if (project.productStrategy === "replace" && (!project.references.product.length || !project.productName.trim())) throw new Error("换品时请提供产品名称和新产品参考图");
-    if (project.replaceCharacter && !project.references.character.length) throw new Error("换人物时请提供人物参考图");
-    if (project.replaceBackground && !project.references.background.length) throw new Error("换背景时请提供背景参考图");
-    if (!project.references.product.length && !project.replaceCharacter && !project.replaceBackground) throw new Error("请至少提供一类目标参考素材");
+    if (!project.sourceVideo) throw new Error("请先上传参考视频");
 }
 
-async function planOmniSegments(input: OperationInput, charges: Charge[]) {
-    const project = input.project;
-    const model = project.modelSelection.prompt.trim();
-    if (!model) throw new Error("使用 AI 润色前，请明确选择提示词模型；也可以使用本地模板直接准备");
+function omniStageReferences(project: OmniProject, stage: OmniWorkflowStage) {
+    if (stage !== "materialAnalysis") return [];
+    const labels = { product: "产品参考图", character: "人物参考图", background: "背景参考图（仅用于背景）" };
+    return omniReferenceCatalog(project).map(({ id, role, media }) => ({ role: role === "character" ? "character" as const : "product" as const, label: `${id}｜${labels[role]}`, asset: media }));
+}
+
+export async function assertOmniStageModelReady(project: OmniProject, stage: OmniWorkflowStage) {
+    if (stage === "analysis") {
+        await resolveOmniAnalysisModels(project.modelSelection.analysis);
+        return;
+    }
+    await resolveOmniTextStageModels(project, stage);
+}
+
+async function resolveOmniTextStageModels(project: OmniProject, stage: OmniWorkflowStage) {
     const settings = await getAuthSettings();
-    const referenceInputs = [
-        ...project.references.product.map((asset, index) => ({ role: "product" as const, label: `产品参考图 ${index + 1}`, asset })),
-        ...(project.replaceCharacter ? project.references.character.map((asset, index) => ({ role: "character" as const, label: `人物参考图 ${index + 1}`, asset })) : []),
-        ...(project.replaceBackground ? project.references.background.map((asset, index) => ({ role: "product" as const, label: `背景参考图 ${index + 1}（仅用于背景）`, asset })) : []),
-    ];
+    const model = project.modelSelection.prompt.trim() || project.modelSelection.analysis.trim() || settings.defaultModels.textModel || (await resolveOmniAnalysisModels()).videoModel;
+    const referenceCount = omniStageReferences(project, stage).length;
+    if (stage === "materialAnalysis" && !referenceCount) throw new Error("素材分析需要至少一张启用的产品、人物或背景参考图");
+    const candidates = rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", model)).filter(
+        (candidate) => Boolean(candidate.channel.apiKey.trim()) && resolveRemakeProductionVisionProtocol(candidate, stage !== "materialAnalysis") && (candidate.capabilityProfile?.maxReferenceImages ?? 8) >= referenceCount,
+    );
+    if (!candidates.length) throw new Error(`${omniStageLabel(stage)}所选模型没有可用的${referenceCount ? `支持 ${referenceCount} 张参考图的视觉` : ""}文本渠道，请检查模型与渠道配置`);
+    return { model, candidates };
+}
+
+async function runOmniTextStage(input: OperationInput, stage: OmniWorkflowStage, charges: Charge[]) {
+    const project = input.project;
+    const { model, candidates } = await resolveOmniTextStageModels(project, stage);
+    const referenceInputs = omniStageReferences(project, stage);
     for (const reference of referenceInputs) await ownedOmniMedia(input.userId, reference.asset, "image");
-    const candidates = resolveLogicalModelCandidates(settings, "text", model).filter((candidate) => resolveRemakeProductionVisionProtocol(candidate) && (candidate.capabilityProfile?.maxReferenceImages ?? 8) >= referenceInputs.length);
-    if (!candidates.length) throw new Error("请配置支持当前参考图数量的视觉文本模型");
     const boards = await buildRemakeScriptVisualBoards({ origin: input.origin, cookie: input.credential, references: referenceInputs });
+    const messages = omniStageMessages(project, stage);
     let lastError: unknown;
     for (const candidate of candidates) {
-        const billingKey = systemAiIdempotencyKey("omni-remake-plan", input.userId, project.operation!.id, candidate.channelId, candidate.upstreamModel);
+        const billingKey = systemAiIdempotencyKey(`omni-remake-${stage}`, input.userId, project.operation!.id, candidate.channelId, candidate.upstreamModel);
         try {
             const call = await requestRemakeProductionVisionPrompt({
                 origin: input.origin,
                 cookie: input.credential,
                 candidate,
                 boards,
+                allowTextOnly: stage !== "materialAnalysis",
+                maxOutputTokens: 24_000,
                 headers: systemAiBillingHeaders(model, billingKey, candidate.upstreamModel),
                 messages: [
-                    { role: "system", content: omniPlanningPrompt(project) },
-                    {
-                        role: "user",
-                        content: JSON.stringify({
-                            productName: project.productName,
-                            requirements: project.instructions,
-                            references: referenceInputs.map((reference, index) => ({ index: index + 1, label: reference.label })),
-                            segments: project.segments.map(({ id, start, end, description, hasFace, speaking, personCount, needsSecondCheck, audioStrategy }) => ({
-                                id,
-                                start,
-                                end,
-                                description,
-                                hasFace,
-                                speaking,
-                                personCount,
-                                needsSecondCheck,
-                                audioStrategy,
-                            })),
-                        }),
-                    },
+                    { role: "system", content: messages.system },
+                    { role: "user", content: messages.user },
                 ],
             });
             charges.push({ model, headers: call.headers });
             const raw = strictJsonObjectText(call.text);
-            if (!raw) throw new Error("模型没有返回完整的 Omni 片段计划 JSON");
-            return parseOmniPlan(raw, project.segments);
+            if (!raw) throw new Error(`模型没有返回完整的${omniStageLabel(stage)}结果 JSON`);
+            return parseOmniStageResult(project, stage, raw);
         } catch (error) {
             if (error instanceof RemakeProductionVisionError && error.responseHeaders) charges.push({ model, headers: error.responseHeaders });
             // 候选失败当场退款，后续候选成功也不能保留失败费用。
             while (charges.length) {
-                const charge = charges.pop()!;
+                const charge = charges[charges.length - 1];
                 const billing = readSystemAiBilling(charge.headers);
                 if (hasSystemAiCharge(billing)) await refundUserPoints(input.userId, charge.model, billing.pointsCost, "text", 1, undefined, billing.pointsRecordId);
+                charges.pop();
             }
             lastError = error;
         }
     }
-    throw new Error(toSafeGenerationErrorMessage(lastError, "Omni 片段计划生成失败"));
+    throw new Error(toSafeGenerationErrorMessage(lastError, `${omniStageLabel(stage)}生成失败`));
 }
 
 export async function probeOmniVideo(path: string) {

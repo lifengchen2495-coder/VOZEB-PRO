@@ -35,8 +35,8 @@ export function DramaReviewPanel({ project, episode, onDesignVisuals, designing,
     return (
         <div>
             <DramaStageHeader
-                step="02"
-                title="内容审核"
+                step="05"
+                title="分镜设计 · 内容审核"
                 description="确认剧本事实、镜头边界、对白与叙事信息；视觉模型不会在这个阶段改写内容。"
                 status={!episode.shots.length ? "等待内容结构" : episode.reviewStatus === "visual_ready" ? "视觉方案已生成" : "待确认"}
                 tone={!episode.shots.length ? "attention" : episode.reviewStatus === "visual_ready" ? "ready" : "neutral"}

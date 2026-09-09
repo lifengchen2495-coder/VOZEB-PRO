@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import type { CreateDramaProjectInput, DramaAssetProfile, DramaAssetReference, DramaEpisode, DramaNamedAsset, DramaProject, DramaShot, DramaShotContinuity, DramaUtterance, DramaVideoMode } from "@/lib/drama-project-contract";
 import { dramaRichContentToPlainText, normalizeDramaScriptRichContent } from "@/lib/drama-script-rich-content";
 import { normalizeDramaImageSize } from "@/lib/drama-image-size";
+import { DramaWorkflowError, latestDramaWorkflowArtifact, normalizeDramaWorkflow } from "@/lib/drama-workflow";
 import { resolveDramaShotDuration } from "@/lib/server/drama-shot-config";
 import { listAgentRuns } from "@/lib/server/agent-run-store";
 import { CreativeEntityDeletionConflict, deleteDramaConversationAggregate } from "@/lib/server/creative-entity-deletion-store";
@@ -88,7 +89,9 @@ export async function updateDramaProjectForUser(userId: string, id: string, valu
     if (size > MAX_PROJECT_BYTES) throw new DramaProjectServiceError("短剧项目数据过大", 413);
     const incomingUpdatedAt = parseTimestamp(object(value).updatedAt);
     if (incomingUpdatedAt && incomingUpdatedAt < parseTimestamp(current.updatedAt)) return current;
+    assertWorkflowRevisionCurrent(value, current);
     const project = normalizeProject(value, current);
+    if (Buffer.byteLength(JSON.stringify(project)) > MAX_PROJECT_BYTES) throw new DramaProjectServiceError("短剧项目数据过大", 413);
     if (incomingUpdatedAt) project.updatedAt = new Date(incomingUpdatedAt).toISOString();
     try {
         return await updateDramaProject(userId, project, current.updatedAt);
@@ -119,7 +122,7 @@ export async function restoreDramaProjectVersionForUser(userId: string, id: stri
     if (!version) throw new DramaProjectServiceError("短剧版本不存在", 404);
     await createDramaProjectVersion(userId, projectId, "恢复前自动快照", current);
     try {
-        return await updateDramaProject(userId, normalizeProject(version.snapshot, current), current.updatedAt);
+        return await updateDramaProject(userId, normalizeProject(version.snapshot, current, { restoreWorkflow: true }), current.updatedAt);
     } catch (error) {
         if (error instanceof DramaProjectStoreError) throw new DramaProjectServiceError(error.message, error.status);
         throw error;
@@ -188,11 +191,24 @@ function normalizeCreateInput(value: unknown): Required<Omit<CreateDramaProjectI
     };
 }
 
-export function normalizeProject(value: unknown, current: DramaProject): DramaProject {
+export function normalizeProject(value: unknown, current: DramaProject, options: { restoreWorkflow?: boolean } = {}): DramaProject {
     const input = object(value);
+    let workflow: DramaProject["workflow"];
+    try {
+        if (options.restoreWorkflow) {
+            workflow = normalizeDramaWorkflow(input.workflow);
+        } else {
+            const incoming = normalizeDramaWorkflow(input.workflow);
+            const currentIds = new Set(current.workflow?.artifacts.map((artifact) => artifact.id));
+            workflow = current.workflow ? normalizeDramaWorkflow({ schemaVersion: 1, artifacts: [...current.workflow.artifacts, ...(incoming?.artifacts || []).filter((artifact) => !currentIds.has(artifact.id))] }) : incoming;
+        }
+    } catch (error) {
+        if (error instanceof DramaWorkflowError) throw new DramaProjectServiceError(error.message, error.status);
+        throw error;
+    }
     if (input.videoPromptInstructions !== undefined && (typeof input.videoPromptInstructions !== "string" || input.videoPromptInstructions.length > 50_000)) throw new DramaProjectServiceError("视频提示词生成指令必须是 50,000 字以内的文本", 400);
     const episodes = array(input.episodes)
-        .map((value, index) => normalizeEpisode(value, index))
+        .map((value, index) => normalizeEpisode(value, index, options.restoreWorkflow ? undefined : current.episodes.find((episode) => episode.id === cleanText(object(value).id))))
         .filter((episode): episode is DramaEpisode => Boolean(episode));
     if (!episodes.length) throw new DramaProjectServiceError("短剧项目至少需要一集", 400);
     const activeEpisodeId = cleanText(input.activeEpisodeId);
@@ -200,6 +216,7 @@ export function normalizeProject(value: unknown, current: DramaProject): DramaPr
     if (!ratio) throw new DramaProjectServiceError("短剧尺寸无效", 400);
     return {
         id: current.id,
+        workflow,
         sourceHandoffId: current.sourceHandoffId,
         title: cleanText(input.title) || current.title,
         summary: cleanText(input.summary),
@@ -221,7 +238,25 @@ export function normalizeProject(value: unknown, current: DramaProject): DramaPr
     };
 }
 
-function normalizeEpisode(value: unknown, index: number): DramaEpisode | null {
+function assertWorkflowRevisionCurrent(value: unknown, current: DramaProject) {
+    let incomingWorkflow: DramaProject["workflow"];
+    try {
+        incomingWorkflow = normalizeDramaWorkflow(object(value).workflow);
+    } catch (error) {
+        if (error instanceof DramaWorkflowError) throw new DramaProjectServiceError(error.message, error.status);
+        throw error;
+    }
+    const incoming = { ...current, workflow: incomingWorkflow };
+    for (const artifact of current.workflow?.artifacts || []) {
+        if (artifact.status !== "adopted") continue;
+        const latest = latestDramaWorkflowArtifact(current, artifact.stage, artifact.episodeId, "adopted");
+        if (latest?.id !== artifact.id) continue;
+        const supplied = latestDramaWorkflowArtifact(incoming, artifact.stage, artifact.episodeId, "adopted");
+        if (supplied?.id !== latest.id || supplied.version !== latest.version) throw new DramaProjectServiceError("创作稿已在其他页面采用，请刷新后再保存，避免覆盖最新内容", 409);
+    }
+}
+
+function normalizeEpisode(value: unknown, index: number, current?: DramaEpisode): DramaEpisode | null {
     const input = object(value);
     const id = cleanText(input.id);
     if (!id) return null;
@@ -240,6 +275,8 @@ function normalizeEpisode(value: unknown, index: number): DramaEpisode | null {
     const scriptRichContent = normalizeDramaScriptRichContent(input.scriptRichContent);
     return {
         id,
+        contentStale: typeof input.contentStale === "boolean" ? input.contentStale : undefined,
+        renderStale: typeof input.renderStale === "boolean" ? input.renderStale : undefined,
         episodeNumber: optionalPositiveInteger(input.episodeNumber) || index + 1,
         title: cleanText(input.title) || "未命名剧集",
         script: scriptRichContent ? dramaRichContentToPlainText(scriptRichContent).trim() : script,
@@ -250,9 +287,31 @@ function normalizeEpisode(value: unknown, index: number): DramaEpisode | null {
         sourceRange: cleanText(input.sourceRange),
         reviewStatus: reviewStatus(input.reviewStatus),
         shots: array(input.shots).map(normalizeShot),
+        shotArchives: normalizeShotArchives(input.shotArchives, current?.shotArchives),
         renderTask,
         visualReview: normalizeVisualReview(input.visualReview),
     };
+}
+
+function normalizeShotArchives(value: unknown, current?: DramaEpisode["shotArchives"]): DramaEpisode["shotArchives"] {
+    if (value === undefined) return current ? normalizeShotArchives(current) : undefined;
+    if (!Array.isArray(value)) throw new DramaProjectServiceError("镜头历史记录必须是数组", 400);
+    const archiveIds = new Set<string>();
+    const incoming = value.map((item, index) => {
+        const input = object(item);
+        const id = cleanText(input.id);
+        const shotId = cleanText(input.shotId);
+        const archivedAt = timestamp(input.archivedAt);
+        const shot = object(input.shot);
+        if (!id || !shotId || !archivedAt || cleanText(shot.id) !== shotId) throw new DramaProjectServiceError("镜头历史记录缺少有效编号、时间或镜头快照", 400);
+        if (archiveIds.has(id)) throw new DramaProjectServiceError("镜头历史记录编号重复", 400);
+        archiveIds.add(id);
+        return { id, shotId, archivedAt, reason: cleanText(input.reason) || "重新生成前", shot: normalizeShot(shot, index) };
+    });
+    if (!current) return incoming;
+    const previous = normalizeShotArchives(current)!;
+    const previousIds = new Set(previous.map((archive) => archive.id));
+    return [...previous, ...incoming.filter((archive) => !previousIds.has(archive.id))];
 }
 
 function normalizeVisualReview(value: unknown): DramaEpisode["visualReview"] {
@@ -292,6 +351,9 @@ function normalizeShot(value: unknown, index: number): DramaShot {
     const input = object(value);
     return {
         id: cleanText(input.id) || `shot-${nanoid()}`,
+        productionStale: typeof input.productionStale === "boolean" ? input.productionStale : undefined,
+        storyboardStale: typeof input.storyboardStale === "boolean" ? input.storyboardStale : undefined,
+        storyboardEndStale: typeof input.storyboardEndStale === "boolean" ? input.storyboardEndStale : undefined,
         order: Math.max(1, Math.floor(Number(input.order) || index + 1)),
         title: cleanText(input.title) || `镜头 ${index + 1}`,
         description: cleanText(input.description),

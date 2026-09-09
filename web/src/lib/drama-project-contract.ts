@@ -67,6 +67,9 @@ export type DramaUtterance = {
 
 export type DramaShot = {
     id: string;
+    productionStale?: boolean;
+    storyboardStale?: boolean;
+    storyboardEndStale?: boolean;
     order: number;
     title: string;
     description: string;
@@ -135,6 +138,8 @@ export type DramaVisualReview = {
 
 export type DramaEpisode = {
     id: string;
+    contentStale?: boolean;
+    renderStale?: boolean;
     episodeNumber?: number;
     title: string;
     script: string;
@@ -145,6 +150,7 @@ export type DramaEpisode = {
     sourceRange: string;
     reviewStatus: DramaReviewStatus;
     shots: DramaShot[];
+    shotArchives?: Array<{ id: string; shotId: string; archivedAt: string; reason: string; shot: DramaShot }>;
     renderTask?: DramaRenderTask;
     visualReview?: DramaVisualReview;
 };
@@ -164,6 +170,7 @@ export type DramaSourceAsset = {
 
 export type DramaProject = {
     id: string;
+    workflow?: import("@/lib/drama-workflow-contract").DramaWorkflow;
     sourceHandoffId?: string;
     title: string;
     summary: string;

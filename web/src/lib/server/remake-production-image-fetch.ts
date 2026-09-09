@@ -1,4 +1,5 @@
 import { fetchInternalApi } from "@/lib/server/internal-origin";
+import { maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
 import { fetchSafeOutbound, UnsafeOutboundUrlError } from "@/lib/server/safe-outbound-fetch";
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -10,9 +11,10 @@ export async function fetchRemakeProductionImage(url: string, input: { internal:
     if (!input.internal) return fetchSafeOutbound(url, init);
 
     const origin = new URL(url).origin;
+    const headers = maintenanceWorkerContextHeaders(input.cookie) || (input.cookie ? { cookie: input.cookie } : undefined);
     let current = new URL(url);
     for (let redirects = 0; redirects <= MAX_INTERNAL_REDIRECTS; redirects += 1) {
-        const response = await fetchInternalApi(current, { ...init, headers: input.cookie ? { cookie: input.cookie } : undefined, redirect: "manual" });
+        const response = await fetchInternalApi(current, { ...init, headers, redirect: "manual" });
         if (!REDIRECT_STATUSES.has(response.status)) return response;
         await response.body?.cancel().catch(() => undefined);
         const location = response.headers.get("location");

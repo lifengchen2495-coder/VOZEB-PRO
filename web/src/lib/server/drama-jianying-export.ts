@@ -7,11 +7,14 @@ import { zipSync } from "fflate";
 
 import type { DramaEpisode, DramaProject } from "@/lib/drama-project-contract";
 import { dramaOutputDimensions } from "@/lib/drama-image-size";
+import { dramaEpisodeDeliveryIssue } from "@/lib/drama-delivery-readiness";
 import { downloadMediaToFile } from "@/lib/server/media-download";
 
 const MAX_MEDIA_BYTES = 200 * 1024 * 1024;
 
 export async function exportDramaEpisodeAsJianying(input: { project: DramaProject; episode: DramaEpisode; draftPath: string; version: "5" | "6"; origin: string; cookie?: string }) {
+    const issue = dramaEpisodeDeliveryIssue(input.episode);
+    if (issue) throw new DramaJianyingExportError(issue, 409);
     const clips = input.episode.shots.filter((shot) => shot.videoUrl);
     if (!clips.length) throw new DramaJianyingExportError("本集还没有可导出的视频", 422);
     const draftPath = normalizeDraftPath(input.draftPath);

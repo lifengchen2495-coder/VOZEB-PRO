@@ -5,6 +5,8 @@ import { App, Button, Progress, Tag } from "antd";
 import { ArrowRight, Captions, CircleAlert, CircleCheck, CircleDashed, Download, Film, LoaderCircle, Pause, Play, RefreshCw, ScanSearch, Send, Volume2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { dramaEpisodeDeliveryIssue } from "@/lib/drama-delivery-readiness";
+import { dramaContentAnalysisFingerprint } from "@/lib/drama-analysis-reconcile";
 import { createAgentPromptHref } from "@/lib/create-agent-prompt";
 import { compileDramaShotPrompts } from "@/lib/drama-prompt-compiler";
 import { mediaDownloadFileName } from "@/lib/media-file";
@@ -54,7 +56,8 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
     );
     const audioReady = Boolean(config.audioModel.trim());
     const assetCount = project.characters.length + project.scenes.length + project.props.length + project.clues.length;
-    const audioCandidateShotIds = episode.shots.filter((shot) => shot.videoUrl && (shot.subtitle || shot.dialogue).trim() && shot.audioStatus !== "success").map((shot) => shot.id);
+    const deliveryIssue = dramaEpisodeDeliveryIssue(episode);
+    const audioCandidateShotIds = episode.shots.filter((shot) => !episode.contentStale && !shot.productionStale && shot.videoUrl && (shot.subtitle || shot.dialogue).trim() && shot.audioStatus !== "success").map((shot) => shot.id);
 
     useEffect(() => {
         let active = true;
@@ -110,6 +113,7 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
     };
 
     const downloadSubtitles = () => {
+        if (deliveryIssue) return message.warning(deliveryIssue);
         const content = buildSrt(episode.shots);
         if (!content) return message.warning("请先填写至少一条对白或字幕");
         const url = URL.createObjectURL(new Blob([`\uFEFF${content}`], { type: "application/x-subrip;charset=utf-8" }));
@@ -125,6 +129,11 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
         if (!jianyingPath.trim()) return message.warning("请填写剪映草稿目录");
         setJianyingExporting(true);
         try {
+            const saved = await useDramaStore.getState().flushProject(project.id);
+            const savedEpisode = saved.episodes.find((item) => item.id === episode.id);
+            if (!savedEpisode) throw new Error("短剧分集不存在");
+            const issue = dramaEpisodeDeliveryIssue(savedEpisode);
+            if (issue) throw new Error(issue);
             const result = await exportDramaJianyingDraft(project.id, { episodeId: episode.id, draftPath: jianyingPath.trim(), version: jianyingVersion });
             const url = URL.createObjectURL(result.blob);
             const anchor = document.createElement("a");
@@ -143,20 +152,22 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
 
     const createRender = async () => {
         try {
+            const saved = await useDramaStore.getState().flushProject(project.id);
+            const savedEpisode = saved.episodes.find((item) => item.id === episode.id);
+            if (!savedEpisode) throw new Error("短剧分集不存在");
+            const issue = dramaEpisodeDeliveryIssue(savedEpisode);
+            if (issue) throw new Error(issue);
+            const expectedInput = dramaContentAnalysisFingerprint(saved, episode.id);
             const response = await fetch("/api/drama/render", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    projectId: project.id,
-                    conversationId: project.creativeConversationId,
-                    title: project.title,
-                    ratio: project.ratio,
-                    shots: episode.shots.map((shot) => ({ videoUrl: shot.videoUrl, audioMode: shot.audioMode || "source", audioUrl: shot.audioUrl, subtitle: shot.subtitle || shot.dialogue, duration: shot.duration })),
-                }),
+                body: JSON.stringify({ projectId: saved.id, episodeId: savedEpisode.id, expectedUpdatedAt: saved.updatedAt }),
             });
             const payload = (await response.json().catch(() => ({}))) as { data?: DramaRenderTask; msg?: string };
             if (!response.ok || !payload.data) throw new Error(payload.msg || "整集合成任务创建失败");
-            updateEpisode(project.id, episode.id, { renderTask: payload.data });
+            const latest = useDramaStore.getState().projects.find((item) => item.id === project.id);
+            if (!latest?.episodes.some((item) => item.id === episode.id)) return;
+            updateEpisode(project.id, episode.id, { renderTask: payload.data, renderStale: dramaContentAnalysisFingerprint(latest, episode.id) !== expectedInput });
             message.success("整集合成任务已创建");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "整集合成任务创建失败");
@@ -201,7 +212,7 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
         onQueueAudio: (shotIds) => queueAudio(project.id, episode.id, shotIds),
         onCreateRender: () => void createRender(),
     });
-    const status = generationStageStatus(readiness, renderTask);
+    const status = generationStageStatus(readiness, renderTask, episode.renderStale);
     const checklist = [
         {
             id: "review",
@@ -248,7 +259,7 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
     return (
         <div className="min-w-0" data-drama-generation-panel>
             <DramaStageHeader
-                step="04"
+                step="06"
                 title="镜头生成"
                 description={status.description}
                 status={status.label}
@@ -317,10 +328,10 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
                             </Button>
                         </ToolGroup>
                         <ToolGroup title="交付导出" description="镜头结果可导出字幕和剪映草稿，成片完成后直接下载。">
-                            <Button className={actionButtonClass} icon={<Download className="size-4" />} disabled={!episode.shots.some((shot) => (shot.subtitle || shot.dialogue).trim())} onClick={downloadSubtitles}>
+                            <Button className={actionButtonClass} icon={<Download className="size-4" />} disabled={Boolean(deliveryIssue) || !episode.shots.some((shot) => (shot.subtitle || shot.dialogue).trim())} onClick={downloadSubtitles}>
                                 导出 SRT
                             </Button>
-                            <Button className={actionButtonClass} icon={<Download className="size-4" />} disabled={!episode.shots.some((shot) => shot.videoUrl)} onClick={() => setJianyingOpen(true)}>
+                            <Button className={actionButtonClass} icon={<Download className="size-4" />} disabled={Boolean(deliveryIssue) || !episode.shots.some((shot) => shot.videoUrl)} onClick={() => setJianyingOpen(true)}>
                                 剪映草稿
                             </Button>
                         </ToolGroup>
@@ -329,7 +340,34 @@ export function DramaGenerationPanel({ project, episode, onStageChange, onOpenAs
             ) : null}
 
             {episode.visualReview ? <VisualReview project={project} episode={episode} /> : null}
-            {renderTask ? <RenderTaskCard task={renderTask} onCancel={() => void cancelRender()} /> : null}
+            {renderTask ? (
+                <>
+                    {episode.renderStale ? <p className="mt-3 text-sm text-amber-600">以下为历史成片，当前内容更新后需要重新合成。</p> : null}
+                    <RenderTaskCard task={renderTask} onCancel={() => void cancelRender()} />
+                </>
+            ) : null}
+
+            {episode.shotArchives?.length ? (
+                <details className="mt-3 rounded-lg border border-border p-3">
+                    <summary className="cursor-pointer text-sm font-medium">历史镜头素材（{episode.shotArchives.length}）</summary>
+                    <div className="mt-3 space-y-4">
+                        {[...episode.shotArchives].reverse().map((archive) => (
+                            <article key={archive.id} className="border-t border-border pt-3">
+                                <p className="text-sm font-medium">
+                                    {archive.shot.title} · {archive.reason}
+                                </p>
+                                <p className="mt-1 text-xs text-muted-foreground">{archive.shot.description}</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    {archive.shot.storyboardImageUrl ? <DramaMediaThumbnail media={{ type: "image", url: archive.shot.storyboardImageUrl, title: `${archive.shot.title}历史起始帧` }} onOpen={setPreviewMedia} /> : null}
+                                    {archive.shot.storyboardEndImageUrl ? <DramaMediaThumbnail media={{ type: "image", url: archive.shot.storyboardEndImageUrl, title: `${archive.shot.title}历史结束帧` }} onOpen={setPreviewMedia} /> : null}
+                                    {archive.shot.videoUrl ? <DramaMediaThumbnail media={{ type: "video", url: archive.shot.videoUrl, title: `${archive.shot.title}历史视频` }} onOpen={setPreviewMedia} /> : null}
+                                </div>
+                                {archive.shot.audioUrl ? <audio className="mt-2 h-10 max-w-full" src={archive.shot.audioUrl} controls preload="none" /> : null}
+                            </article>
+                        ))}
+                    </div>
+                </details>
+            ) : null}
 
             {episode.shots.length ? (
                 <section className="mt-3" aria-labelledby="drama-shot-task-title">
@@ -516,6 +554,7 @@ function ShotTaskRow({
                         <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                             <h4 className="min-w-0 truncate font-semibold">{shot.title || `镜头 ${String(shot.order).padStart(2, "0")}`}</h4>
                             <div className="flex flex-wrap items-center gap-1.5">
+                                {episode.contentStale || shot.productionStale ? <Tag color="warning">素材待更新</Tag> : null}
                                 <StoryboardTag status={shot.storyboardStatus} />
                                 {shot.storyboardFrameMode === "first_last" ? <Tag className="!m-0 !h-6 !rounded-md !leading-6">尾帧 {shot.storyboardEndStatus === "success" ? "完成" : shot.storyboardEndStatus === "error" ? "失败" : "待处理"}</Tag> : null}
                                 <GenerationTag status={shot.generationStatus} />
@@ -545,7 +584,13 @@ function ShotTaskRow({
                         取消配音
                     </Button>
                 ) : dialogue ? (
-                    <Button className={actionButtonClass} disabled={!audioReady} title={audioReady ? undefined : "请管理员先在后台设置默认音频模型"} icon={<Volume2 className="size-4" />} onClick={() => queueAudio(project.id, episode.id, [shot.id])}>
+                    <Button
+                        className={actionButtonClass}
+                        disabled={!audioReady || Boolean(episode.contentStale || shot.productionStale)}
+                        title={audioReady ? undefined : "请管理员先在后台设置默认音频模型"}
+                        icon={<Volume2 className="size-4" />}
+                        onClick={() => queueAudio(project.id, episode.id, [shot.id])}
+                    >
                         {shot.audioStatus === "error" ? "重试配音" : shot.audioMode === "voiceover" ? "生成配音" : "改用 AI 配音"}
                     </Button>
                 ) : null}
@@ -556,11 +601,11 @@ function ShotTaskRow({
                 ) : (
                     <Button
                         className={`${dialogue ? "" : "col-span-2 lg:col-span-1"} ${actionButtonClass}`}
-                        disabled={episode.reviewStatus !== "visual_ready"}
+                        disabled={episode.reviewStatus !== "visual_ready" || episode.contentStale}
                         icon={failed ? <RefreshCw className="size-4" /> : <Play className="size-4" />}
                         onClick={() => queueShots(project.id, episode.id, [shot.id])}
                     >
-                        {failed ? "重试镜头" : shot.videoUrl ? "重新生成" : "生成镜头"}
+                        {shot.productionStale ? "按最新内容重新生成" : failed ? "重试镜头" : shot.videoUrl ? "重新生成" : "生成镜头"}
                     </Button>
                 )}
                 <Button type="text" disabled={!shot.videoPrompt} className={`col-span-2 !bg-muted/60 hover:!bg-muted lg:col-span-1 ${actionButtonClass}`} icon={<Send className="size-4" />} onClick={onSendToAgent}>
@@ -587,9 +632,11 @@ function ShotErrors({ shot }: { shot: DramaShot }) {
     ) : null;
 }
 
-function generationStageStatus(readiness: ReturnType<typeof summarizeDramaGeneration>, renderTask: DramaRenderTask | null): { label: string; description: string; tone: "neutral" | "ready" | "attention" | "running" } {
+function generationStageStatus(readiness: ReturnType<typeof summarizeDramaGeneration>, renderTask: DramaRenderTask | null, renderStale?: boolean): { label: string; description: string; tone: "neutral" | "ready" | "attention" | "running" } {
     if (!readiness.totalShots) return { label: "等待镜头", description: "当前集还没有镜头结构。完成剧本提取与内容审核后，生成任务会在这里集中管理。", tone: "attention" };
-    if (renderTask?.status === "success") return { label: "成片已完成", description: "整集合成已经完成，可以预览成片、下载文件或继续导出字幕与剪映草稿。", tone: "ready" };
+    if (readiness.contentStale) return { label: "分镜待更新", description: "剧本或上游设定已修改，请重新分析并审核分镜；历史素材仍可预览。", tone: "attention" };
+    if (readiness.staleShotIds.length) return { label: "素材待更新", description: `${readiness.staleShotIds.length} 个镜头的内容已变更，历史图像与视频已保留，可按最新内容重新生成。`, tone: "attention" };
+    if (renderTask?.status === "success" && !renderStale) return { label: "成片已完成", description: "整集合成已经完成，可以预览成片、下载文件或继续导出字幕与剪映草稿。", tone: "ready" };
     if (renderTask && ["pending", "running"].includes(renderTask.status)) return { label: "正在合成", description: "全部镜头已经进入整集合成，后台会继续完成转码、拼接与字幕处理。", tone: "running" };
     if (readiness.activeShotIds.length) return { label: "生产进行中", description: `${readiness.activeShotIds.length} 个镜头正在排队或生成，完成后会自动继续处理下一项。`, tone: "running" };
     if (readiness.failedShotIds.length) return { label: "需要处理", description: `${readiness.failedShotIds.length} 个镜头存在失败项。下方会显示精确原因，并只重试对应镜头。`, tone: "attention" };
@@ -619,6 +666,12 @@ function buildPrimaryAction({
     onCreateRender: () => void;
 }) {
     const primaryClass = "!h-11 !w-full !px-4 sm:!h-9 sm:!w-auto";
+    if (episode.contentStale)
+        return (
+            <Button type="primary" className={primaryClass} icon={<ArrowRight className="size-4" />} onClick={() => onStageChange("script")}>
+                更新剧本分镜
+            </Button>
+        );
     if (!readiness.totalShots)
         return (
             <Button type="primary" className={primaryClass} icon={<ArrowRight className="size-4" />} onClick={() => onStageChange("script")}>
@@ -661,7 +714,7 @@ function buildPrimaryAction({
                 正在合成整集
             </Button>
         );
-    if (renderTask?.result?.url)
+    if (renderTask?.result?.url && !episode.renderStale)
         return (
             <Button type="primary" className={primaryClass} icon={<Download className="size-4" />} href={originalMediaDownloadUrl(renderTask.result.url)} download={mediaDownloadFileName(renderTask.id, "video/mp4", renderTask.result.url)}>
                 下载整集成片

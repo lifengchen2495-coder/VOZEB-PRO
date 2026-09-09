@@ -17,6 +17,8 @@ import { fetchSafeOutbound } from "@/lib/server/safe-outbound-fetch";
 import { withGenerationConcurrencyLimit } from "@/lib/server/generation-task-store";
 import { registerGenerationTaskAssetsForUser } from "@/lib/server/creative-runtime-service";
 import { dramaOutputDimensions, normalizeDramaImageSize } from "@/lib/drama-image-size";
+import { dramaEpisodeDeliveryIssue } from "@/lib/drama-delivery-readiness";
+import { DramaProjectServiceError, getDramaProjectForUser } from "@/lib/server/drama-project-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +31,7 @@ export async function POST(request: Request) {
     const renderLimit = (await getAuthSettings()).generationConcurrency.render;
     const response = await withGenerationConcurrencyLimit(user.id, "render", 60 * 60_000, renderLimit, async () => {
         if (!(await ffmpegAvailable())) return NextResponse.json({ code: 503, data: null, msg: "当前服务器未安装 FFmpeg" }, { status: 503 });
-        let body: { projectId?: unknown; conversationId?: unknown; title?: unknown; ratio?: unknown; shots?: unknown[] };
+        let body: { projectId?: unknown; episodeId?: unknown; expectedUpdatedAt?: unknown };
         try {
             body = await readJsonBody(request);
         } catch (error) {
@@ -37,13 +39,26 @@ export async function POST(request: Request) {
             throw error;
         }
         const projectId = text(body.projectId);
-        const title = text(body.title) || "短剧成片";
-        const shots = normalizeDramaRenderShots(body.shots);
+        if (!projectId) return NextResponse.json({ code: 400, data: null, msg: "请指定短剧项目" }, { status: 400 });
+        let project;
+        try {
+            project = await getDramaProjectForUser(user.id, projectId);
+        } catch (error) {
+            if (error instanceof DramaProjectServiceError) return NextResponse.json({ code: error.status, data: null, msg: error.message }, { status: error.status });
+            throw error;
+        }
+        if (text(body.expectedUpdatedAt) && body.expectedUpdatedAt !== project.updatedAt) return NextResponse.json({ code: 409, data: null, msg: "项目已更新，请按最新内容重新合成" }, { status: 409 });
+        const episode = project.episodes.find((item) => item.id === text(body.episodeId));
+        if (!episode) return NextResponse.json({ code: 404, data: null, msg: "短剧分集不存在" }, { status: 404 });
+        const issue = dramaEpisodeDeliveryIssue(episode);
+        if (issue) return NextResponse.json({ code: 409, data: null, msg: issue }, { status: 409 });
+        const title = `${project.title} · ${episode.title}`;
+        const shots = normalizeDramaRenderShots(episode.shots.map((shot) => ({ ...shot, subtitle: shot.subtitle || shot.dialogue })));
         if (!projectId || !shots.length || shots.some((shot) => !shot.videoUrl)) return NextResponse.json({ code: 400, data: null, msg: "请先完成全部镜头视频" }, { status: 400 });
         if (shots.some((shot) => shot.audioMode === "voiceover" && !shot.audioUrl)) return NextResponse.json({ code: 400, data: null, msg: "部分镜头选择了 AI 配音，但配音尚未完成" }, { status: 400 });
-        const size = normalizeDramaImageSize(body.ratio);
+        const size = normalizeDramaImageSize(project.ratio);
         if (!size) return NextResponse.json({ code: 400, data: null, msg: "短剧尺寸无效" }, { status: 400 });
-        const task = await createDramaRenderTask({ userId: user.id, projectId, conversationId: text(body.conversationId) || undefined, title });
+        const task = await createDramaRenderTask({ userId: user.id, projectId, conversationId: project.creativeConversationId, title });
         after(() => renderDrama(task, shots, size, resolveInternalOrigin(new URL(request.url).origin), request.headers.get("cookie") || ""));
         return NextResponse.json({ code: 0, data: publicTask(task), msg: "合成任务已创建" });
     });

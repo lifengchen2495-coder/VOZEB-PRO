@@ -1,6 +1,8 @@
 import { nanoid } from "nanoid";
 import { create } from "zustand";
 
+import { archiveDramaShots, dramaShotMediaChanged } from "@/lib/drama-shot-archive";
+import { dramaShotFrameInputFingerprint, dramaShotProductionFingerprint, reconcileDramaContentAnalysis, reconcileDramaVisualAnalysis } from "@/lib/drama-analysis-reconcile";
 import { createClientSessionEpoch, type ClientSessionStamp } from "@/lib/client-session-epoch";
 import type { CreateDramaProjectInput, DramaCharacter, DramaClue, DramaContentAnalysis, DramaEpisode, DramaProject, DramaProjectSummary, DramaProp, DramaScene, DramaShot, DramaVisualAnalysis, DramaVideoPromptAnalysis } from "@/lib/drama-project-contract";
 import { applyDramaVideoPromptAnalysis, dramaEpisodeHasActiveMedia, dramaVideoPromptInput } from "@/lib/drama-video-prompt-instructions";
@@ -27,6 +29,8 @@ type DramaStore = {
     deleteProject: (id: string) => Promise<void>;
     updateProject: (id: string, patch: Partial<Pick<DramaProject, "title" | "summary" | "style" | "ratio" | "status" | "creativeConversationId" | "defaultVideoMode" | "videoPromptInstructions">>) => void;
     flushProjectSave: (id: string) => Promise<DramaProject>;
+    flushProject: (id: string) => Promise<DramaProject>;
+    mutateWorkflowProject: (id: string, updater: (project: DramaProject) => DramaProject) => void;
     addCharacter: (projectId: string, input: Omit<DramaCharacter, "id">) => void;
     addScene: (projectId: string, input: Omit<DramaScene, "id">) => void;
     addProp: (projectId: string, input: Omit<DramaProp, "id">) => void;
@@ -41,13 +45,13 @@ type DramaStore = {
     updateEpisode: (
         projectId: string,
         episodeId: string,
-        patch: Partial<Pick<DramaEpisode, "episodeNumber" | "title" | "script" | "scriptRichContent" | "outline" | "hook" | "nextPreview" | "sourceRange" | "reviewStatus" | "renderTask" | "visualReview">>,
+        patch: Partial<Pick<DramaEpisode, "episodeNumber" | "title" | "script" | "scriptRichContent" | "outline" | "hook" | "nextPreview" | "sourceRange" | "reviewStatus" | "renderTask" | "renderStale" | "visualReview">>,
     ) => void;
     buildStoryboard: (projectId: string, episodeId: string) => void;
     updateShot: (projectId: string, episodeId: string, shotId: string, patch: Partial<DramaShot>) => void;
     queueShots: (projectId: string, episodeId: string, shotIds: string[]) => void;
-    applyContentAnalysis: (projectId: string, episodeId: string, analysis: DramaContentAnalysis) => void;
-    applyVisualAnalysis: (projectId: string, episodeId: string, analysis: DramaVisualAnalysis) => void;
+    applyContentAnalysis: (projectId: string, episodeId: string, analysis: DramaContentAnalysis, expectedInput?: string) => void;
+    applyVisualAnalysis: (projectId: string, episodeId: string, analysis: DramaVisualAnalysis, expectedInput?: string) => void;
     applyVideoPromptAnalysis: (projectId: string, episodeId: string, analysis: DramaVideoPromptAnalysis, expectedInput: string) => void;
     replaceProject: (project: DramaProject) => void;
     createVersion: (project: DramaProject, reason: string) => Promise<void>;
@@ -189,41 +193,81 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
         latestProjectTimes.delete(key);
         set((state) => ({ projects: state.projects.filter((project) => project.id !== id), summaries: state.summaries.filter((project) => project.id !== id), summaryTotal: Math.max(0, state.summaryTotal - 1) }));
     },
-    updateProject: (id, patch) => mutateProject(id, (project) => ({ ...project, ...patch })),
+    updateProject: (id, patch) =>
+        mutateProject(id, (project) => {
+            const contentChanged = patch.summary !== undefined && patch.summary !== project.summary;
+            const visualChanged = (patch.style !== undefined && patch.style !== project.style) || (patch.ratio !== undefined && patch.ratio !== project.ratio);
+            return {
+                ...project,
+                ...patch,
+                episodes:
+                    contentChanged || visualChanged
+                        ? project.episodes.map((episode) => ({
+                              ...invalidateEpisodeShots(episode, () => true),
+                              contentStale: episode.contentStale || contentChanged,
+                              reviewStatus: contentChanged ? "draft" : episode.reviewStatus,
+                              renderStale: true,
+                          }))
+                        : project.episodes,
+            };
+        }),
+    mutateWorkflowProject: (id, updater) => mutateProject(id, updater),
+    flushProject: (id) => get().flushProjectSave(id),
     flushProjectSave: async (id) => {
         const session = requireSession();
         const key = sessionEpoch.key(session, id);
-        if (suspendedSaves.has(key)) throw new Error("项目版本正在恢复，请完成后再保存");
-        clearProjectSave(session, id);
-        await saveQueues.get(key)?.catch(() => undefined);
-        assertCurrent(session);
-        if (suspendedSaves.has(key)) throw new Error("项目版本正在恢复，请完成后再保存");
-        const project = get().projects.find((item) => item.id === id);
-        if (!project) throw new Error("短剧项目不存在");
-        await persistProject(session, project);
-        assertCurrent(session);
-        return get().projects.find((item) => item.id === id)!;
+        for (;;) {
+            assertCurrent(session);
+            if (suspendedSaves.has(key)) throw new Error("项目版本正在恢复，请完成后再保存");
+            clearProjectSave(session, id);
+            const pending = saveQueues.get(key);
+            if (pending) {
+                await pending.catch(() => undefined);
+                continue;
+            }
+            const project = get().projects.find((item) => item.id === id);
+            if (!project) throw new Error("短剧项目不存在");
+            if (get().saveStateByProject[id]?.status === "saved" && get().saveStateByProject[id]?.savedAt === project.updatedAt) return project;
+            await persistProject(session, project);
+        }
     },
     addCharacter: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, characters: [...project.characters, { ...input, id: `character-${nanoid()}` }] })),
     addScene: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, scenes: [...project.scenes, { ...input, id: `scene-${nanoid()}` }] })),
     addProp: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, props: [...project.props, { ...input, id: `prop-${nanoid()}` }] })),
     addClue: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, clues: [...project.clues, { ...input, id: `clue-${nanoid()}` }] })),
-    updateAsset: (projectId, kind, id, patch) => mutateProject(projectId, (project) => ({ ...project, [kind]: project[kind].map((item) => (item.id === id ? { ...item, ...patch, id } : item)) })),
+    updateAsset: (projectId, kind, id, patch) =>
+        mutateProject(projectId, (project) => {
+            const existing = project[kind].find((item) => item.id === id);
+            if (!existing || JSON.stringify(existing) === JSON.stringify({ ...existing, ...patch, id })) return project;
+            return {
+                ...project,
+                [kind]: project[kind].map((item) => (item.id === id ? { ...item, ...patch, id } : item)),
+                episodes: project.episodes.map((episode) => invalidateEpisodeShots(episode, (shot) => shotUsesAsset(shot, kind, id))),
+            };
+        }),
     removeAsset: (projectId, kind, id) =>
         mutateProject(projectId, (project) => ({
             ...project,
             [kind]: project[kind].filter((item) => item.id !== id),
             episodes: project.episodes.map((episode) => ({
-                ...episode,
-                shots: episode.shots.map((shot) =>
-                    kind === "characters"
-                        ? { ...shot, characterIds: shot.characterIds.filter((value) => value !== id) }
-                        : kind === "scenes"
-                          ? { ...shot, sceneId: shot.sceneId === id ? undefined : shot.sceneId }
-                          : kind === "props"
-                            ? { ...shot, propIds: shot.propIds.filter((value) => value !== id) }
-                            : { ...shot, clueIds: shot.clueIds.filter((value) => value !== id) },
+                ...archiveDramaShots(
+                    episode,
+                    episode.shots.filter((shot) => shotUsesAsset(shot, kind, id)),
+                    "移除关联资产前",
                 ),
+                renderStale: episode.renderStale || episode.shots.some((shot) => shotUsesAsset(shot, kind, id)),
+                shots: episode.shots.map((shot) => {
+                    if (!shotUsesAsset(shot, kind, id)) return shot;
+                    return markShotStale(
+                        kind === "characters"
+                            ? { ...shot, characterIds: shot.characterIds.filter((value) => value !== id) }
+                            : kind === "scenes"
+                              ? { ...shot, sceneId: undefined }
+                              : kind === "props"
+                                ? { ...shot, propIds: shot.propIds.filter((value) => value !== id) }
+                                : { ...shot, clueIds: shot.clueIds.filter((value) => value !== id) },
+                    );
+                }),
             })),
         })),
     addEpisode: (projectId) =>
@@ -275,23 +319,88 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
             const title = /^第\s*\d+\s*集$/u.test(current.title.trim()) && current.title.trim() === `第 ${currentNumber} 集` ? `第 ${nextNumber} 集` : current.title;
             return { ...project, episodes: project.episodes.map((episode) => (episode.id === episodeId ? { ...episode, episodeNumber: nextNumber, title } : episode)) };
         }),
-    updateEpisode: (projectId, episodeId, patch) => mutateProject(projectId, (project) => ({ ...project, episodes: project.episodes.map((episode) => (episode.id === episodeId ? { ...episode, ...patch } : episode)) })),
+    updateEpisode: (projectId, episodeId, patch) =>
+        mutateProject(projectId, (project) => ({
+            ...project,
+            episodes: project.episodes.map((episode) => {
+                if (episode.id !== episodeId) return episode;
+                const changed = patch.script !== undefined && patch.script !== episode.script;
+                return changed ? { ...invalidateEpisodeShots(episode, () => true), ...patch, scriptRichContent: patch.scriptRichContent, reviewStatus: "draft", contentStale: true, renderStale: true } : { ...episode, ...patch };
+            }),
+        })),
     buildStoryboard: (projectId, episodeId) =>
-        mutateProject(projectId, (project) => ({ ...project, episodes: project.episodes.map((episode) => (episode.id === episodeId ? { ...episode, shots: scriptToShots(episode.script, project), renderTask: undefined } : episode)) })),
+        mutateProject(projectId, (project) => {
+            const episode = project.episodes.find((item) => item.id === episodeId);
+            if (!episode) return project;
+            const drafts = scriptToShots(episode.script, project);
+            const reconciled = reconcileDramaContentAnalysis(project, episodeId, {
+                episode: { outline: episode.outline, hook: episode.hook, nextPreview: episode.nextPreview, sourceRange: episode.sourceRange },
+                characters: [],
+                scenes: [],
+                props: [],
+                clues: [],
+                shots: drafts.map((shot) => ({ ...shot, characterNames: [], propNames: [], clueNames: [], sceneName: project.scenes.find((scene) => scene.id === shot.sceneId)?.name || "" })),
+            });
+            const existingIds = new Set(episode.shots.map((shot) => shot.id));
+            return {
+                ...reconciled,
+                episodes: reconciled.episodes.map((item) =>
+                    item.id === episodeId
+                        ? {
+                              ...item,
+                              shots: item.shots.map((shot, index) =>
+                                  existingIds.has(shot.id) ? shot : { ...drafts[index], ...shot, imagePrompt: drafts[index].imagePrompt, videoPrompt: drafts[index].videoPrompt, cameraMotion: drafts[index].cameraMotion },
+                              ),
+                          }
+                        : item,
+                ),
+            };
+        }),
     updateShot: (projectId, episodeId, shotId, patch) =>
         mutateProject(projectId, (project) => ({
             ...project,
-            episodes: project.episodes.map((episode) => (episode.id === episodeId ? { ...episode, shots: episode.shots.map((shot) => (shot.id === shotId ? { ...shot, ...patch } : shot)) } : episode)),
+            episodes: project.episodes.map((episode) => {
+                if (episode.id !== episodeId) return episode;
+                const previous = episode.shots.find((shot) => shot.id === shotId);
+                if (!previous) return episode;
+                const next = { ...previous, ...patch, id: previous.id };
+                const contentChanged = dramaShotProductionFingerprint(previous) !== dramaShotProductionFingerprint(next);
+                const mediaChanged = dramaShotMediaChanged(previous, next);
+                const uploadedStart = patch.storyboardStatus === "success" && Object.hasOwn(patch, "storyboardTaskId") && patch.storyboardTaskId === undefined && Boolean(patch.storyboardImageUrl);
+                const uploadedEnd = patch.storyboardEndStatus === "success" && Object.hasOwn(patch, "storyboardEndTaskId") && patch.storyboardEndTaskId === undefined && Boolean(patch.storyboardEndImageUrl);
+                const frameSelected = uploadedStart || uploadedEnd;
+                const archived = mediaChanged || (contentChanged && !previous.productionStale) ? archiveDramaShots(episode, [previous], "镜头修改前") : episode;
+                const frames = {
+                    start: !uploadedStart && (Boolean(previous.storyboardStale ?? previous.productionStale) || dramaShotFrameInputFingerprint(previous, "start") !== dramaShotFrameInputFingerprint(next, "start")),
+                    end: !uploadedEnd && (uploadedStart || Boolean(previous.storyboardEndStale ?? previous.productionStale) || dramaShotFrameInputFingerprint(previous, "end") !== dramaShotFrameInputFingerprint(next, "end")),
+                };
+                return {
+                    ...archived,
+                    renderStale: episode.renderStale || contentChanged || mediaChanged || frameSelected,
+                    // 上传的帧由用户明确采用；旧任务回写只能保留此前的失效标记。
+                    shots: episode.shots.map((shot) => (shot.id === shotId ? (contentChanged || previous.productionStale || frameSelected ? markShotStale(next, frames) : next) : shot)),
+                };
+            }),
         })),
     queueShots: (projectId, episodeId, shotIds) =>
         mutateProject(projectId, (project) => {
-            if (project.episodes.find((episode) => episode.id === episodeId)?.reviewStatus !== "visual_ready") return project;
-            return updateShots(project, episodeId, shotIds, (shot) =>
-                (shot.videoMode || project.defaultVideoMode) !== "storyboard"
+            const episode = project.episodes.find((episode) => episode.id === episodeId);
+            if (episode?.reviewStatus !== "visual_ready" || episode.contentStale) return project;
+            return updateShots(project, episodeId, shotIds, (original) => {
+                const prepared = original.productionStale ? resetStaleShotForGeneration(original) : original;
+                const shot = {
+                    ...prepared,
+                    generationAttempt: (original.generationAttempt || 0) + 1,
+                    audioAttempt: (original.audioAttempt || 0) + 1,
+                    audioStatus: "idle" as const,
+                    audioTaskId: undefined,
+                    audioUrl: undefined,
+                    storyboardEndAttempt: prepared.storyboardFrameMode === "first_last" && !(prepared.storyboardEndStatus === "success" && prepared.storyboardEndImageUrl) ? (original.storyboardEndAttempt || 0) + 1 : prepared.storyboardEndAttempt,
+                };
+                return (shot.videoMode || project.defaultVideoMode) !== "storyboard"
                     ? {
                           ...shot,
                           generationStatus: "queued",
-                          generationAttempt: (shot.generationAttempt || 0) + 1,
                           generationTaskId: undefined,
                           generationError: undefined,
                           videoUrl: undefined,
@@ -303,7 +412,6 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
                       ? {
                             ...shot,
                             generationStatus: "queued",
-                            generationAttempt: (shot.generationAttempt || 0) + 1,
                             generationTaskId: undefined,
                             generationError: undefined,
                             videoUrl: undefined,
@@ -315,7 +423,6 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
                         ? {
                               ...shot,
                               storyboardEndStatus: "queued",
-                              storyboardEndAttempt: (shot.storyboardEndAttempt || 0) + 1,
                               storyboardEndTaskId: undefined,
                               storyboardEndError: undefined,
                               generationStatus: "idle",
@@ -340,103 +447,44 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
                               audioStatus: "idle",
                               audioTaskId: undefined,
                               audioUrl: undefined,
-                          },
-            );
+                          };
+            });
         }),
-    applyContentAnalysis: (projectId, episodeId, analysis) =>
-        mutateProject(projectId, (project) => {
-            const { items: characters, ids: characterIds } = mergeNamedItems(project.characters, analysis.characters, "character");
-            const { items: scenes, ids: sceneIds } = mergeNamedItems(project.scenes, analysis.scenes, "scene");
-            const { items: props, ids: propIds } = mergeNamedItems(project.props, analysis.props, "prop");
-            const { items: clues, ids: clueIds } = mergeNamedItems(project.clues, analysis.clues, "clue");
-            const episodes = project.episodes.map((episode) =>
-                episode.id === episodeId
-                    ? {
-                          ...episode,
-                          ...analysis.episode,
-                          reviewStatus: "content_review" as const,
-                          renderTask: undefined,
-                          shots: analysis.shots.map((shot, index) => ({
-                              id: `shot-${nanoid()}`,
-                              order: index + 1,
-                              title: shot.title,
-                              description: shot.description,
-                              sourceText: shot.sourceText,
-                              shotBoundary: shot.shotBoundary,
-                              dialogue: shot.dialogue,
-                              narration: shot.narration,
-                              utterances: shot.utterances,
-                              subtitle: [shot.dialogue, shot.narration].filter(Boolean).join("\n"),
-                              imagePrompt: "",
-                              videoPrompt: "",
-                              cameraMotion: "",
-                              startFramePrompt: "",
-                              endFramePrompt: "",
-                              negativePrompt: "",
-                              continuity: emptyContinuity(),
-                              duration: shot.duration,
-                              characterIds: shot.characterNames.map((name) => characterIds.get(normalizeName(name))).filter((id): id is string => Boolean(id)),
-                              sceneId: sceneIds.get(normalizeName(shot.sceneName)),
-                              propIds: shot.propNames.map((name) => propIds.get(normalizeName(name))).filter((id): id is string => Boolean(id)),
-                              clueIds: shot.clueNames.map((name) => clueIds.get(normalizeName(name))).filter((id): id is string => Boolean(id)),
-                              videoMode: project.defaultVideoMode,
-                              storyboardFrameMode: "single" as const,
-                              storyboardStatus: "idle" as const,
-                              generationStatus: "idle" as const,
-                              audioMode: "source" as const,
-                              audioStatus: "idle" as const,
-                          })),
-                      }
-                    : episode,
-            );
-            return { ...project, characters, scenes, props, clues, episodes };
-        }),
-    applyVisualAnalysis: (projectId, episodeId, analysis) =>
-        mutateProject(projectId, (project) => {
-            const visualByShot = new Map(analysis.shots.map((shot) => [shot.shotId, shot]));
-            return {
-                ...project,
-                episodes: project.episodes.map((episode) =>
-                    episode.id === episodeId
-                        ? {
-                              ...episode,
-                              reviewStatus: "visual_ready" as const,
-                              renderTask: undefined,
-                              shots: episode.shots.map((shot) => {
-                                  const visual = visualByShot.get(shot.id);
-                                  return visual
-                                      ? {
-                                            ...shot,
-                                            imagePrompt: visual.imagePrompt,
-                                            videoPrompt: visual.videoPrompt,
-                                            cameraMotion: visual.cameraMotion,
-                                            startFramePrompt: visual.startFramePrompt,
-                                            endFramePrompt: visual.endFramePrompt,
-                                            negativePrompt: visual.negativePrompt,
-                                            continuity: visual.continuity,
-                                            storyboardStatus: "idle" as const,
-                                            storyboardTaskId: undefined,
-                                            storyboardImageUrl: undefined,
-                                            storyboardEndStatus: "idle" as const,
-                                            storyboardEndTaskId: undefined,
-                                            storyboardEndImageUrl: undefined,
-                                            generationStatus: "idle" as const,
-                                            generationTaskId: undefined,
-                                            videoUrl: undefined,
-                                        }
-                                      : shot;
-                              }),
-                          }
-                        : episode,
-                ),
-            };
-        }),
+    applyContentAnalysis: (projectId, episodeId, analysis, expectedInput) => mutateProject(projectId, (project) => reconcileDramaContentAnalysis(project, episodeId, analysis, expectedInput)),
+    applyVisualAnalysis: (projectId, episodeId, analysis, expectedInput) => mutateProject(projectId, (project) => reconcileDramaVisualAnalysis(project, episodeId, analysis, expectedInput)),
     applyVideoPromptAnalysis: (projectId, episodeId, analysis, expectedInput) =>
         mutateProject(projectId, (project) => {
             const episode = project.episodes.find((item) => item.id === episodeId);
             if (!episode || JSON.stringify(dramaVideoPromptInput(project, episode)) !== expectedInput) throw new Error("生成期间镜头或项目内容已修改，请按最新内容重新生成");
             if (dramaEpisodeHasActiveMedia(episode)) throw new Error("请等待当前图像、视频或配音任务完成后再重新生成提示词");
-            return { ...project, episodes: project.episodes.map((item) => item.id === episodeId ? applyDramaVideoPromptAnalysis(item, analysis) : item) };
+            const analyzed = applyDramaVideoPromptAnalysis(episode, analysis);
+            const shots = episode.shots.map((shot, index) =>
+                shot.videoPrompt === analyzed.shots[index].videoPrompt
+                    ? shot
+                    : markShotStale(
+                          { ...shot, videoPrompt: analyzed.shots[index].videoPrompt },
+                          {
+                              start: Boolean(shot.storyboardStale ?? shot.productionStale),
+                              end: Boolean(shot.storyboardEndStale ?? shot.productionStale) || dramaShotFrameInputFingerprint(shot, "end") !== dramaShotFrameInputFingerprint({ ...shot, videoPrompt: analyzed.shots[index].videoPrompt }, "end"),
+                          },
+                      ),
+            );
+            return {
+                ...project,
+                episodes: project.episodes.map((item) =>
+                    item.id === episodeId
+                        ? {
+                              ...archiveDramaShots(
+                                  item,
+                                  episode.shots.filter((shot, index) => shot !== shots[index] && !shot.productionStale),
+                                  "视频提示词更新前",
+                              ),
+                              shots,
+                              renderStale: item.renderStale || shots.some((shot, index) => shot !== episode.shots[index]),
+                          }
+                        : item,
+                ),
+            };
         }),
     replaceProject: (project) => set((state) => ({ projects: state.projects.map((item) => (item.id === project.id ? project : item)), summaries: upsertSummary(state.summaries, project) })),
     createVersion: async (project, reason) => {
@@ -462,7 +510,9 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
     queueAudio: (projectId, episodeId, shotIds) =>
         mutateProject(projectId, (project) =>
             updateShots(project, episodeId, shotIds, (shot) =>
-                shot.videoUrl && (shot.subtitle || shot.dialogue).trim() ? { ...shot, audioMode: "voiceover", audioStatus: "queued", audioAttempt: (shot.audioAttempt || 0) + 1, audioTaskId: undefined, audioError: undefined, audioUrl: undefined } : shot,
+                !shot.productionStale && !project.episodes.find((episode) => episode.id === episodeId)?.contentStale && shot.videoUrl && (shot.subtitle || shot.dialogue).trim()
+                    ? { ...shot, audioMode: "voiceover", audioStatus: "queued", audioAttempt: (shot.audioAttempt || 0) + 1, audioTaskId: undefined, audioError: undefined, audioUrl: undefined }
+                    : shot,
             ),
         ),
     reset: () => {
@@ -474,12 +524,17 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
 function mutateProject(projectId: string, updater: (project: DramaProject) => DramaProject) {
     const session = sessionEpoch.capture();
     if (!session.userId) return;
+    const state = useDramaStore.getState();
+    if (state.hydratedUserId && state.hydratedUserId !== session.userId) throw new Error("登录会话已变更，请重新加载项目");
+    if (suspendedSaves.has(sessionEpoch.key(session, projectId))) throw new Error("项目版本正在恢复，请完成后再编辑");
     let nextProject: DramaProject | undefined;
     useDramaStore.setState((state) => {
         const projects = state.projects.map((project) => {
             if (project.id !== projectId) return project;
             const updated = updater(project);
             if (updated === project) return project;
+            if (updated.episodes.some((episode) => episode.shotArchives !== project.episodes.find((item) => item.id === episode.id)?.shotArchives) && new TextEncoder().encode(JSON.stringify(updated)).byteLength > 2 * 1024 * 1024)
+                throw new Error("镜头归档后项目超过 2 MB，请先拆分项目，历史素材尚未移除");
             nextProject = { ...updated, updatedAt: nextUpdatedAt(session, project) };
             return nextProject;
         });
@@ -495,33 +550,63 @@ function updateShots(project: DramaProject, episodeId: string, shotIds: string[]
         episodes: project.episodes.map((episode) => {
             if (episode.id !== episodeId) return episode;
             if (episode.renderTask && (episode.renderTask.status === "pending" || episode.renderTask.status === "running")) return episode;
-            return { ...episode, renderTask: undefined, shots: episode.shots.map((shot) => (selected.has(shot.id) && !hasActiveShotTask(shot) ? update(shot) : shot)) };
+            const shots = episode.shots.map((shot) => (selected.has(shot.id) && !hasActiveShotTask(shot) ? update(shot) : shot));
+            return shots.some((shot, index) => shot !== episode.shots[index])
+                ? {
+                      ...archiveDramaShots(
+                          episode,
+                          episode.shots.filter((shot, index) => dramaShotMediaChanged(shot, shots[index])),
+                          "重新生成前",
+                      ),
+                      renderStale: true,
+                      shots,
+                  }
+                : episode;
         }),
     };
 }
 
-function mergeNamedItems<T extends { id: string; name: string }>(existing: T[], incoming: Array<Omit<T, "id">>, prefix: string) {
-    const items = existing.map((item) => ({ ...item }));
-    const ids = new Map(existing.map((item) => [normalizeName(item.name), item.id]));
-    for (const item of incoming) {
-        const name = normalizeName(item.name);
-        if (!name) continue;
-        const existingIndex = items.findIndex((current) => normalizeName(current.name) === name);
-        if (existingIndex >= 0) {
-            const id = items[existingIndex].id;
-            items[existingIndex] = { ...items[existingIndex], ...item, id };
-            ids.set(name, id);
-            continue;
-        }
-        const id = `${prefix}-${nanoid()}`;
-        items.push({ ...item, id } as T);
-        ids.set(name, id);
-    }
-    return { items, ids };
+function shotUsesAsset(shot: DramaShot, kind: DramaAssetKind, id: string) {
+    return kind === "characters" ? shot.characterIds.includes(id) : kind === "scenes" ? shot.sceneId === id : kind === "props" ? shot.propIds.includes(id) : shot.clueIds.includes(id);
 }
 
-function normalizeName(value: string) {
-    return value.trim().toLocaleLowerCase();
+function invalidateEpisodeShots(episode: DramaEpisode, matches: (shot: DramaShot) => boolean): DramaEpisode {
+    if (!episode.shots.some(matches)) return episode;
+    return {
+        ...archiveDramaShots(
+            episode,
+            episode.shots.filter((shot) => matches(shot) && !shot.productionStale),
+            "关联设定修改前",
+        ),
+        renderStale: true,
+        shots: episode.shots.map((shot) => (matches(shot) ? markShotStale(shot) : shot)),
+    };
+}
+
+function markShotStale(shot: DramaShot, frames = { start: true, end: true }): DramaShot {
+    return {
+        ...shot,
+        productionStale: true,
+        storyboardStale: frames.start,
+        storyboardEndStale: frames.end,
+        storyboardStatus: shot.storyboardStatus === "queued" ? "idle" : shot.storyboardStatus,
+        storyboardEndStatus: shot.storyboardEndStatus === "queued" ? "idle" : shot.storyboardEndStatus,
+        generationStatus: shot.generationStatus === "queued" ? "idle" : shot.generationStatus,
+        audioStatus: shot.audioStatus === "queued" ? "idle" : shot.audioStatus,
+    };
+}
+
+function resetStaleShotForGeneration(shot: DramaShot): DramaShot {
+    const startStale = shot.storyboardStale ?? shot.productionStale;
+    const endStale = shot.storyboardEndStale ?? shot.productionStale;
+    return {
+        ...shot,
+        productionStale: false,
+        storyboardStale: false,
+        storyboardEndStale: false,
+        ...(startStale ? { storyboardStatus: "idle" as const, storyboardTaskId: undefined, storyboardImageUrl: undefined } : {}),
+        ...(endStale ? { storyboardEndStatus: "idle" as const, storyboardEndTaskId: undefined, storyboardEndImageUrl: undefined } : {}),
+    };
 }
 
 function hasActiveShotTask(shot: DramaShot) {
@@ -546,30 +631,34 @@ function queueSave(session: ClientSessionStamp, project: DramaProject) {
 function persistProject(session: ClientSessionStamp, project: DramaProject) {
     const key = sessionEpoch.key(session, project.id);
     const previous = saveQueues.get(key) || Promise.resolve();
-    const operation = previous.catch(() => undefined).then(async () => {
-        assertCurrent(session);
-        try {
-            const saved = await saveDramaProject(project);
+    const operation = previous
+        .catch(() => undefined)
+        .then(async () => {
             assertCurrent(session);
-            useDramaStore.setState((state) => ({
-                projects: state.projects.map((item) => (item.id === saved.id && item.updatedAt === project.updatedAt ? saved : item)),
-                summaries: upsertSummary(state.summaries, saved),
-                syncError: undefined,
-                saveStateByProject: state.projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt ? { ...state.saveStateByProject, [project.id]: { status: "saved", savedAt: saved.updatedAt } } : state.saveStateByProject,
-            }));
-        } catch (error) {
-            if (sessionEpoch.isCurrent(session) && useDramaStore.getState().projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt)
+            try {
+                const saved = await saveDramaProject(project);
+                assertCurrent(session);
                 useDramaStore.setState((state) => ({
-                    syncError: error instanceof Error ? error.message : "短剧项目保存失败",
-                    saveStateByProject: { ...state.saveStateByProject, [project.id]: { status: "error", savedAt: state.saveStateByProject[project.id]?.savedAt } },
+                    projects: state.projects.map((item) => (item.id === saved.id && item.updatedAt === project.updatedAt ? saved : item)),
+                    summaries: upsertSummary(state.summaries, state.projects.find((item) => item.id === saved.id && item.updatedAt !== project.updatedAt) || saved),
+                    syncError: undefined,
+                    saveStateByProject: state.projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt ? { ...state.saveStateByProject, [project.id]: { status: "saved", savedAt: saved.updatedAt } } : state.saveStateByProject,
                 }));
-            throw error;
-        }
-    });
+            } catch (error) {
+                if (sessionEpoch.isCurrent(session) && useDramaStore.getState().projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt)
+                    useDramaStore.setState((state) => ({
+                        syncError: error instanceof Error ? error.message : "短剧项目保存失败",
+                        saveStateByProject: { ...state.saveStateByProject, [project.id]: { status: "error", savedAt: state.saveStateByProject[project.id]?.savedAt } },
+                    }));
+                throw error;
+            }
+        });
     saveQueues.set(key, operation);
-    void operation.finally(() => {
-        if (saveQueues.get(key) === operation) saveQueues.delete(key);
-    }).catch(() => undefined);
+    void operation
+        .finally(() => {
+            if (saveQueues.get(key) === operation) saveQueues.delete(key);
+        })
+        .catch(() => undefined);
     return operation;
 }
 

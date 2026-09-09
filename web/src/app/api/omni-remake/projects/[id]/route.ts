@@ -19,7 +19,7 @@ export async function GET(request: Request, context: Context) {
 export async function PATCH(request: Request, context: Context) {
     const user = await getCurrentUser(request);
     if (!user) return omniResponse(null, "请先登录", 401);
-    const body = await readJsonBodyResult<Record<string, unknown>>(request, 512 * 1024);
+    const body = await readJsonBodyResult<Record<string, unknown>>(request, 4 * 1024 * 1024);
     if (!body.ok) return omniResponse(null, body.message, body.status);
     try {
         return omniResponse(await saveOmniProjectForUser(user.id, (await context.params).id, Number(body.data?.revision), body.data, { origin: resolveInternalOrigin(new URL(request.url).origin), credential: requestRuntimeCredential(request, user.id) }));

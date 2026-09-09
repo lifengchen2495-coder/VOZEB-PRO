@@ -1158,6 +1158,27 @@ function DramaAgentAssets({ assets, project, episode }: { assets: CreativeAsset[
 type VisualAssetKind = "characters" | "scenes" | "props" | "clues";
 
 const DRAMA_AGENT_STAGE_GUIDES: Record<DramaProjectStage, { label: string; prompts: Array<{ label: string; prompt: string }> }> = {
+    story: {
+        label: "故事设定协作",
+        prompts: [
+            { label: "梳理核心冲突", prompt: "根据当前故事设定，检查受众、人物目标、核心冲突和世界规则，给出可直接用于修订的建议。" },
+            { label: "检查改编边界", prompt: "检查当前采用的改编策略和锁定事实，区分已有依据与待确认设定。" },
+        ],
+    },
+    characters: {
+        label: "人物小传协作",
+        prompts: [
+            { label: "检查人物动机", prompt: "检查已采用人物小传的动机、弱点、关系和成长弧线，指出与故事冲突脱节之处。" },
+            { label: "完善可见特征", prompt: "根据人物性格提出能表演、能画出来的行为建议，保持稳定外貌与声音。" },
+        ],
+    },
+    beats: {
+        label: "分集节奏协作",
+        prompts: [
+            { label: "检查节拍", prompt: "检查当前集已采用节拍的因果、情绪递进、反转与结尾钩子，按目标时长提出调整建议。" },
+            { label: "检查集间承接", prompt: "检查本集开场、伏笔回收和下集预告是否连贯，避免无铺垫反转。" },
+        ],
+    },
     script: {
         label: "剧本协作",
         prompts: [
@@ -1221,6 +1242,10 @@ function agentAssetSnapshot(asset: DramaNamedAsset) {
 function dramaSnapshot(project: DramaProject, episode: DramaEpisode, stage: DramaProjectStage, selectedShotId?: string, projectReferences: DramaAgentMentionItem[] = []) {
     return {
         currentStage: stage,
+        adoptedWriting: project.workflow?.artifacts
+            .filter((item) => item.status === "adopted" && (!item.episodeId || item.episodeId === episode.id))
+            .filter((item, _index, items) => !items.some((other) => other.stage === item.stage && other.episodeId === item.episodeId && other.version > item.version))
+            .map(({ stage, version, data }) => ({ stage, version, data })),
         project: {
             id: project.id,
             title: project.title,

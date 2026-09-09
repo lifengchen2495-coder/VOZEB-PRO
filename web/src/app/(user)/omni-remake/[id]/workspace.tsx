@@ -5,15 +5,16 @@ import { ArrowLeft, Check, Copy, Download, Loader2, Save, Upload, X } from "luci
 import { Button, Input, Textarea } from "../controls";
 import { ModelPicker } from "@/components/model-picker";
 import { ReferenceImageGenerator, type GeneratedReferenceImage } from "@/components/reference-image-generator";
-import { VideoPromptInstructionEditor } from "@/components/video-prompt-instruction-editor";
-import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { modelOptionName, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { uploadImage } from "@/services/image-storage";
-import { OMNI_SOURCE_URL, omniAnalysisPrompt, omniDefaultPlanningPrompt, type OmniProject, type OmniSegment } from "@/lib/omni-remake-contract";
+import { OMNI_SOURCE_URL, type OmniProject, type OmniSegment, type OmniWorkflowStage } from "@/lib/omni-remake-contract";
+import { OMNI_WORKFLOW_STAGES, omniStageLabel, omniStageOutput, omniStagePrerequisite } from "@/lib/omni-remake-workflow";
 import { omniEditable, omniProjectPath, omniRequest, uploadOmniVideo } from "../omni-api";
 import { ManualVideoUpload } from "./manual-video-upload";
+import { OmniWorkflowStageCard } from "./workflow-stage-card";
 
 const statuses = { idle: "待回传结果", queued: "旧任务待确认", running: "旧任务处理中", completed: "已完成", error: "失败" };
-const operationNames = { analysis: "分析原片", prepare: "准备计划与片段", merge: "合并成片" };
+const operationName = (kind: OmniWorkflowStage | "prepare" | "merge") => kind === "prepare" ? "按分析 JSON 切片" : kind === "merge" ? "合并成片" : omniStageLabel(kind);
 
 export function OmniWorkspace({ id }: { id: string }) {
     const [project, setProject] = useState<OmniProject>();
@@ -22,13 +23,20 @@ export function OmniWorkspace({ id }: { id: string }) {
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
-    const [analysisJson, setAnalysisJson] = useState("");
     const [planJson, setPlanJson] = useState("");
     const [editedSegments, setEditedSegments] = useState<string[]>([]);
+    const [editedStages, setEditedStages] = useState<OmniWorkflowStage[]>([]);
     const lock = useRef(false);
     const current = useRef<OmniProject | undefined>(undefined);
     const config = useEffectiveConfig();
+    const textModels = selectableModelsByCapability(config, "text");
+    const defaultTextModel = textModels.find((model) => /doubao/i.test(modelOptionName(model)) && /seed.*2|2[.-]0/i.test(modelOptionName(model))) || (textModels.includes(config.textModel) ? config.textModel : textModels[0]) || "";
+    const effectiveModels = { analysis: draft?.modelSelection.analysis || defaultTextModel, prompt: draft?.modelSelection.prompt || defaultTextModel, video: draft?.modelSelection.video || "" };
+    const hasUnsavedOutput = Boolean(editedStages.length || editedSegments.length || planJson.trim());
     const openConfig = useConfigStore((state) => state.openConfigDialog);
+    const stageEdited = useCallback((stage: OmniWorkflowStage, edited: boolean) => {
+        setEditedStages((stages) => stages.includes(stage) === edited ? stages : edited ? [...stages, stage] : stages.filter((value) => value !== stage));
+    }, []);
     const segmentEdited = useCallback((segmentId: string, edited: boolean) => {
         setEditedSegments((ids) => ids.includes(segmentId) === edited ? ids : edited ? [...ids, segmentId] : ids.filter((value) => value !== segmentId));
     }, []);
@@ -76,17 +84,17 @@ export function OmniWorkspace({ id }: { id: string }) {
     }, [running, load, accept]);
     useEffect(() => {
         const warn = (event: BeforeUnloadEvent) => {
-            if (dirty || busy || editedSegments.length) {
+            if (dirty || busy || hasUnsavedOutput) {
                 event.preventDefault();
                 event.returnValue = "";
             }
         };
         window.addEventListener("beforeunload", warn);
         return () => window.removeEventListener("beforeunload", warn);
-    }, [dirty, busy, editedSegments]);
+    }, [dirty, busy, hasUnsavedOutput]);
     const change = (patch: Partial<ReturnType<typeof omniEditable>>) => {
-        if (editedSegments.length) {
-            setError("请先保存各段修改过的提示词，再修改项目素材或设置");
+        if (hasUnsavedOutput) {
+            setError("请先采用或放弃修改中的阶段结果和片段提示词，再修改项目素材或设置");
             return;
         }
         setDraft((value) => (value ? { ...value, ...patch } : value));
@@ -106,30 +114,64 @@ export function OmniWorkspace({ id }: { id: string }) {
             setBusy("");
         }
     };
-    const save = async () => {
+    const save = async (patch: Partial<ReturnType<typeof omniEditable>> = {}) => {
         if (!current.current || !draft) throw new Error("项目尚未加载");
-        if (!dirty) return current.current;
-        const next = await omniRequest<OmniProject>(omniProjectPath(id), { ...draft, revision: current.current.revision }, "PATCH");
+        if (!dirty && !Object.keys(patch).length) return current.current;
+        const next = await omniRequest<OmniProject>(omniProjectPath(id), { ...draft, ...patch, revision: current.current.revision }, "PATCH");
         accept(next);
         return next;
     };
-    const operation = (kind: "prepare" | "merge", promptMode: "template" | "ai" = "template") =>
-        action(operationNames[kind], async () => {
-            if (editedSegments.length) throw new Error("请先保存各段修改过的提示词");
-            const saved = await save();
-            accept(await omniRequest<OmniProject>(`${omniProjectPath(id)}/operations`, { revision: saved.revision, kind, ...(kind === "prepare" ? { promptMode } : {}) }));
+    const operation = (kind: OmniWorkflowStage | "prepare" | "merge") =>
+        action(operationName(kind), async () => {
+            if (hasUnsavedOutput) throw new Error("请先采用或放弃修改中的阶段结果和片段提示词");
+            const isWorkflowStage = kind !== "prepare" && kind !== "merge";
+            const saved = await save(isWorkflowStage ? { modelSelection: effectiveModels } : {});
+            if (isWorkflowStage) {
+                const missing = omniStagePrerequisite(saved, kind);
+                if (missing) throw new Error(missing);
+                if (!(kind === "analysis" ? saved.modelSelection.analysis : saved.modelSelection.prompt)) throw new Error("请先选择本阶段使用的模型");
+            }
+            accept(await omniRequest<OmniProject>(`${omniProjectPath(id)}/operations`, { revision: saved.revision, kind }));
         });
-    const importJson = (kind: "analysisJson" | "planJson") =>
-        action(kind === "analysisJson" ? "导入原片分析" : "导入片段提示词", async () => {
-            if (editedSegments.length) throw new Error("请先保存各段修改过的提示词");
+    const uploadSource = (file: File) =>
+        action("上传并保存参考视频", async () => {
+            if (hasUnsavedOutput) throw new Error("请先采用或放弃修改中的阶段结果和片段提示词，再上传参考视频");
             if (!current.current || !draft) throw new Error("项目尚未加载");
-            accept(await omniRequest<OmniProject>(omniProjectPath(id), { ...draft, revision: current.current.revision, [kind]: kind === "analysisJson" ? analysisJson : planJson }, "PATCH"));
-            if (kind === "analysisJson") setAnalysisJson("");
-            else setPlanJson("");
-            setNotice(kind === "analysisJson" ? "分析已导入，可以准备视频片段与提示词。" : "提示词计划已导入。");
+            const sourceVideo = await uploadOmniVideo(id, file);
+            setBusy("保存参考视频");
+            const saved = await save({ sourceVideo, modelSelection: effectiveModels });
+            if (!saved.modelSelection.analysis || !textModels.includes(saved.modelSelection.analysis)) {
+                setNotice("参考视频已上传并保存。请先配置并选择视频分析模型，再到第 1 步点击“分析视频，生成 JSON”。");
+                return;
+            }
+            const missing = omniStagePrerequisite(saved, "analysis");
+            if (missing) throw new Error(missing);
+            setBusy("自动分析视频，生成 JSON");
+            setNotice("参考视频已保存。自动分析的结果会显示在第 1 步；若分析失败，可在该步骤重试。");
+            accept(await omniRequest<OmniProject>(`${omniProjectPath(id)}/operations`, { revision: saved.revision, kind: "analysis" }));
+        });
+    const adoptStageOutput = async (stage: OmniWorkflowStage, value: string) => {
+        let savedOutput: string | undefined;
+        await action(`采用${omniStageLabel(stage)}`, async () => {
+            if (dirty || editedSegments.length || planJson.trim() || editedStages.some((item) => item !== stage)) throw new Error("请先保存其他修改，再采用本阶段结果");
+            if (!current.current) throw new Error("项目尚未加载");
+            const next = await omniRequest<OmniProject>(omniProjectPath(id), { revision: current.current.revision, ...(stage === "analysis" ? { analysisJson: value } : { stageOutput: { stage, value } }) }, "PATCH");
+            savedOutput = omniStageOutput(next, stage);
+            accept(next);
+            setNotice(`已保存${omniStageLabel(stage)}，请按顺序继续后续步骤。`);
+        });
+        return savedOutput;
+    };
+    const importPlan = () =>
+        action("导入片段提示词", async () => {
+            if (editedSegments.length || editedStages.length) throw new Error("请先采用或放弃修改中的阶段结果和片段提示词");
+            if (!current.current || !draft) throw new Error("项目尚未加载");
+            accept(await omniRequest<OmniProject>(omniProjectPath(id), { ...draft, revision: current.current.revision, planJson }, "PATCH"));
+            setPlanJson("");
+            setNotice("提示词计划已导入。");
         });
     const acquireUpload = () => {
-        if (lock.current || dirty || !current.current || current.current.operation || current.current.segments.some((segment) => ["queued", "running"].includes(segment.video.status))) return false;
+        if (lock.current || dirty || hasUnsavedOutput || !current.current || current.current.operation || current.current.segments.some((segment) => ["queued", "running"].includes(segment.video.status))) return false;
         lock.current = true;
         setBusy("上传并保存手动结果");
         setError("");
@@ -164,9 +206,9 @@ export function OmniWorkspace({ id }: { id: string }) {
             accept(await load());
             if (!response.ok) throw new Error(result.error || "原任务处理失败");
         });
-    const download = (format: "zip" | "video") =>
+    const download = (format: "zip" | "video" | "analysis" | "workflow") =>
         action("准备下载", async () => {
-            if (dirty || editedSegments.length) throw new Error("请先保存项目及片段提示词的修改，再导出当前项目");
+            if (dirty || hasUnsavedOutput) throw new Error("请先保存项目、阶段结果及片段提示词的修改，再导出当前项目");
             if (current.current?.operation) throw new Error("请等待当前处理步骤完成");
             const response = await fetch(`/api/omni-remake${omniProjectPath(id)}/export?format=${format}`);
             if (!response.ok) {
@@ -176,7 +218,7 @@ export function OmniWorkspace({ id }: { id: string }) {
             const url = URL.createObjectURL(await response.blob());
             const anchor = document.createElement("a");
             anchor.href = url;
-            anchor.download = `omni-remake.${format === "video" ? "mp4" : "zip"}`;
+            anchor.download = format === "analysis" ? "视频分析.json" : format === "workflow" ? "Omni流程结果.json" : `omni-remake.${format === "video" ? "mp4" : "zip"}`;
             anchor.click();
             setTimeout(() => URL.revokeObjectURL(url), 30000);
         });
@@ -193,12 +235,11 @@ export function OmniWorkspace({ id }: { id: string }) {
     const maximumReferenceImages = 10;
     const activeReferenceCount = draft.references.product.length + (draft.replaceCharacter ? draft.references.character.length : 0) + (draft.replaceBackground ? draft.references.background.length : 0);
     const referenceLimitMessage = "每类最多 5 张，项目合计最多 10 张，请先移除不需要的参考图";
-    const promptInstructionsDirty = (draft.videoPromptInstructions || "").trim() !== (project.videoPromptInstructions || "").trim();
     const complete = project.segments.length > 0 && project.segments.every((segment) => segment.video.status === "completed");
     const prepared = project.segments.length > 0 && project.segments.every((segment) => segment.sourceClip && segment.prompt.trim() && segment.promptZh.trim());
     const applyGeneratedReference = async (role: "character" | "background", asset: GeneratedReferenceImage) => {
         if (disabled || lock.current || !current.current) throw new Error("请等待当前操作完成后再使用参考图");
-        if (editedSegments.length) throw new Error("请先保存各段修改过的提示词，再使用参考图");
+        if (hasUnsavedOutput) throw new Error("请先采用或放弃修改中的阶段结果和片段提示词，再使用参考图");
         if (draft.references[role].some((reference) => reference.url === asset.url)) return;
         if (draft.references[role].length >= 5 || Object.values(draft.references).flat().length >= 10 || activeReferenceCount >= maximumReferenceImages) throw new Error(referenceLimitMessage);
         lock.current = true;
@@ -224,15 +265,15 @@ export function OmniWorkspace({ id }: { id: string }) {
                     </Link>
                     <div>
                         <h1 className="font-semibold">{project.title}</h1>
-                        <p className="text-xs text-muted-foreground">Omni 全品类复刻 · 手动生成 · {dirty ? "有未保存修改" : "已保存"}</p>
+                        <p className="text-xs text-muted-foreground">Omni 全品类复刻 · {dirty || hasUnsavedOutput ? "有未保存修改" : "已保存"}</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" disabled={Boolean(busy) || dirty || Boolean(editedSegments.length)} onClick={() => void action("检查状态", async () => accept(await load()))}>
+                    <Button variant="outline" disabled={Boolean(busy) || dirty || hasUnsavedOutput} onClick={() => void action("检查状态", async () => accept(await load()))}>
                         检查状态
                     </Button>
                     <Button
-                        disabled={disabled || !dirty}
+                        disabled={disabled || !dirty || hasUnsavedOutput}
                         onClick={() =>
                             void action("保存项目", async () => {
                                 await save();
@@ -246,15 +287,16 @@ export function OmniWorkspace({ id }: { id: string }) {
             </header>
             <div className="mx-auto max-w-7xl space-y-6 p-5 md:p-8">
                 <div className="space-y-2 rounded-xl border bg-muted/30 p-5">
-                    <p className="font-medium">准备素材 → 在外部手动生成 → 回传结果并合并</p>
-                    <p className="text-sm leading-6 text-muted-foreground">下载每段参考视频、中英文提示词和目标参考图，在你使用的谷歌工具中逐段生成，再将结果上传到对应片段。准备素材无需配置视频模型。</p>
+                    <p className="font-medium">上传素材 → 分析视频并生成 JSON → 生成分类提示词 → 外部生成并回传</p>
+                    <p className="text-sm leading-6 text-muted-foreground">参考视频上传保存后，系统会调用所选模型自动生成分析 JSON。后续 6 个阶段逐步点击生成，每步保留完整指令和结果；同类片段共用一组提示词，最后下载素材包并回传外部生成的视频。</p>
                 </div>
                 {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
                 {editedSegments.length > 0 && <p role="status" className="text-sm text-muted-foreground">{editedSegments.join("、")} 的提示词尚未保存，请在对应片段保存后再准备或下载素材。</p>}
+                {editedStages.length > 0 && <p role="status" className="text-sm text-muted-foreground">{editedStages.map(omniStageLabel).join("、")} 的结果尚未采用，请先保存或放弃修改，再继续生成和下载。</p>}
                 {(busy || project.operation) && (
                     <p role="status" className="flex items-center gap-2 rounded-lg bg-muted p-3 text-sm">
                         <Loader2 className="size-4 animate-spin" />
-                        {busy || operationNames[project.operation!.kind]}…
+                        {busy || operationName(project.operation!.kind)}…
                     </p>
                 )}
                 {(error || project.error) && (
@@ -264,10 +306,10 @@ export function OmniWorkspace({ id }: { id: string }) {
                 )}
                 <section className="grid gap-6 lg:grid-cols-[1fr_1.3fr]">
                     <div className="space-y-4 rounded-xl border p-5">
-                        <h2 className="text-lg font-medium">1. 参考视频</h2>
+                        <h2 className="text-lg font-medium">参考视频</h2>
                         <Input aria-label="项目名称" value={draft.title} maxLength={120} disabled={disabled} onChange={(event) => change({ title: event.target.value })} />
                         {draft.sourceVideo && <video controls preload="metadata" src={draft.sourceVideo.url} className="max-h-72 w-full rounded-lg bg-black" />}
-                        <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed p-5 text-sm ${disabled ? "pointer-events-none opacity-50" : ""}`}>
+                        <label className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed p-5 text-sm ${disabled || hasUnsavedOutput ? "pointer-events-none opacity-50" : ""}`}>
                             <Upload className="size-4" />
                             {draft.sourceVideo ? "更换参考视频" : "上传参考视频"}
                             <input
@@ -275,11 +317,11 @@ export function OmniWorkspace({ id }: { id: string }) {
                                 className="sr-only"
                                 type="file"
                                 accept="video/*"
-                                disabled={disabled}
+                                disabled={disabled || hasUnsavedOutput}
                                 onChange={(event) => {
                                     const file = event.target.files?.[0];
                                     event.target.value = "";
-                                    if (file) void action("上传视频", async () => change({ sourceVideo: await uploadOmniVideo(id, file) }));
+                                    if (file) void uploadSource(file);
                                 }}
                             />
                         </label>
@@ -287,24 +329,16 @@ export function OmniWorkspace({ id }: { id: string }) {
                         <label className="block space-y-2 text-sm">
                             <span>原声音频</span>
                             <select aria-label="原声音频" className="w-full rounded-md border bg-background p-2" value={draft.audioMode} disabled={disabled} onChange={(event) => change({ audioMode: event.target.value as OmniProject["audioMode"] })}>
-                                <option value="auto">按口型判断：单人清晰说话保留，其余移除</option>
+                                <option value="auto">按分析 JSON 中的音频策略执行</option>
                                 <option value="silent">全部静音</option>
                                 <option value="source">全部保留原声</option>
                             </select>
                         </label>
-                        <div className="space-y-3 border-t pt-4">
-                            <p className="text-sm leading-6 text-muted-foreground">下载原片，将原片和分析指令一起交给外部工具；把返回的分析结果粘贴到下方，系统会校验切片时间及口播策略。</p>
-                            <div className="flex flex-wrap gap-2">
-                                {draft.sourceVideo && <a href={draft.sourceVideo.url} download className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download className="size-4" />下载原片</a>}
-                                <Button variant="outline" disabled={Boolean(busy) || !draft.sourceVideo} onClick={() => void action("复制分析指令", async () => { await navigator.clipboard.writeText(omniAnalysisPrompt(draft.sourceVideo?.duration)); setNotice("已复制分析指令，请连同原片交给外部工具。"); })}><Copy className="mr-2 size-4" />复制分析指令</Button>
-                            </div>
-                            <Textarea aria-label="原片分析结果" placeholder="粘贴外部工具返回的分析 JSON，包含 summary 和 segments" value={analysisJson} disabled={disabled} onChange={(event) => setAnalysisJson(event.target.value)} className="min-h-32" />
-                            <Button disabled={disabled || !draft.sourceVideo || !analysisJson.trim()} onClick={() => void importJson("analysisJson")}>导入原片分析</Button>
-                            {project.segments.length > 0 && <p className="text-xs text-muted-foreground">重新导入会替换当前切片计划及结果，请先下载需要保留的内容。</p>}
-                        </div>
+                        <p className="text-sm leading-6 text-muted-foreground">上传或更换参考视频会自动保存并开始分析，输出切片时间、人物和音频判断。分析失败或修改生成指令后，可在下方第 1 步重试；该步骤也支持粘贴已有分析 JSON。</p>
+                        {draft.sourceVideo && <a href={draft.sourceVideo.url} download className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><Download className="size-4" />下载原片</a>}
                     </div>
                     <div className="space-y-4 rounded-xl border p-5">
-                        <h2 className="text-lg font-medium">2. 目标素材</h2>
+                        <h2 className="text-lg font-medium">目标素材</h2>
                         <p className="text-xs text-muted-foreground">每类最多 5 张，项目合计最多 10 张，当前使用 {activeReferenceCount} 张。素材包会按产品、人物、背景分类。</p>
                         <div className="flex flex-wrap gap-4 text-sm">
                             <label className="flex items-center gap-2">
@@ -387,56 +421,74 @@ export function OmniWorkspace({ id }: { id: string }) {
                         <Textarea aria-label="产品人物补充" placeholder="产品特征、人物或背景补充要求" value={draft.instructions} disabled={disabled} onChange={(event) => change({ instructions: event.target.value })} />
                     </div>
                 </section>
-                <section className="space-y-4 rounded-xl border p-5">
-                    <h2 className="text-lg font-medium">3. 准备手动生成素材</h2>
-                    <p className="text-sm leading-6 text-muted-foreground">根据已导入的分析切分原片，按各段策略保留或移除音频，并整理参考图与中英文提示词。默认使用本地模板；已有完整提示词会保留，可逐段调整。</p>
-                    <div className="flex flex-wrap items-center gap-3">
-                        <Button disabled={disabled || !project.segments.length} onClick={() => void operation("prepare")}>
-                            准备视频片段与提示词
-                        </Button>
-                        <Button variant="outline" disabled={Boolean(busy || project.operation) || dirty || !prepared} onClick={() => void download("zip")}><Download className="mr-2 size-4" />下载手动生成素材包</Button>
-                        <a href={OMNI_SOURCE_URL} target="_blank" rel="noreferrer" className="text-xs text-muted-foreground underline">
-                            来源表格
-                        </a>
+                <section aria-label="生成模型" className="space-y-4 rounded-xl border p-5">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="text-lg font-medium">生成模型</h2>
+                        <a href={OMNI_SOURCE_URL} target="_blank" rel="noreferrer" className="text-xs text-muted-foreground underline">查看飞书原流程</a>
                     </div>
-                    {project.analysisSummary && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{project.analysisSummary}</p>}
+                    <p className="text-sm leading-6 text-muted-foreground">视频分析目前支持 Doubao Seed 2.0 Pro 的整段视频理解渠道。后续阶段可选择其他已配置模型，其中素材分析需要支持图片输入；实际调用使用下方选项。</p>
+                    <fieldset disabled={disabled || hasUnsavedOutput} className="grid min-w-0 gap-4 sm:grid-cols-2 disabled:opacity-50">
+                        <div className="min-w-0 space-y-2">
+                            <p className="text-sm">视频分析模型 · 第 1 步</p>
+                            <ModelPicker config={config} capability="text" value={effectiveModels.analysis} onChange={(value) => change({ modelSelection: { ...draft.modelSelection, analysis: value } })} onMissingConfig={() => openConfig(true)} placeholder="选择支持视频理解的模型" fullWidth />
+                        </div>
+                        <div className="min-w-0 space-y-2">
+                            <p className="text-sm">文字与素材分析模型 · 第 2—7 步</p>
+                            <ModelPicker config={config} capability="text" value={effectiveModels.prompt} onChange={(value) => change({ modelSelection: { ...draft.modelSelection, prompt: value } })} onMissingConfig={() => openConfig(true)} placeholder="选择支持文字与图片的模型" fullWidth />
+                        </div>
+                    </fieldset>
+                </section>
+                <section aria-label="Omni 七阶段流程" className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="text-lg font-medium">按飞书流程生成</h2>
+                        <Button variant="outline" disabled={disabled || dirty || hasUnsavedOutput || !project.analysisRaw} onClick={() => void download("workflow")}><Download className="mr-2 size-4" />下载全部阶段结果</Button>
+                    </div>
+                    <p className="text-sm leading-6 text-muted-foreground">每步生成完成后自动保存。修改上游指令或结果会清除依赖它的后续结果，人物图、场景图和产品图会保留；请从被清空的步骤继续生成。</p>
+                    {OMNI_WORKFLOW_STAGES.map((stage, index) => (
+                        <OmniWorkflowStageCard
+                            key={`${stage}:${omniStageOutput(project, stage)}`}
+                            stage={stage}
+                            step={index + 1}
+                            project={project}
+                            draftProject={{ ...project, ...draft, modelSelection: effectiveModels }}
+                            disabled={disabled}
+                            settingsDirty={dirty}
+                            otherOutputDirty={Boolean(editedSegments.length || planJson.trim() || editedStages.some((value) => value !== stage))}
+                            anyOutputDirty={hasUnsavedOutput}
+                            onEditedChange={stageEdited}
+                            onInstructionsChange={(value) => change({ stageInstructions: { ...draft.stageInstructions, [stage]: value }, ...(stage === "promptSummary" ? { videoPromptInstructions: "" } : {}) })}
+                            onSaveInstructions={() => action("保存生成指令", async () => { await save(); })}
+                            onGenerate={() => operation(stage)}
+                            onSaveOutput={(value) => adoptStageOutput(stage, value)}
+                            onDownloadAnalysis={() => download("analysis")}
+                        />
+                    ))}
+                </section>
+                <section className="space-y-4 rounded-xl border p-5">
+                    <h2 className="text-lg font-medium">按分析 JSON 切片</h2>
+                    <p className="text-sm leading-6 text-muted-foreground">第 1 步完成后即可按 JSON 的时间段和音频策略切分原片，无需等待提示词生成。完成第 7 步后，下载各段视频、参考图与中英文提示词。</p>
+                    <div className="flex flex-wrap gap-3">
+                        <Button disabled={disabled || hasUnsavedOutput || !project.segments.length} onClick={() => void operation("prepare")}>切分参考视频</Button>
+                        <Button variant="outline" disabled={disabled || dirty || hasUnsavedOutput || !prepared} onClick={() => void download("zip")}><Download className="mr-2 size-4" />下载手动生成素材包</Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">已切片 {project.segments.filter((segment) => segment.sourceClip).length} / {project.segments.length} 段 · 已有双语提示词 {project.segments.filter((segment) => segment.prompt.trim() && segment.promptZh.trim()).length} / {project.segments.length} 段</p>
+                    {!!project.promptGroups?.length && <div className="space-y-2 rounded-lg bg-muted/50 p-4 text-sm">
+                        <p className="font-medium">提示词分类与片段对应</p>
+                        {project.promptGroups.map((group) => <p key={group.id} className="break-words">{group.label || group.id}：{group.segmentIds.join("、")} · {group.audioStrategy === "preserve_audio" ? "保留原声" : "移除音频"}</p>)}
+                    </div>}
                     <details className="space-y-3 rounded-lg border p-4">
                         <summary className="cursor-pointer text-sm">可选：导入已有提示词计划</summary>
                         <p className="text-xs leading-6 text-muted-foreground">接受包含 materialAnalysis、plan、segments 的 JSON；每段填写 id、prompt、promptZh，顺序与下方片段一致。导入后会清除旧生成结果。</p>
-                        <Textarea aria-label="片段提示词计划" value={planJson} disabled={disabled} onChange={(event) => setPlanJson(event.target.value)} placeholder="粘贴完整提示词计划 JSON" className="min-h-32" />
-                        <Button variant="outline" disabled={disabled || !project.segments.length || !planJson.trim()} onClick={() => void importJson("planJson")}>导入提示词计划</Button>
+                        <Textarea aria-label="片段提示词计划" value={planJson} disabled={disabled || Boolean(editedStages.length || editedSegments.length)} onChange={(event) => setPlanJson(event.target.value)} placeholder="粘贴完整提示词计划 JSON" className="min-h-32" />
+                        <div className="flex flex-wrap gap-2">
+                            <Button variant="outline" disabled={disabled || Boolean(editedStages.length || editedSegments.length) || !project.segments.length || !planJson.trim()} onClick={() => void importPlan()}>导入提示词计划</Button>
+                            {planJson && <Button variant="ghost" disabled={disabled} onClick={() => setPlanJson("")}>放弃导入</Button>}
+                        </div>
                     </details>
-                    <details className="space-y-3 rounded-lg border p-4">
-                        <summary className="cursor-pointer text-sm">可选：使用 AI 优化提示词</summary>
-                        <p className="text-xs leading-6 text-muted-foreground">仅在你选择文本模型并点击生成时调用该模型，按该模型计费。重新生成会替换现有提示词和结果。</p>
-                        <ModelPicker config={config} capability="text" value={draft.modelSelection.prompt} onChange={(value) => change({ modelSelection: { ...draft.modelSelection, prompt: value } })} onMissingConfig={() => openConfig(true)} placeholder="选择用于优化提示词的视觉文本模型" className={disabled ? "pointer-events-none opacity-50" : ""} />
-                        <VideoPromptInstructionEditor
-                            defaultText={omniDefaultPlanningPrompt({ ...project, ...draft })}
-                            value={draft.videoPromptInstructions}
-                            disabled={disabled}
-                            dirty={promptInstructionsDirty}
-                            hasOutput={Boolean(project.plan)}
-                            onChange={(value) => change({ videoPromptInstructions: value })}
-                            onSave={() => action("保存生成指令", async () => { await save(); })}
-                            onGenerate={() => operation("prepare", "ai")}
-                            generationDisabled={!project.segments.length || !draft.modelSelection.prompt}
-                            label="AI 提示词优化指令"
-                        />
-                    </details>
-                    {project.plan && (
-                        <details>
-                            <summary className="cursor-pointer text-sm">查看素材分析与总计划</summary>
-                            <div className="mt-3 whitespace-pre-wrap rounded-lg bg-muted p-4 text-sm">
-                                {project.materialAnalysis}
-                                {"\n\n"}
-                                {project.plan}
-                            </div>
-                        </details>
-                    )}
                 </section>
                 <section className="space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                        <h2 className="text-lg font-medium">4. 逐段手动生成与回传</h2>
+                        <h2 className="text-lg font-medium">逐段手动生成与回传</h2>
                     </div>
                     {!project.segments.length && <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">分析完成后在这里查看片段。</p>}
                     <div className="grid gap-4 xl:grid-cols-2">
@@ -445,7 +497,7 @@ export function OmniWorkspace({ id }: { id: string }) {
                                 key={`${segment.id}:${segment.prompt}:${segment.promptZh}`}
                                 project={project}
                                 segment={segment}
-                                disabled={disabled || dirty}
+                                disabled={disabled || dirty || Boolean(editedStages.length || planJson.trim()) || Boolean(segment.promptGroupId && project.segments.some((item) => item.id !== segment.id && item.promptGroupId === segment.promptGroupId && editedSegments.includes(item.id)))}
                                 canManageTask={!busy}
                                 onTaskAction={(kind) => void taskAction(segment, kind)}
                                 acquireUpload={acquireUpload}
@@ -463,17 +515,17 @@ export function OmniWorkspace({ id }: { id: string }) {
                     </div>
                 </section>
                 <section className="space-y-4 rounded-xl border p-5">
-                    <h2 className="text-lg font-medium">5. 成片与导出</h2>
+                    <h2 className="text-lg font-medium">成片与导出</h2>
                     <div className="flex flex-wrap gap-3">
-                        <Button disabled={disabled || !complete || dirty} onClick={() => void operation("merge")}>
+                        <Button disabled={disabled || !complete || dirty || hasUnsavedOutput} onClick={() => void operation("merge")}>
                             合并全部片段
                         </Button>
-                        <Button variant="outline" disabled={Boolean(busy || project.operation) || dirty || !prepared} onClick={() => void download("zip")}>
+                        <Button variant="outline" disabled={Boolean(busy || project.operation) || dirty || hasUnsavedOutput || !prepared} onClick={() => void download("zip")}>
                             <Download className="mr-2 size-4" />
                             下载手动生成素材包
                         </Button>
                         {project.mergedVideo && (
-                            <Button variant="outline" disabled={Boolean(busy || project.operation) || dirty} onClick={() => void download("video")}>
+                            <Button variant="outline" disabled={Boolean(busy || project.operation) || dirty || hasUnsavedOutput} onClick={() => void download("video")}>
                                 <Download className="mr-2 size-4" />
                                 下载成片
                             </Button>
@@ -554,13 +606,14 @@ function SegmentCard({
                 )}
             </div>
             <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" disabled={!segment.prompt || edited} onClick={() => void copy(segment.prompt, "英文提示词")}><Copy className="mr-2 size-3" />复制英文提示词</Button>
-                <Button size="sm" variant="outline" disabled={!segment.promptZh || edited} onClick={() => void copy(segment.promptZh, "中文提示词")}><Copy className="mr-2 size-3" />复制中文提示词</Button>
+                <Button size="sm" variant="outline" disabled={disabled || !segment.prompt || edited} onClick={() => void copy(segment.prompt, "英文提示词")}><Copy className="mr-2 size-3" />复制英文提示词</Button>
+                <Button size="sm" variant="outline" disabled={disabled || !segment.promptZh || edited} onClick={() => void copy(segment.promptZh, "中文提示词")}><Copy className="mr-2 size-3" />复制中文提示词</Button>
             </div>
             {notice && <p role="status" className="text-xs text-muted-foreground">{notice}</p>}
                 <details>
                     <summary className="cursor-pointer text-sm">查看和编辑中英文提示词{edited ? "（未保存）" : ""}</summary>
                     <div className="mt-3 space-y-3">
+                        {segment.promptGroupId && <p className="text-xs leading-6 text-muted-foreground">本段属于提示词组 {segment.promptGroupId}。保存将同步更新同组片段，并使这些片段已回传的视频结果失效。</p>}
                         <Textarea aria-label={`${segment.id} 中文提示词`} value={promptZh} disabled={disabled} onChange={(event) => setPromptZh(event.target.value)} className="min-h-32" />
                         <Textarea aria-label={`${segment.id} 英文提示词`} value={prompt} disabled={disabled} onChange={(event) => setPrompt(event.target.value)} className="min-h-40" />
                         <Button size="sm" variant="outline" disabled={disabled || !edited || !prompt.trim() || !promptZh.trim()} onClick={() => void onSave(prompt, promptZh)}>

@@ -26,7 +26,12 @@ export default defineConfig({
     },
     projects: [
         { name: "setup", testMatch: /installation\.spec\.ts/ },
-        { name: "chromium", testMatch: [/(?:all-pages|canvas(?:-tools)?|commerce(?:-image|-video)?|core|creative-video-result|home|responsive(?:-workspaces)?)\.spec\.ts/], dependencies: ["setup"], use: { ...devices["Desktop Chrome"], storageState } },
+        {
+            name: "chromium",
+            testMatch: [/(?:all-pages|canvas(?:-tools)?|commerce(?:-image|-video)?|core|creative-video-result|drama-workflow|home|responsive(?:-workspaces)?)\.spec\.ts/],
+            dependencies: ["setup"],
+            use: { ...devices["Desktop Chrome"], storageState },
+        },
         {
             name: "mobile-390",
             testMatch: /(?:all-pages|commerce(?:-image|-video)?|creative-video-result|home|responsive(?:-workspaces)?)\.spec\.ts/,

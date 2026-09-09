@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
-import { omniAnalysisPrompt } from "@/lib/omni-remake-contract";
 import { runFfmpeg } from "./ffmpeg";
 import { fetchInternalApi } from "./internal-origin";
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "./logical-model-router";
@@ -21,8 +20,8 @@ const DOUBAO_VIDEO_UNDERSTANDING_MODEL = "doubao-seed-2-0-pro-260215";
 const DOUBAO_FILE_WAIT_TIMEOUT_MS = 5 * 60_000;
 const DOUBAO_FILE_POLL_INTERVAL_MS = 1500;
 
-export async function understandOmniVideo(input: { sourcePath: string; workDirectory: string; duration: number; userId: string; operationId: string; origin: string; credential: string }) {
-    const models = await resolveAnalysisModels();
+export async function understandOmniVideo(input: { sourcePath: string; workDirectory: string; duration: number; userId: string; operationId: string; origin: string; credential: string; model: string; messages: { system: string; user: string } }) {
+    const models = await resolveOmniAnalysisModels(input.model);
     const bytes = await transcodeAnalysisVideo({ sourcePath: input.sourcePath, workDirectory: input.workDirectory, probe: { durationMs: input.duration * 1000 } });
     let lastError: unknown;
     for (const candidate of models.videoCandidates) {
@@ -37,6 +36,7 @@ export async function understandOmniVideo(input: { sourcePath: string; workDirec
                 credential: input.credential,
                 task: { id: input.operationId, userId: input.userId },
                 idempotencyKey,
+                messages: input.messages,
             });
             return { raw: call.arguments, headers: call.headers, model: candidate.logicalModelId };
         } catch (error) {
@@ -46,9 +46,6 @@ export async function understandOmniVideo(input: { sourcePath: string; workDirec
     throw new Error(toSafeGenerationErrorMessage(lastError, "Omni 视频理解失败"));
 }
 
-function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
-    return omniAnalysisPrompt(durationMs / 1000);
-}
 async function refundInvalidResponse(userId: string, model: string, headers: Headers) {
     const billing = readSystemAiBilling(headers);
     if (hasSystemAiCharge(billing)) await refundUserPoints(userId, model, billing.pointsCost, "text", 1, undefined, billing.pointsRecordId);
@@ -57,23 +54,23 @@ function records(value: unknown): Record<string, unknown>[] {
     return Array.isArray(value) ? value.filter((row) => row && typeof row === "object" && !Array.isArray(row)) : [];
 }
 
-async function resolveAnalysisModels() {
+export async function resolveOmniAnalysisModels(requestedModel = "") {
     const settings = await getAuthSettings();
     const doubaoLogicalIds = settings.logicalModels
         .filter((logical) => logical.enabled && logical.capability === "text" && logical.bindings.some((binding) => binding.enabled && normalizedModelId(binding.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL))
         .map((logical) => logical.id);
-    const requestedVideoModels = Array.from(new Set([settings.defaultModels.textModel, ...doubaoLogicalIds, DOUBAO_VIDEO_UNDERSTANDING_MODEL].filter(Boolean)));
+    const selected = requestedModel.trim();
+    const requestedVideoModels = selected ? [selected] : Array.from(new Set([settings.defaultModels.textModel, ...doubaoLogicalIds, DOUBAO_VIDEO_UNDERSTANDING_MODEL].filter(Boolean)));
     const videoCandidates = rankTextPlanningCandidates(
         uniqueCandidates(requestedVideoModels.flatMap((model) => resolveLogicalModelCandidates(settings, "text", model))).filter(
             (candidate) => normalizedModelId(candidate.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL && Boolean(candidate.channel.apiKey.trim()) && Boolean(doubaoFilesBaseUrl(candidate)),
         ),
     );
-    if (!videoCandidates.length) throw new Error(`后台尚未配置可用的 ${DOUBAO_VIDEO_UNDERSTANDING_MODEL} 文本模型渠道`);
-
-    const copyModel = settings.defaultModels.textModel || videoCandidates[0].logicalModelId;
-    const copyCandidates = rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", copyModel));
-    if (!copyCandidates.length) throw new Error("后台尚未配置可用的 Prompt 文本模型");
-    return { copyModel, copyCandidates, videoModel: videoCandidates[0].logicalModelId, videoCandidates };
+    if (!videoCandidates.length) {
+        if (selected) throw new Error(`所选分析模型未配置可用的整段视频理解渠道；当前支持 ${DOUBAO_VIDEO_UNDERSTANDING_MODEL} 的 HTTPS Files / Responses 接口，请修改分析模型或对应渠道配置`);
+        throw new Error(`后台尚未配置可用的 ${DOUBAO_VIDEO_UNDERSTANDING_MODEL} 视频理解渠道`);
+    }
+    return { videoModel: videoCandidates[0].logicalModelId, videoCandidates };
 }
 
 async function transcodeAnalysisVideo(input: { sourcePath: string; workDirectory: string; probe: ProbeResult }): Promise<Buffer> {
@@ -138,20 +135,20 @@ async function runAnalysisTranscode(sourcePath: string, outputPath: string, vide
     );
 }
 
-async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string }) {
+async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string; messages: { system: string; user: string } }) {
     if (normalizedModelId(input.candidate.upstreamModel) !== DOUBAO_VIDEO_UNDERSTANDING_MODEL) throw new Error("当前候选模型不是 Doubao Seed 2.0 Pro");
     const fileId = await uploadDoubaoVideo(input.candidate, input.bytes);
     try {
         await waitForDoubaoFile(input.candidate, fileId);
-        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs);
         const body = {
             model: input.candidate.upstreamModel,
             input: [
+                { role: "system", content: input.messages.system },
                 {
                     role: "user",
                     content: [
                         { type: "input_video", file_id: fileId },
-                        { type: "input_text", text: prompt },
+                        { type: "input_text", text: `${input.messages.user}\n\n实际视频时长：${input.durationMs / 1000} 秒。所有片段必须覆盖完整视频，时间范围不得超过实际时长。` },
                     ],
                 },
             ],
@@ -174,11 +171,14 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
             cache: "no-store",
             signal: AbortSignal.timeout(Math.max(10 * 60_000, resolveModelRequestTimeoutMs(input.candidate, "text"))),
         });
-        if (!response.ok) throw new Error(toSafeGenerationErrorMessage(await response.text().catch(() => ""), `Doubao 视频理解调用失败（HTTP ${response.status}）`));
-        const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-        if (!payload) {
+        if (!response.ok) {
             await refundInvalidResponse(input.task.userId, input.model, response.headers);
-            throw new Error("Doubao 视频理解返回了无效 JSON");
+            throw new Error(toSafeGenerationErrorMessage(await response.text().catch(() => ""), `Doubao 视频理解调用失败（HTTP ${response.status}）`));
+        }
+        const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+        if (!payload || payload.status === "incomplete" || payload.status === "failed") {
+            await refundInvalidResponse(input.task.userId, input.model, response.headers);
+            throw new Error("Doubao 视频理解返回了无效或未完成的 JSON，请重试");
         }
         const argumentsText = strictJsonObjectText(readDoubaoOutputText(payload));
         if (!argumentsText) {
@@ -187,7 +187,7 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
         }
         return { arguments: argumentsText, headers: response.headers };
     } finally {
-        await deleteDoubaoFile(input.candidate, fileId).catch(() => undefined);
+        await deleteDoubaoFile(input.candidate, fileId).catch((error) => console.error("Omni 视频理解临时文件清理失败", toSafeGenerationErrorMessage(error, "文件删除失败")));
     }
 }
 

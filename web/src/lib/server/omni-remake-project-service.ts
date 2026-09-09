@@ -9,6 +9,7 @@ import { getStoredGenerationTaskByRequest, getStoredGenerationTaskRecord, withGe
 import type { VideoTask } from "./video-task-store";
 import type { VideoGenerationReference } from "@/lib/video-reference-contract";
 import { strictJsonObjectText } from "./structured-model-output";
+import { editOmniSegmentPrompts, invalidateOmniFromStage, isOmniWorkflowStage, OMNI_WORKFLOW_STAGES, omniStageInstruction, omniStageOutput, omniStagePrerequisite, parseOmniEditedStage } from "@/lib/omni-remake-workflow";
 
 type OmniMediaContext = { origin: string; credential: string };
 
@@ -78,6 +79,14 @@ export async function saveOmniProjectForUser(userId: string, id: string, revisio
         if (typeof value.videoPromptInstructions !== "string" || value.videoPromptInstructions.length > 50_000) throw new OmniProjectError("视频提示词生成指令必须是文字且不能超过 50000 字");
         patch.videoPromptInstructions = value.videoPromptInstructions.trim();
     }
+    if (value.stageInstructions !== undefined) {
+        if (!value.stageInstructions || typeof value.stageInstructions !== "object" || Array.isArray(value.stageInstructions)) throw new OmniProjectError("阶段指令格式不正确");
+        patch.stageInstructions = {};
+        for (const [stage, instruction] of Object.entries(value.stageInstructions)) {
+            if (!isOmniWorkflowStage(stage) || typeof instruction !== "string" || instruction.length > 50_000) throw new OmniProjectError("阶段指令无效或超过 50000 字");
+            patch.stageInstructions[stage] = instruction.trim();
+        }
+    }
     if (value.sourceVideo !== undefined) patch.sourceVideo = value.sourceVideo === null ? undefined : await ownedOmniMedia(userId, value.sourceVideo, "video");
     if (value.references !== undefined) {
         const refs = object(value.references);
@@ -121,7 +130,7 @@ export async function saveOmniProjectForUser(userId: string, id: string, revisio
             const rows = supplied.segments as Array<Record<string, unknown>>;
             const hasPrompts = rows.some((row) => row.prompt !== undefined || row.promptZh !== undefined);
             const plan = hasPrompts ? parseOmniPlan(JSON.stringify({ ...supplied, materialAnalysis: supplied.materialAnalysis || "人工导入的素材分析", plan: supplied.plan || "按人工分析逐段准备素材与提示词", segments: rows.map((row, index) => ({ ...row, id: analysis.segments[index].id })) }), analysis.segments) : undefined;
-            importedAnalysis = { sourceVideo: measured, analysisRaw, analysisSummary: analysis.summary, segments: plan?.segments || analysis.segments, materialAnalysis: plan?.materialAnalysis || "", plan: plan?.plan || "", mergedVideo: undefined };
+            importedAnalysis = { ...invalidateOmniFromStage(before, "analysis"), sourceVideo: measured, analysisRaw, analysisSummary: analysis.summary, segments: plan?.segments || analysis.segments, materialAnalysis: plan?.materialAnalysis || "", plan: plan?.plan || "", mergedVideo: undefined };
         } catch (error) {
             throw new OmniProjectError(error instanceof Error ? error.message : "分析 JSON 不正确");
         }
@@ -130,19 +139,40 @@ export async function saveOmniProjectForUser(userId: string, id: string, revisio
         assertRevision(current, revision);
         assertIdle(current);
         const next = { ...current, ...patch };
+        if (patch.stageInstructions) next.stageInstructions = { ...current.stageInstructions, ...patch.stageInstructions };
         if (next.sourceVideo && next.sourceVideo.url === current.sourceVideo?.url) next.sourceVideo = { ...current.sourceVideo, ...next.sourceVideo };
         if (omniInputVersion(next) !== omniInputVersion(current)) {
-            const onlyPromptInstructionsChanged = omniInputVersion({ ...next, videoPromptInstructions: current.videoPromptInstructions }) === omniInputVersion(current);
             const sourceChanged = next.sourceVideo?.url !== current.sourceVideo?.url;
-            if (sourceChanged || next.audioMode !== current.audioMode) Object.assign(next, { segments: [], analysisRaw: "", analysisSummary: "" });
-            else next.segments = next.segments.map((segment) => ({ ...segment, prompt: "", promptZh: "", sourceClip: onlyPromptInstructionsChanged ? segment.sourceClip : undefined, video: { status: "idle", attemptNo: segment.video.attemptNo } }));
-            Object.assign(next, { materialAnalysis: "", plan: "", mergedVideo: undefined });
+            let earliest = sourceChanged ? 0 : OMNI_WORKFLOW_STAGES.length;
+            for (const [index, stage] of OMNI_WORKFLOW_STAGES.entries()) if (omniStageInstruction(next, stage) !== omniStageInstruction(current, stage)) earliest = Math.min(earliest, index);
+            const materialChanged = (["productName", "instructions", "productStrategy", "replaceCharacter", "replaceBackground"] as const).some((key) => next[key] !== current[key]) || (["product", "character", "background"] as const).some((role) => JSON.stringify(next.references[role].map((media) => media.url)) !== JSON.stringify(current.references[role].map((media) => media.url)));
+            if (materialChanged) earliest = Math.min(earliest, OMNI_WORKFLOW_STAGES.indexOf("materialAnalysis"));
+            const audioChanged = next.audioMode !== current.audioMode;
+            if (audioChanged) earliest = Math.min(earliest, OMNI_WORKFLOW_STAGES.indexOf("analysisText"));
+            if (earliest < OMNI_WORKFLOW_STAGES.length) Object.assign(next, invalidateOmniFromStage(next, OMNI_WORKFLOW_STAGES[earliest]));
+            if (audioChanged && next.analysisRaw && next.sourceVideo?.duration) {
+                const analysis = parseOmniAnalysis(next.analysisRaw, next.sourceVideo.duration, next.audioMode);
+                next.segments = analysis.segments;
+            }
         }
         if (importedAnalysis) Object.assign(next, importedAnalysis);
+        if (value.stageOutput !== undefined) {
+            const output = object(value.stageOutput);
+            if (!isOmniWorkflowStage(output.stage) || typeof output.value !== "string") throw new OmniProjectError("阶段结果格式不正确");
+            const missing = omniStagePrerequisite(next, output.stage);
+            if (missing) throw new OmniProjectError(missing, 409);
+            try {
+                const edited = parseOmniEditedStage(next, output.stage, output.value);
+                if (output.value.trim() !== omniStageOutput(next, output.stage)) Object.assign(next, invalidateOmniFromStage(next, output.stage), edited);
+            } catch (error) {
+                throw new OmniProjectError(error instanceof Error ? error.message : "阶段结果无效");
+            }
+        }
         if (value.planJson !== undefined) {
             if (!next.segments.length) throw new OmniProjectError("请先导入视频分析，再导入提示词计划");
             try {
-                Object.assign(next, parseOmniPlan(importedJson(value.planJson), next.segments), { mergedVideo: undefined });
+                const plan = parseOmniPlan(importedJson(value.planJson), next.segments);
+                Object.assign(next, invalidateOmniFromStage(next, "materialAnalysis"), plan, { mergedVideo: undefined });
             } catch (error) {
                 throw new OmniProjectError(error instanceof Error ? error.message : "提示词计划 JSON 不正确");
             }
@@ -159,8 +189,7 @@ export async function updateOmniPrompt(userId: string, id: string, revision: num
         if (!current.segments.some((segment) => segment.id === segmentId)) throw new OmniProjectError("片段不存在", 404);
         return changed({
             ...current,
-            mergedVideo: undefined,
-            segments: current.segments.map((segment) => (segment.id === segmentId ? { ...segment, prompt: prompt.trim(), promptZh: promptZh.trim(), video: { status: "idle", attemptNo: segment.video.attemptNo } } : segment)),
+            ...editOmniSegmentPrompts(current, segmentId, prompt.trim(), promptZh.trim()),
         });
     });
 }
@@ -175,7 +204,8 @@ export async function startOmniOperation(userId: string, id: string, revision: n
 export async function finishOmniOperation(userId: string, id: string, operationId: string, patch: Partial<OmniProject>) {
     return mutateOmni(userId, id, (current) => {
         if (current.operation?.id !== operationId) throw new OmniProjectError("项目素材已经变化，未保存旧任务结果", 409);
-        return changed({ ...current, ...patch, id: current.id, createdAt: current.createdAt, operation: undefined });
+        const invalidated = !patch.error && isOmniWorkflowStage(current.operation.kind) ? invalidateOmniFromStage(current, current.operation.kind) : {};
+        return changed({ ...current, ...invalidated, ...patch, id: current.id, createdAt: current.createdAt, operation: undefined });
     });
 }
 

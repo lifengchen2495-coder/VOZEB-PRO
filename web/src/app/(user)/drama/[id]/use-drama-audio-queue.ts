@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 import type { AiConfig } from "@/stores/use-config-store";
 import { createAudioGenerationTask, readAudioGenerationTask } from "@/services/api/audio";
 import { GENERATION_TASK_NEEDS_REVIEW_MESSAGE } from "@/services/api/generation-task-state";
+import { clearDramaMediaTaskRef, dramaMediaTaskIsCurrent } from "@/lib/drama-media-task-guard";
+import { useDramaStore } from "../stores/use-drama-store";
 import type { DramaEpisode, DramaProject, DramaShot } from "../types";
 
 type UpdateShot = (projectId: string, episodeId: string, shotId: string, patch: Partial<DramaShot>) => void;
@@ -15,15 +17,24 @@ export function useDramaAudioQueue(project: DramaProject, episode: DramaEpisode,
         if (!running) return;
         const controller = new AbortController();
         let timer: number | undefined;
+        const isCurrent = () => {
+            const latest = useDramaStore
+                .getState()
+                .projects.find((item) => item.id === project.id)
+                ?.episodes.find((item) => item.id === episode.id)
+                ?.shots.find((item) => item.id === running.id);
+            return !controller.signal.aborted && dramaMediaTaskIsCurrent(latest, running, "audio", "running");
+        };
         const poll = async () => {
             try {
                 const task = await readAudioGenerationTask(running.audioTaskId!, "system", controller.signal);
+                if (!isCurrent()) return;
                 if (task.needsReview) return updateShot(project.id, episode.id, running.id, { audioStatus: "error", audioError: task.reviewReason || GENERATION_TASK_NEEDS_REVIEW_MESSAGE });
                 if (task.status === "success") return updateShot(project.id, episode.id, running.id, { audioStatus: "success", audioUrl: task.result?.url, audioError: undefined });
                 if (task.status === "error" || task.status === "cancelled") return updateShot(project.id, episode.id, running.id, { audioStatus: task.status, audioError: task.error });
                 timer = window.setTimeout(poll, 2000);
             } catch (error) {
-                if (!controller.signal.aborted) updateShot(project.id, episode.id, running.id, { audioStatus: "error", audioError: error instanceof Error ? error.message : "音频任务查询失败" });
+                if (isCurrent()) updateShot(project.id, episode.id, running.id, { audioStatus: "error", audioError: error instanceof Error ? error.message : "音频任务查询失败" });
             }
         };
         void poll();
@@ -34,15 +45,25 @@ export function useDramaAudioQueue(project: DramaProject, episode: DramaEpisode,
     }, [episode.id, episode.shots, project.id, updateShot]);
 
     useEffect(() => {
-        if (episode.shots.some((shot) => shot.audioStatus === "running")) return;
-        const next = episode.shots.find((shot) => shot.audioStatus === "queued");
-        if (!next || startingRef.current === next.id) return;
+        if (episode.contentStale || episode.shots.some((shot) => shot.audioStatus === "running")) return;
+        const next = episode.shots.find((shot) => !shot.productionStale && shot.audioStatus === "queued");
+        if (!next) return;
+        const key = `${episode.id}:${next.id}:${next.audioAttempt}`;
+        if (startingRef.current === key) return;
         if (!config.audioModel.trim()) return updateShot(project.id, episode.id, next.id, { audioStatus: "error", audioError: "后台尚未配置可用的默认音频模型" });
         const prompt = (next.subtitle || next.dialogue).trim();
         if (!prompt) return updateShot(project.id, episode.id, next.id, { audioStatus: "error", audioError: "请先填写对白或字幕" });
         const voice = resolveDramaShotVoiceProfile(project, next);
-        startingRef.current = next.id;
+        startingRef.current = key;
         const attemptNo = next.audioAttempt || 1;
+        const isCurrentAttempt = () => {
+            const latest = useDramaStore
+                .getState()
+                .projects.find((item) => item.id === project.id)
+                ?.episodes.find((item) => item.id === episode.id)
+                ?.shots.find((item) => item.id === next.id);
+            return dramaMediaTaskIsCurrent(latest, next, "audio", "creating");
+        };
         void createAudioGenerationTask(
             {
                 ...config,
@@ -65,12 +86,14 @@ export function useDramaAudioQueue(project: DramaProject, episode: DramaEpisode,
                 clientRequestId: `drama-audio:${project.id}:${episode.id}:${next.id}:attempt-${attemptNo}`,
             },
         )
-            .then((task) => updateShot(project.id, episode.id, next.id, { audioStatus: "running", audioTaskId: task.id, audioError: undefined }))
-            .catch((error) => updateShot(project.id, episode.id, next.id, { audioStatus: "error", audioError: error instanceof Error ? error.message : "音频任务创建失败" }))
-            .finally(() => {
-                startingRef.current = "";
-            });
-    }, [config, episode.id, episode.shots, project.id, updateShot]);
+            .then((task) => {
+                if (isCurrentAttempt()) updateShot(project.id, episode.id, next.id, { audioStatus: "running", audioTaskId: task.id, audioError: undefined });
+            })
+            .catch((error) => {
+                if (isCurrentAttempt()) updateShot(project.id, episode.id, next.id, { audioStatus: "error", audioError: error instanceof Error ? error.message : "音频任务创建失败" });
+            })
+            .finally(() => clearDramaMediaTaskRef(startingRef, key));
+    }, [config, episode.contentStale, episode.id, episode.shots, project, updateShot]);
 }
 
 export function resolveDramaShotVoiceProfile(project: DramaProject, shot: DramaShot) {

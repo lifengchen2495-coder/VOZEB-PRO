@@ -16,7 +16,8 @@ export function bangbangError(error: unknown) {
 
 export function bangbangWriteGuard(request: Request) {
     if (request.headers.get("sec-fetch-site") === "cross-site") return bangbangResponse(null, "跨站请求已被拦截", 403);
-    const expected = resolvePublicRequestOrigin(request);
+    // 同源校验使用当前访问地址，不能由生成公开链接的站点配置覆盖。
+    const expected = resolvePublicRequestOrigin(request, "");
     for (const header of ["origin", "referer"]) {
         const value = request.headers.get(header);
         if (!value) continue;

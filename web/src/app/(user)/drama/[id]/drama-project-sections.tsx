@@ -6,6 +6,8 @@ import { ArrowLeft, Bot, Boxes, ChevronDown, ChevronRight, History, PanelLeft, P
 import { useRouter } from "next/navigation";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
+import { dramaWorkflowArtifactIsStale, latestDramaWorkflowArtifact } from "@/lib/drama-workflow";
+import type { DramaWorkflowArtifact, DramaWorkflowStage } from "@/lib/drama-workflow-contract";
 import type { DramaEpisode, DramaProject } from "../types";
 import { useDramaStore } from "../stores/use-drama-store";
 import { DramaScriptWorkspace } from "./drama-script-workspace";
@@ -13,13 +15,15 @@ import { DramaEpisodeSettings } from "./drama-episode-settings";
 import { DramaStageHeader } from "./drama-editor-elements";
 import { DramaSourceImport } from "./drama-source-import";
 
-export type DramaProjectStage = "script" | "review" | "storyboard" | "generate";
+export type DramaProjectStage = DramaWorkflowStage | "review" | "storyboard" | "generate";
 
 const stages = [
-    { value: "script", label: "剧本", shortLabel: "剧本" },
-    { value: "review", label: "内容审核", shortLabel: "审核" },
-    { value: "storyboard", label: "分镜", shortLabel: "分镜" },
-    { value: "generate", label: "镜头生成", shortLabel: "生成" },
+    { value: "story", label: "故事设定", shortLabel: "故事" },
+    { value: "characters", label: "人物小传", shortLabel: "人物" },
+    { value: "beats", label: "分集节奏", shortLabel: "节奏" },
+    { value: "script", label: "剧本创作", shortLabel: "剧本" },
+    { value: "storyboard", label: "分镜设计", shortLabel: "分镜" },
+    { value: "generate", label: "视频制作", shortLabel: "制作" },
 ] as const;
 
 function usePermanentDramaPanels() {
@@ -244,7 +248,7 @@ export function DramaWorkspaceHeader({
                 data-drama-stage-navigation
             >
                 {stages.map((item, index) => {
-                    const active = !assetsOpen && stage === item.value;
+                    const active = !assetsOpen && (stage === item.value || (stage === "review" && item.value === "storyboard"));
                     return (
                         <div key={item.value} className="flex shrink-0 items-center">
                             <button
@@ -303,17 +307,34 @@ export function DramaWorkspaceHeader({
     );
 }
 
-function dramaStageStatuses(_project: DramaProject, episode: DramaEpisode): Record<DramaProjectStage, string> {
+function dramaStageStatuses(project: DramaProject, episode: DramaEpisode): Record<DramaProjectStage, string> {
     const tasks = episode.shots.flatMap((shot) => [shot.storyboardStatus, shot.generationStatus, shot.audioStatus]);
+    const workflowStatus = (stage: DramaWorkflowStage) => {
+        const scope = stage === "beats" || stage === "script" ? episode.id : undefined;
+        const adopted = latestDramaWorkflowArtifact(project, stage, scope, "adopted") as DramaWorkflowArtifact | undefined;
+        return adopted ? (dramaWorkflowArtifactIsStale(project, adopted) ? "待复核" : "已采用") : latestDramaWorkflowArtifact(project, stage, scope) ? "有候选" : "待创作";
+    };
     return {
-        script: !episode.script.trim() ? "待编辑" : episode.shots.length ? "已整理" : "编辑中",
+        story: workflowStatus("story"),
+        characters: workflowStatus("characters"),
+        beats: workflowStatus("beats"),
+        script: episode.contentStale ? "待解析" : !episode.script.trim() ? workflowStatus("script") : episode.shots.length ? "已整理" : "编辑中",
         review: episode.reviewStatus === "approved" || episode.reviewStatus === "visual_ready" ? "已确认" : episode.reviewStatus === "content_review" ? "待确认" : "待审核",
-        storyboard: episode.shots.length && episode.shots.every((shot) => shot.storyboardStatus === "success") ? "已完成" : "待生成",
-        generate: tasks.some((status) => status === "queued" || status === "running") ? "生成中" : episode.shots.length && episode.shots.every((shot) => shot.generationStatus === "success") ? "已完成" : "待生成",
+        storyboard: episode.contentStale ? "待复核" : episode.reviewStatus === "visual_ready" ? "已设计" : episode.shots.length ? "待审核" : "待提取",
+        generate:
+            episode.contentStale || episode.shots.some((shot) => shot.productionStale) || episode.renderStale
+                ? "待更新"
+                : tasks.some((status) => status === "queued" || status === "running")
+                  ? "生成中"
+                  : episode.shots.length && episode.shots.every((shot) => shot.generationStatus === "success")
+                    ? "已完成"
+                    : "待生成",
     };
 }
 
 function episodeProgressLabel(episode: DramaEpisode) {
+    if (episode.contentStale) return "内容已更新 · 待重新解析";
+    if (episode.shots.some((shot) => shot.productionStale) || episode.renderStale) return "已有成果 · 待更新";
     if (episode.renderTask?.status === "success") return "整集已完成";
     if (episode.renderTask && ["pending", "running"].includes(episode.renderTask.status)) return "正在合成";
     if (episode.shots.some((shot) => shot.generationStatus === "queued" || shot.generationStatus === "running")) return "镜头生成中";
@@ -346,7 +367,7 @@ export function DramaScriptPanel({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="shrink-0" data-drama-script-statusbar>
                 <DramaStageHeader
-                    step="01"
+                    step="04"
                     title="剧本编辑"
                     description="编辑或导入本集剧本，整理后进入内容审核。"
                     status={scriptText ? (episode.shots.length ? "已整理" : "待整理") : "待编辑"}
