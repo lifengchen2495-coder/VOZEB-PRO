@@ -42,12 +42,13 @@ export function createProtocolFixtureServer(options = {}) {
     const requests = [];
     let taskSequence = 0;
     const nextTaskId = (kind) => `fixture-${kind}-${++taskSequence}`;
+    const nextNumericTaskId = () => ++taskSequence;
     const server = createServer(async (request, response) => {
         try {
             const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
             const body = await readRequestBody(request);
-            requests.push({ method: request.method || "GET", path: url.pathname, headers: request.headers, contentType: request.headers["content-type"] || "", body });
-            await handleFixtureRequest({ request, response, url, body, tasks, requests, nextTaskId, options });
+            requests.push({ method: request.method || "GET", path: url.pathname, search: url.search, headers: request.headers, contentType: request.headers["content-type"] || "", body });
+            await handleFixtureRequest({ request, response, url, body, tasks, requests, nextTaskId, nextNumericTaskId, options });
         } catch (error) {
             sendJson(response, 500, { error: { message: error instanceof Error ? error.message : "fixture failed" } });
         }
@@ -55,7 +56,7 @@ export function createProtocolFixtureServer(options = {}) {
     return { server, requests, tasks };
 }
 
-async function handleFixtureRequest({ request, response, url, body, tasks, requests, nextTaskId, options }) {
+async function handleFixtureRequest({ request, response, url, body, tasks, requests, nextTaskId, nextNumericTaskId, options }) {
     const path = fixturePath(url.pathname);
     const responseDelayMs = Math.max(0, Number(options.responseDelayMs) || 0);
     if (request.method === "POST" && responseDelayMs) await delay(responseDelayMs);
@@ -67,6 +68,7 @@ async function handleFixtureRequest({ request, response, url, body, tasks, reque
                 .map((item) => ({
                     method: item.method,
                     path: item.path,
+                    search: item.search,
                     authorization: item.headers.authorization || "",
                     contentType: item.contentType,
                     bodyBytes: item.body.byteLength,
@@ -182,6 +184,33 @@ async function handleFixtureRequest({ request, response, url, body, tasks, reque
         return sendJson(response, 200, { data: { image_url: `${url.origin}/media/fixture.png` } });
     }
 
+    if (request.method === "POST" && path === "/media/generate") {
+        const payload = jsonBody(body);
+        if (!String(request.headers["content-type"] || "").toLowerCase().includes("application/json") || !payload.model || !payload.prompt || !payload.params || Array.isArray(payload.params) || typeof payload.params !== "object") {
+            return sendJson(response, 400, { code: 400, msg: "汇风请求需要 JSON model、prompt 和 params" });
+        }
+        const id = nextNumericTaskId();
+        tasks.set(String(id), { kind: "huifeng-video", status: "completed", model: payload.model });
+        return sendJson(response, 200, { code: 200, msg: "任务创建成功", data: { task_id: id, "任务ids": [id], "成功数量": 1 } });
+    }
+    if (request.method === "GET" && path === "/media/status") {
+        const id = url.searchParams.get("task_id") || "";
+        const task = tasks.get(id);
+        if (!/^\d+$/.test(id) || !task || task.kind !== "huifeng-video") return sendJson(response, 404, { code: 404, msg: "汇风任务不存在" });
+        const state = task.status === "completed" ? "success" : task.status;
+        const isFinal = state === "success" || state === "failed";
+        return sendJson(response, 200, {
+            task_id: Number(id),
+            state,
+            is_final: isFinal,
+            status: state === "success" ? "任务完成" : state === "failed" ? "任务失败" : "任务处理中",
+            progress: isFinal ? "100%" : "50%",
+            result_url: state === "success" ? `${url.origin}/media/fixture.mp4` : "",
+            result_type: "video",
+            error: state === "failed" ? "fixture Huifeng video failure" : "",
+            cost: 0,
+        });
+    }
     if (request.method === "POST" && (GLOBAL_AIOPC_VIDEO_PATHS.has(path) || ["/videos", "/contents/generations/tasks", "/seedance-special/videos"].includes(path))) {
         const model = requestedModel(body, request.headers["content-type"] || "");
         if (shouldFailRequest(request, model)) return sendJson(response, model.includes("-fail") ? 400 : 503, { error: { message: "fixture video failure" } });

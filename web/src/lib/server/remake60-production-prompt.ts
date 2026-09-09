@@ -1,3 +1,5 @@
+import { remakeEffectiveVideoPromptInstructions, normalizeRemakeVideoPromptInstructions } from "@/lib/remake60-video-prompt-instructions";
+
 import { REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake60-feishu-prompts";
 import { remakeGroupStoryboardScript } from "@/lib/remake60-image-prompt";
 
@@ -62,6 +64,7 @@ export type RemakeProductionVisualBoardContext = {
 
 export type RemakeProductionPromptInput = {
     title: string;
+    videoPromptInstructions?: Partial<Record<RemakeProductionGroupId, string>>;
     sourceCopy: string;
     storyboardScript: string;
     hasNarration: boolean;
@@ -92,7 +95,14 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
     return [
         {
             role: "system",
-            content: REMAKE_FEISHU_VIDEO_PROMPTS[groupId],
+            content: [
+                remakeEffectiveVideoPromptInstructions({ id: groupId, videoPromptInstructions: input.videoPromptInstructions?.[groupId] }),
+                ...(normalizeRemakeVideoPromptInstructions(input.videoPromptInstructions?.[groupId]) ? [
+                    "必要输出要求：输出完整的 15 秒视频提示词，包含 @十二宫格图 和“禁止画面出现字幕”。",
+                    `按顺序保留四个连续区间：${blocks.map((block) => `分镜${block.frameOrdinals[0]}-${block.frameOrdinals[2]}：`).join("、")}；不得跨组、漏帧或打乱顺序。`,
+                    input.hasNarration ? `每个区间逐字保留对应文案，并使用口播（情绪，${input.voice === "male" ? "旁白" : "人物"}，台词）格式。` : "当前选择无配音，禁止生成口播或 @音频文件 引用。",
+                ] : []),
+            ].join("\n\n"),
         },
         {
             role: "user",

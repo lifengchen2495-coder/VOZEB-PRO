@@ -2,7 +2,8 @@ import { nanoid } from "nanoid";
 import { create } from "zustand";
 
 import { createClientSessionEpoch, type ClientSessionStamp } from "@/lib/client-session-epoch";
-import type { CreateDramaProjectInput, DramaCharacter, DramaClue, DramaContentAnalysis, DramaEpisode, DramaProject, DramaProjectSummary, DramaProp, DramaScene, DramaShot, DramaVisualAnalysis } from "@/lib/drama-project-contract";
+import type { CreateDramaProjectInput, DramaCharacter, DramaClue, DramaContentAnalysis, DramaEpisode, DramaProject, DramaProjectSummary, DramaProp, DramaScene, DramaShot, DramaVisualAnalysis, DramaVideoPromptAnalysis } from "@/lib/drama-project-contract";
+import { applyDramaVideoPromptAnalysis, dramaEpisodeHasActiveMedia, dramaVideoPromptInput } from "@/lib/drama-video-prompt-instructions";
 import { summarizeDramaProject } from "@/lib/drama-project-summary";
 import type { DramaSourceEpisodeDraft } from "@/lib/drama-source-splitter";
 import { createDramaProject, createDramaProjectVersion, deleteDramaProject, getDramaProject, listDramaProjectSummaries, listDramaProjectVersions, restoreDramaProjectVersion, saveDramaProject } from "@/services/api/drama-projects";
@@ -24,7 +25,8 @@ type DramaStore = {
     loadProject: (id: string, force?: boolean) => Promise<DramaProject>;
     createProject: (input: CreateDramaProjectInput) => Promise<string>;
     deleteProject: (id: string) => Promise<void>;
-    updateProject: (id: string, patch: Partial<Pick<DramaProject, "title" | "summary" | "style" | "ratio" | "status" | "creativeConversationId" | "defaultVideoMode">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<DramaProject, "title" | "summary" | "style" | "ratio" | "status" | "creativeConversationId" | "defaultVideoMode" | "videoPromptInstructions">>) => void;
+    flushProjectSave: (id: string) => Promise<DramaProject>;
     addCharacter: (projectId: string, input: Omit<DramaCharacter, "id">) => void;
     addScene: (projectId: string, input: Omit<DramaScene, "id">) => void;
     addProp: (projectId: string, input: Omit<DramaProp, "id">) => void;
@@ -46,6 +48,7 @@ type DramaStore = {
     queueShots: (projectId: string, episodeId: string, shotIds: string[]) => void;
     applyContentAnalysis: (projectId: string, episodeId: string, analysis: DramaContentAnalysis) => void;
     applyVisualAnalysis: (projectId: string, episodeId: string, analysis: DramaVisualAnalysis) => void;
+    applyVideoPromptAnalysis: (projectId: string, episodeId: string, analysis: DramaVideoPromptAnalysis, expectedInput: string) => void;
     replaceProject: (project: DramaProject) => void;
     createVersion: (project: DramaProject, reason: string) => Promise<void>;
     listVersions: (projectId: string) => Promise<import("@/lib/drama-project-contract").DramaProjectVersion[]>;
@@ -187,6 +190,20 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
         set((state) => ({ projects: state.projects.filter((project) => project.id !== id), summaries: state.summaries.filter((project) => project.id !== id), summaryTotal: Math.max(0, state.summaryTotal - 1) }));
     },
     updateProject: (id, patch) => mutateProject(id, (project) => ({ ...project, ...patch })),
+    flushProjectSave: async (id) => {
+        const session = requireSession();
+        const key = sessionEpoch.key(session, id);
+        if (suspendedSaves.has(key)) throw new Error("项目版本正在恢复，请完成后再保存");
+        clearProjectSave(session, id);
+        await saveQueues.get(key)?.catch(() => undefined);
+        assertCurrent(session);
+        if (suspendedSaves.has(key)) throw new Error("项目版本正在恢复，请完成后再保存");
+        const project = get().projects.find((item) => item.id === id);
+        if (!project) throw new Error("短剧项目不存在");
+        await persistProject(session, project);
+        assertCurrent(session);
+        return get().projects.find((item) => item.id === id)!;
+    },
     addCharacter: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, characters: [...project.characters, { ...input, id: `character-${nanoid()}` }] })),
     addScene: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, scenes: [...project.scenes, { ...input, id: `scene-${nanoid()}` }] })),
     addProp: (projectId, input) => mutateProject(projectId, (project) => ({ ...project, props: [...project.props, { ...input, id: `prop-${nanoid()}` }] })),
@@ -414,6 +431,13 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
                 ),
             };
         }),
+    applyVideoPromptAnalysis: (projectId, episodeId, analysis, expectedInput) =>
+        mutateProject(projectId, (project) => {
+            const episode = project.episodes.find((item) => item.id === episodeId);
+            if (!episode || JSON.stringify(dramaVideoPromptInput(project, episode)) !== expectedInput) throw new Error("生成期间镜头或项目内容已修改，请按最新内容重新生成");
+            if (dramaEpisodeHasActiveMedia(episode)) throw new Error("请等待当前图像、视频或配音任务完成后再重新生成提示词");
+            return { ...project, episodes: project.episodes.map((item) => item.id === episodeId ? applyDramaVideoPromptAnalysis(item, analysis) : item) };
+        }),
     replaceProject: (project) => set((state) => ({ projects: state.projects.map((item) => (item.id === project.id ? project : item)), summaries: upsertSummary(state.summaries, project) })),
     createVersion: async (project, reason) => {
         await createDramaProjectVersion(project, reason);
@@ -514,34 +538,39 @@ function queueSave(session: ClientSessionStamp, project: DramaProject) {
         setTimeout(() => {
             saveTimers.delete(key);
             if (!sessionEpoch.isCurrent(session)) return;
-            const previous = saveQueues.get(key) || Promise.resolve();
-            const operation = previous.then(async () => {
-                if (!sessionEpoch.isCurrent(session)) return;
-                try {
-                    const saved = await saveDramaProject(project);
-                    if (!sessionEpoch.isCurrent(session)) return;
-                    useDramaStore.setState((state) => ({
-                        projects: state.projects.map((item) => (item.id === saved.id && item.updatedAt === project.updatedAt ? saved : item)),
-                        summaries: upsertSummary(state.summaries, saved),
-                        syncError: undefined,
-                        saveStateByProject: state.projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt ? { ...state.saveStateByProject, [project.id]: { status: "saved", savedAt: saved.updatedAt } } : state.saveStateByProject,
-                    }));
-                } catch (error) {
-                    if (!sessionEpoch.isCurrent(session)) return;
-                    const latest = useDramaStore.getState().projects.find((item) => item.id === project.id);
-                    if (latest?.updatedAt === project.updatedAt)
-                        useDramaStore.setState((state) => ({
-                            syncError: error instanceof Error ? error.message : "短剧项目保存失败",
-                            saveStateByProject: { ...state.saveStateByProject, [project.id]: { status: "error", savedAt: state.saveStateByProject[project.id]?.savedAt } },
-                        }));
-                }
-            });
-            saveQueues.set(key, operation);
-            void operation.finally(() => {
-                if (saveQueues.get(key) === operation) saveQueues.delete(key);
-            });
+            void persistProject(session, project).catch(() => undefined);
         }, 250),
     );
+}
+
+function persistProject(session: ClientSessionStamp, project: DramaProject) {
+    const key = sessionEpoch.key(session, project.id);
+    const previous = saveQueues.get(key) || Promise.resolve();
+    const operation = previous.catch(() => undefined).then(async () => {
+        assertCurrent(session);
+        try {
+            const saved = await saveDramaProject(project);
+            assertCurrent(session);
+            useDramaStore.setState((state) => ({
+                projects: state.projects.map((item) => (item.id === saved.id && item.updatedAt === project.updatedAt ? saved : item)),
+                summaries: upsertSummary(state.summaries, saved),
+                syncError: undefined,
+                saveStateByProject: state.projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt ? { ...state.saveStateByProject, [project.id]: { status: "saved", savedAt: saved.updatedAt } } : state.saveStateByProject,
+            }));
+        } catch (error) {
+            if (sessionEpoch.isCurrent(session) && useDramaStore.getState().projects.find((item) => item.id === project.id)?.updatedAt === project.updatedAt)
+                useDramaStore.setState((state) => ({
+                    syncError: error instanceof Error ? error.message : "短剧项目保存失败",
+                    saveStateByProject: { ...state.saveStateByProject, [project.id]: { status: "error", savedAt: state.saveStateByProject[project.id]?.savedAt } },
+                }));
+            throw error;
+        }
+    });
+    saveQueues.set(key, operation);
+    void operation.finally(() => {
+        if (saveQueues.get(key) === operation) saveQueues.delete(key);
+    }).catch(() => undefined);
+    return operation;
 }
 
 function nextUpdatedAt(session: ClientSessionStamp, project: DramaProject) {

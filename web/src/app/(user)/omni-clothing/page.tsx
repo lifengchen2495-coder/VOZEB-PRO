@@ -55,7 +55,7 @@ export default function OmniClothingProjectsPage() {
                             服装视频复刻
                         </div>
                         <h1 className="mt-2 text-2xl font-semibold">换上新衣，保留原片动作</h1>
-                        <p className="mt-2 text-sm text-muted-foreground">原视频切片 · 4–5 张新服装参考图 · 逐片替换服装 · 合并成片</p>
+                        <p className="mt-2 text-sm text-muted-foreground">准备视频与服装图 · 下载生成包 · 到谷歌手动生成 · 回传合并</p>
                     </div>
                     <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setOpen(true)}>
                         新建服装复刻

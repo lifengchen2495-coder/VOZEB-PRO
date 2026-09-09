@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-08.2",
+  "version": "2026-09-08.3",
   "sourceDocument": "https://ov09gvv1wfr.feishu.cn/wiki/V1iFwBoYCic1T1ksCmac5Yvynpf",
   "archives": [
     {
@@ -219,7 +219,7 @@
     }
   ],
   "adaptations": [
-    "原版和本机适配版全文保留在 bangbang-runtime-prompt-sources.ts；运行时优先采用本机适配版。",
+    "原版和本机适配版全文保留在 bangbang-runtime-prompt-sources.ts；运行时默认采用本机适配版。视频提示词环节允许项目自定义 videoPromptInstructions 全文替换业务模板，结构封装、分镜顺序、时长与六段输出约束继续由平台提供；用户编辑不会覆盖原始来源模板。",
     "07_complete_script 和 10_storyboard_frames 的原版隐藏模板未提供；采用本机已补齐的可审计文本规则，并未声称恢复隐藏 Skill。",
     "08_char_requirement 在本机仍只有隐藏标记；人物清单要求由平台接入补充，明确列出身份、性别、年龄、稳定外观、逐人物四宫格模板与参考图绑定。",
     "运行时将示例角色、商品替换为独立示例变量；实际产出只允许使用项目上下文，不继承示例角色或商品事实。",

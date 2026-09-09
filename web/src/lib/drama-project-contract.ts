@@ -177,6 +177,7 @@ export type DramaProject = {
     props: DramaProp[];
     clues: DramaClue[];
     defaultVideoMode: DramaVideoMode;
+    videoPromptInstructions?: string;
     episodes: DramaEpisode[];
     sourceAssets?: DramaSourceAsset[];
     createdAt: string;
@@ -230,6 +231,8 @@ export type DramaVisualAnalysis = {
             }
     >;
 };
+
+export type DramaVideoPromptAnalysis = { shots: Array<{ shotId: string; videoPrompt: string }> };
 
 export type DramaProjectVersion = {
     id: string;

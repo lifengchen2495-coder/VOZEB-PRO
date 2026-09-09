@@ -62,7 +62,7 @@ export function cleanOmniWorkflowMediaReferences<T extends OmniProject | OmniClo
             error: "项目媒体已从素材库删除，请重新准备对应步骤",
             segments: invalidSegments
                 ? []
-                : project.segments.map((segment) => (removed(segment.videoUrl) ? { ...segment, videoStatus: "idle", videoUrl: undefined, videoTaskId: undefined, clientRequestId: undefined, attemptNo: segment.attemptNo + 1, error: undefined } : segment)),
+                : project.segments.map((segment) => (removed(segment.videoUrl) || removed(segment.importedVideo) ? { ...segment, videoStatus: "idle", videoUrl: undefined, importedVideo: undefined, videoTaskId: undefined, clientRequestId: undefined, attemptNo: segment.attemptNo + 1, error: undefined } : segment)),
         } as T,
     };
 }

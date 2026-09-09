@@ -1,4 +1,5 @@
 import { REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake-person-feishu-prompts";
+import { remakeVideoPromptSystemInstructions } from "@/lib/remake-person-video-prompt-instructions";
 
 export const REMAKE_PRODUCTION_GROUP_COUNT = 4;
 export const REMAKE_PRODUCTION_BLOCKS_PER_GROUP = 4;
@@ -82,7 +83,7 @@ export type RemakeProductionCopyReportInput = {
     stats: { paragraphCount: number; unchangedBlocks: number; completedBlocks: number; correctedBlocks: number; emptyBlocks: number };
 };
 
-export function remakeProductionMessages(input: RemakeProductionPromptInput, groupId: RemakeProductionGroupId) {
+export function remakeProductionMessages(input: RemakeProductionPromptInput, groupId: RemakeProductionGroupId, videoPromptInstructions?: string) {
     const groupOrdinal = REMAKE_PRODUCTION_GROUP_IDS.indexOf(groupId) + 1;
     const firstBlock = (groupOrdinal - 1) * REMAKE_PRODUCTION_BLOCKS_PER_GROUP + 1;
     const blocks = input.copyBlocks.filter((block) => block.ordinal >= firstBlock && block.ordinal < firstBlock + REMAKE_PRODUCTION_BLOCKS_PER_GROUP);
@@ -90,7 +91,7 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
     return [
         {
             role: "system",
-            content: REMAKE_FEISHU_VIDEO_PROMPTS[groupId],
+            content: remakeVideoPromptSystemInstructions(groupId, videoPromptInstructions, input.hasNarration, input.voice),
         },
         {
             role: "user",
@@ -130,7 +131,7 @@ export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProduct
         throw new Error(`分镜 ${groupId} 的视频提示词未包含对应的四个连续三帧区间`);
     }
     if (!/15\s*秒/u.test(value) || !value.includes("@十二宫格图") || !value.includes("禁止画面出现字幕")) {
-        throw new Error(`分镜 ${groupId} 的视频提示词缺少原模板中的时长、十二宫格或禁字幕要求`);
+        throw new Error(`分镜 ${groupId} 的视频提示词缺少必要的时长、十二宫格或禁字幕要求`);
     }
     const blocks = input.copyBlocks.filter((block) => block.frameOrdinals[0] >= firstFrame && block.frameOrdinals[2] <= firstFrame + 11);
     if (blocks.length !== 4) throw new Error(`分镜 ${groupId} 缺少文案预处理区间`);

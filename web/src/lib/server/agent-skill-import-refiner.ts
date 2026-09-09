@@ -148,7 +148,7 @@ function extractionMessages(skill: ImportedAgentSkill, siteTitle: string) {
         },
         {
             role: "user",
-            content: `请整理以下固定版本的公开 Skill。只提取它解决什么创作问题、何时使用、执行步骤和质量标准，不要复述技术接入方法；来源没有表达的内容不要自行补充。\n\n来源元数据：${JSON.stringify({ repository: skill.repository, path: skill.sourcePath, commit: skill.sourceCommit, name: skill.name, description: skill.description })}\n\n<untrusted_skill_document>\n${skill.instructions.slice(0, AGENT_SKILL_EXTRACTION_SOURCE_LENGTH)}\n</untrusted_skill_document>`,
+            content: `请整理以下固定版本的 Skill。只提取它解决什么创作问题、何时使用、执行步骤和质量标准，不要复述技术接入方法；来源没有表达的内容不要自行补充。\n\n来源元数据：${JSON.stringify({ repository: skill.repository, path: skill.sourcePath, commit: skill.sourceCommit, name: skill.name, description: skill.description })}\n\n<untrusted_skill_document>\n${skill.instructions.slice(0, AGENT_SKILL_EXTRACTION_SOURCE_LENGTH)}\n</untrusted_skill_document>`,
         },
     ];
 }

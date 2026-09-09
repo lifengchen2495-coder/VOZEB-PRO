@@ -85,6 +85,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
 
     const promptInput: RemakeProductionPromptInput = {
         title: project.title,
+        videoPromptInstructions: Object.fromEntries(project.groups.map((group) => [group.id, group.videoPromptInstructions || ""])),
         sourceCopy: project.sourceCopy,
         storyboardScript: project.storyboardScript,
         hasNarration,

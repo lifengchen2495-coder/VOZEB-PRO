@@ -1,7 +1,7 @@
 import { readJsonBody } from "@/lib/auth/request";
 import { resolveInternalOrigin } from "@/lib/server/internal-origin";
 import { requestRuntimeCredential } from "@/lib/server/maintenance-auth";
-import { mergeOmniClothingVideos, splitOmniClothingVideo } from "@/lib/server/omni-clothing-media-service";
+import { importOmniClothingVideoResult, mergeOmniClothingVideos, splitOmniClothingVideo } from "@/lib/server/omni-clothing-media-service";
 import {
     abandonOmniClothingSubmission,
     beginOmniClothingVideoAttempt,
@@ -44,6 +44,10 @@ export async function POST(request: Request, context: Context) {
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new OmniClothingError("操作参数必须是 JSON 对象");
         const id = (await context.params).id;
         const access = { origin: resolveInternalOrigin(new URL(request.url).origin), cookie: requestRuntimeCredential(request, userId) };
+        if (input.action === "import-result") {
+            const limit = await checkRateLimit(`omni-clothing-import:${userId}`, { maxRequests: 240, windowMs: 15 * 60_000 });
+            if (!limit.allowed) return Response.json({ code: 429, data: null, msg: "结果采用过于频繁，请稍后重试；已上传视频仍保留" }, { status: 429, headers: rateLimitHeaders(limit) });
+        }
         if (input.action === "split" || input.action === "merge") {
             const limit = await checkRateLimit(`omni-clothing-process:${userId}`, { maxRequests: 12, windowMs: 15 * 60_000 });
             if (!limit.allowed) return Response.json({ code: 429, data: null, msg: "视频处理过于频繁，请稍后重试" }, { status: 429, headers: rateLimitHeaders(limit) });
@@ -55,17 +59,19 @@ export async function POST(request: Request, context: Context) {
                   ? await buildOmniClothingPromptsForUser(userId, id, input.revision)
                   : input.action === "prompt"
                     ? await saveOmniClothingPromptForUser(userId, id, input)
-                    : input.action === "attempt"
-                      ? await beginOmniClothingVideoAttempt(userId, id, input)
-                      : input.action === "bind"
-                        ? await bindOmniClothingVideoTask(userId, id, String(input.segmentId || ""), String(input.taskId || ""))
-                        : input.action === "abandon-submission"
-                          ? await abandonOmniClothingSubmission(userId, id, String(input.segmentId || ""))
-                          : input.action === "submission-failed"
-                            ? await failOmniClothingSubmission(userId, id, input)
-                            : input.action === "merge"
-                              ? await mergeOmniClothingVideos(userId, id, input.revision, access)
-                              : undefined;
+                    : input.action === "import-result"
+                      ? await importOmniClothingVideoResult(userId, id, input, access)
+                      : input.action === "attempt"
+                        ? await beginOmniClothingVideoAttempt(userId, id, input)
+                        : input.action === "bind"
+                          ? await bindOmniClothingVideoTask(userId, id, String(input.segmentId || ""), String(input.taskId || ""))
+                          : input.action === "abandon-submission"
+                            ? await abandonOmniClothingSubmission(userId, id, String(input.segmentId || ""))
+                            : input.action === "submission-failed"
+                              ? await failOmniClothingSubmission(userId, id, input)
+                              : input.action === "merge"
+                                ? await mergeOmniClothingVideos(userId, id, input.revision, access)
+                                : undefined;
         if (!project) throw new OmniClothingError("不支持的服装复刻操作");
         return clothingResponse({ project });
     });

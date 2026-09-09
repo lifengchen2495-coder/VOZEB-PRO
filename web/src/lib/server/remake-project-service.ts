@@ -138,6 +138,14 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     if (Buffer.byteLength(JSON.stringify(value || {})) > MAX_PROJECT_BYTES) throw new RemakeProjectServiceError("复刻项目数据过大", 413);
     const current = await getRemakeProjectForUser(userId, id);
     const input = object(value);
+    if (Array.isArray(input.groups)) {
+        for (const item of input.groups) {
+            const group = object(item);
+            if (hasOwn(group, "videoPromptInstructions") && (typeof group.videoPromptInstructions !== "string" || group.videoPromptInstructions.length > 50_000)) {
+                throw new RemakeProjectServiceError("视频提示词生成指令必须为文本，且不能超过 50,000 字", 400);
+            }
+        }
+    }
     const requestedRevision = optionalRevision(input.revision);
     if (requestedRevision !== undefined && requestedRevision !== current.revision) throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
 
@@ -165,6 +173,13 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
           : hasOwn(input, "groups")
             ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, modelSelection })
             : current.groups;
+    // 指令属于项目设置；上游重置也保留，修改时仅清对应组的视频下游。
+    const instructionGroups = normalizeRemakeRangeGroups(input.groups, current.groups);
+    groups = groups.map((group, index) => {
+        const videoPromptInstructions = instructionGroups[index].videoPromptInstructions || "";
+        const changed = videoPromptInstructions !== (current.groups[index]?.videoPromptInstructions || "");
+        return { ...group, videoPromptInstructions, ...(changed ? { videoPrompt: "", videoGeneration: { status: "idle" as const } } : {}) };
+    });
     const copyBlocks = sourceChanged
         ? []
         : normalizeRemakeCopyBlocks(sourceCopyChanged ? undefined : input.copyBlocks, {
@@ -317,7 +332,7 @@ export async function completeRemakeProjectAnalysis(input: {
             ? normalizeRemakeCopyBlocks(input.copyBlocks, { frames, sourceCopy, strategy: normalized.copyStrategy, mappings: copy.mappings, requireComplete: true })
             : buildRemakeCopyBlocks({ frames, sourceCopy, strategy: normalized.copyStrategy, existing: normalized.copyBlocks, mappings: copy.mappings });
         if (copyBlocks.length !== REMAKE_COPY_BLOCK_COUNT) throw new RemakeProjectServiceError("视频分析必须返回完整的 16 个语义文案区间", 400);
-        const groups = mergeRemakeContactSheets(emptyRemakeRangeGroups(), input.contactSheets);
+        const groups = mergeRemakeContactSheets(emptyRemakeRangeGroups().map((group, index) => ({ ...group, videoPromptInstructions: normalized.groups[index]?.videoPromptInstructions || "" })), input.contactSheets);
         if (input.contactSheets && groups.some((group) => !group.sourceContactSheet)) throw new RemakeProjectServiceError("视频分析必须返回完整的 4 张十二宫格拼图", 400);
         const audio = input.audio === undefined ? normalized.references.audio : normalizeRemakeMediaAsset(input.audio);
         if (input.audio && !audio) throw new RemakeProjectServiceError("原视频参考音频信息不完整", 400);
@@ -463,7 +478,8 @@ async function normalizeEditableRemakeGroups(input: {
             const previous = input.current[index] || emptyRemakeRangeGroups()[index];
             const sourceContactSheet = previous.sourceContactSheet;
             const expectedGroup = { ...group, sourceContactSheet };
-            const videoPrompt = group.videoPrompt ? previous.videoPrompt : "";
+            const instructionsChanged = (group.videoPromptInstructions || "") !== (previous.videoPromptInstructions || "");
+            const videoPrompt = !instructionsChanged && group.videoPrompt ? previous.videoPrompt : "";
             const replacementGeneration = await authoritativeRemakeImageGeneration({
                 userId: input.userId,
                 projectId: input.projectId,

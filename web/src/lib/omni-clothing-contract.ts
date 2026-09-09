@@ -18,6 +18,8 @@ export type OmniClothingSegment = {
     generationDurationSeconds: number;
     boundary: "scene" | "duration" | "manual" | "end";
     sourceVideo: OmniClothingAsset;
+    preparedAudioStrategy?: "preserve" | "mute";
+    importedVideo?: OmniClothingAsset;
     prompt: string;
     inputVersion: number;
     attemptNo: number;
@@ -70,5 +72,5 @@ export const OMNI_CLOTHING_REFERENCE_MAX = 5;
 export const OMNI_CLOTHING_SOURCE = { baseToken: "ScUYbyoAbaJptZsnuTbcg6WwnN3", tableId: "tblTb6y4DGpl59hb", documentId: "FPORd1Dcyoh3vExp4Qicjfminve" } as const;
 
 export function omniClothingStatusLabel(status: OmniClothingProject["status"]) {
-    return { draft: "待准备素材", ready: "待生成视频", generating: "视频生成中", completed: "已完成", error: "需要处理" }[status];
+    return { draft: "待准备素材", ready: "待手动生成 / 回传", generating: "原视频任务处理中", completed: "已完成", error: "需要处理" }[status];
 }

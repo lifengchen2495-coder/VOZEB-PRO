@@ -1,3 +1,5 @@
+import { normalizeRemakeVideoPromptInstructions } from "@/lib/remake60-video-prompt-instructions";
+
 import {
     normalizeRemakeProject,
     normalizeRemakeProjectList,
@@ -94,6 +96,7 @@ export async function createRemakeProject(input: { title: string; sourceCopy?: s
 }
 
 export async function saveRemakeProject(id: string, revision: number, patch: RemakeEditablePatch): Promise<RemakeProject> {
+    if (patch.groups) patch = { ...patch, groups: patch.groups.map((group) => ({ ...group, videoPromptInstructions: normalizeRemakeVideoPromptInstructions(group.videoPromptInstructions) })) };
     return projectFromPayload(
         await requestPayload(`/api/remake60/projects/${encodeURIComponent(id)}`, {
             method: "PATCH",

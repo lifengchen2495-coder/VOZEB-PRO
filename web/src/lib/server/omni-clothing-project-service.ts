@@ -12,6 +12,7 @@ import { cleanupOmniClothingMediaAssets, mutateOmniClothingProjectWithMediaClean
 import { createOmniClothingProject, getOmniClothingProject, deleteOmniClothingProject } from "@/lib/server/omni-clothing-project-store";
 import { configuredVideoDurationPolicy } from "@/lib/server/video-task-config";
 import { getVideoTask, type VideoTask } from "@/lib/server/video-task-store";
+import { HUIFENG_OMNI_EDIT_MODEL } from "@/lib/huifeng-media";
 
 export class OmniClothingError extends Error {
     constructor(
@@ -64,7 +65,6 @@ export async function updateOmniClothingProjectForUser(userId: string, id: strin
     const source = normalizedSource && normalizedSource.url === current.sourceVideo?.url ? { ...current.sourceVideo, ...normalizedSource } : normalizedSource;
     const references = Object.hasOwn(input, "referenceImages") ? await normalizeReferences(userId, input.referenceImages) : current.referenceImages;
     const model = Object.hasOwn(input, "model") ? clean(input.model, 200) : current.model;
-    if (model && model !== current.model) await clothingModelPolicy(model, references.length);
     return requireMutation(
         await mutateOmniClothingProject(userId, id, (latest) => {
             assertRevision(latest, input.revision);
@@ -73,7 +73,7 @@ export async function updateOmniClothingProjectForUser(userId: string, id: strin
             const audioStrategy = Object.hasOwn(input, "audioStrategy") ? (input.audioStrategy === "preserve" ? "preserve" : input.audioStrategy === "mute" ? "mute" : invalid("音频策略不正确")) : latest.audioStrategy;
             const maxSegmentSeconds = Object.hasOwn(input, "maxSegmentSeconds") ? Number(input.maxSegmentSeconds) : latest.maxSegmentSeconds;
             if (!Number.isInteger(maxSegmentSeconds) || maxSegmentSeconds < 2 || maxSegmentSeconds > 60) throw new OmniClothingError("单片上限需要在 2–60 秒之间");
-            const recut = source?.url !== latest.sourceVideo?.url || model !== latest.model || maxSegmentSeconds !== latest.maxSegmentSeconds;
+            const recut = source?.url !== latest.sourceVideo?.url || maxSegmentSeconds !== latest.maxSegmentSeconds || audioStrategy !== latest.audioStrategy;
             const changed = recut || JSON.stringify(references.map((asset) => asset.url)) !== JSON.stringify(latest.referenceImages.map((asset) => asset.url)) || garmentDescription !== latest.garmentDescription || audioStrategy !== latest.audioStrategy;
             const inputVersion = latest.inputVersion + (changed ? 1 : 0);
             return touch({
@@ -106,6 +106,7 @@ export async function buildOmniClothingPromptsForUser(userId: string, id: string
             assertNotBusy(project);
             assertInputs(project);
             if (!project.segments.length) throw new OmniClothingError("请先完成视频切片", 409);
+            assertPreparedClothingSegments(project);
             return touch({
                 ...project,
                 status: "ready",
@@ -132,21 +133,9 @@ export async function saveOmniClothingPromptForUser(userId: string, id: string, 
 }
 
 export async function beginOmniClothingVideoAttempt(userId: string, id: string, input: Record<string, unknown>) {
-    const current = await getOmniClothingProjectForUser(userId, id);
-    await clothingModelPolicy(current.model, current.referenceImages.length);
-    return requireMutation(
-        await mutateOmniClothingProject(userId, id, (project) => {
-            assertRevision(project, input.revision);
-            if (project.operation) throw new OmniClothingError("视频正在处理，请稍后再试", 409);
-            assertInputs(project);
-            const segment = project.segments.find((item) => item.id === input.segmentId);
-            if (!segment || !segment.prompt || segment.inputVersion !== project.inputVersion) throw new OmniClothingError("片段提示词尚未准备好，请重新生成提示词", 409);
-            if (segment.videoStatus === "running") throw new OmniClothingError("此片段已有视频任务，请等待或检查原任务", 409);
-            if (segment.videoStatus === "submitting") return null;
-            const next = { ...clearSegmentResult(segment), attemptNo: segment.attemptNo + 1, clientRequestId: `omni-clothing:${randomUUID()}`, attemptStartedAt: new Date().toISOString(), videoStatus: "submitting" as const };
-            return touch({ ...project, status: "generating", mergedVideo: undefined, error: undefined, segments: project.segments.map((item) => (item.id === segment.id ? next : item)) });
-        }),
-    );
+    const project = await getOmniClothingProjectForUser(userId, id);
+    assertRevision(project, input.revision);
+    throw new OmniClothingError("服装复刻已改为手动生成，请下载素材包后回传结果；已有任务可继续检查或取消", 409);
 }
 
 export async function failOmniClothingSubmission(userId: string, id: string, input: Record<string, unknown>) {
@@ -155,8 +144,8 @@ export async function failOmniClothingSubmission(userId: string, id: string, inp
             const segment = project.segments.find((item) => item.id === input.segmentId);
             if (!segment || segment.attemptNo !== input.attemptNo || segment.clientRequestId !== input.clientRequestId) throw new OmniClothingError("视频提交版本已过期", 409);
             if (segment.videoStatus !== "submitting") return null;
-            // 未知的提交结果保留同一请求 ID；点击继续时由共享入口幂等查询，避免重复扣费。
-            return touch({ ...project, segments: project.segments.map((item) => (item.id === segment.id ? { ...item, error: "提交未确认，点击继续提交会检查同一任务" } : item)) });
+            // 未知的提交结果保留同一请求 ID，只检查原任务，不再次提交。
+            return touch({ ...project, segments: project.segments.map((item) => (item.id === segment.id ? { ...item, error: "提交未确认，请检查原任务" } : item)) });
         }),
     );
 }
@@ -185,7 +174,7 @@ export async function abandonOmniClothingSubmission(userId: string, id: string, 
                 await mutateOmniClothingProject(userId, id, (latest) => {
                     const current = latest.segments.find((item) => item.id === segmentId);
                     if (!current || current.clientRequestId !== segment.clientRequestId || current.videoStatus !== "submitting") throw new OmniClothingError("片段状态已变化，请刷新", 409);
-                    return touch({ ...latest, status: "ready", segments: latest.segments.map((item) => (item.id === segmentId ? { ...clearSegmentResult(item), error: "未创建视频任务，可修改素材后重新生成" } : item)) });
+                    return touch({ ...latest, status: "ready", segments: latest.segments.map((item) => (item.id === segmentId ? { ...clearSegmentResult(item), error: "未创建视频任务，可下载素材后手动生成并回传" } : item)) });
                 }),
             );
         },
@@ -239,22 +228,36 @@ export async function validateOmniClothingVideoRequest(
     const expected = [...project.referenceImages.map((asset) => ({ type: "image", url: asset.url })), { type: "video", url: segment.sourceVideo.url }];
     if (references.length !== expected.length || expected.some((item, index) => references[index]?.type !== item.type || references[index]?.url !== item.url || (references[index]?.role && references[index]?.role !== "reference")))
         throw new OmniClothingError("视频参考素材与当前服装图或源片段不一致", 409);
-    await clothingModelPolicy(project.model, project.referenceImages.length);
+    const policy = await clothingModelPolicy(project.model, project.referenceImages.length);
+    assertInputs(project, policy);
+    assertClothingSegmentCompatible(segment, policy);
     return { prompt: segment.prompt, durationSeconds: segment.generationDurationSeconds };
 }
 
-export type ClothingModelPolicy = { minSeconds: number; maxSeconds: number; durationOptions: number[]; minReferenceSeconds: number; maxReferenceSeconds: number };
+export type ClothingModelPolicy = {
+    minSeconds: number;
+    maxSeconds: number;
+    durationOptions: number[];
+    minReferenceSeconds: number;
+    maxReferenceSeconds: number;
+    followSourceDuration?: boolean;
+    minReferenceWidth?: number;
+    maxReferenceBytes?: number;
+    maxReferenceImages?: number;
+};
 export async function clothingModelPolicy(model: string, referenceCount = 4): Promise<ClothingModelPolicy> {
     const settings = await getAuthSettings();
-    const channel = resolveLogicalModelCandidates(settings, "video", model)
-        .map(toSystemGenerationChannel)
-        .find(
-            (candidate) =>
-                (candidate.capabilityProfile?.supportsReferenceVideo ?? candidate.advancedConfig?.supportsReferenceVideo) &&
-                (candidate.capabilityProfile?.supportsReferenceImage ?? candidate.advancedConfig?.supportsReferenceImage) &&
-                (!candidate.capabilityProfile?.maxReferenceImages || candidate.capabilityProfile.maxReferenceImages >= referenceCount),
-        );
+    const candidates = resolveLogicalModelCandidates(settings, "video", model).map(toSystemGenerationChannel);
+    const channel = candidates.find(
+        (candidate) =>
+            (candidate.capabilityProfile?.supportsReferenceVideo ?? candidate.advancedConfig?.supportsReferenceVideo) &&
+            (candidate.capabilityProfile?.supportsReferenceImage ?? candidate.advancedConfig?.supportsReferenceImage) &&
+            (isHuifengEditChannel(candidate) ? referenceCount <= 4 : !candidate.capabilityProfile?.maxReferenceImages || candidate.capabilityProfile.maxReferenceImages >= referenceCount),
+    );
+    if (!channel && candidates.some(isHuifengEditChannel) && referenceCount > 4) throw new OmniClothingError("可灵 Omni 视频编辑最多支持 4 张服装参考图，请移除多余图片");
     if (!channel) throw new OmniClothingError("请选择支持参考视频和 4–5 张服装参考图的视频编辑模型");
+    if (isHuifengEditChannel(channel))
+        return { minSeconds: 3, maxSeconds: 10, durationOptions: [], minReferenceSeconds: 3, maxReferenceSeconds: 10, followSourceDuration: true, minReferenceWidth: 700, maxReferenceBytes: 100 * 1024 * 1024, maxReferenceImages: 4 };
     const policy = configuredVideoDurationPolicy({ ...channel.capabilityProfile, durationRange: channel.advancedConfig?.durationRange });
     const seedance = /seedance|volcengine-video/.test(`${channel.model} ${channel.advancedConfig?.protocol}`);
     const maxSeconds = Math.min(60, policy.maxDurationSeconds || policy.durationSeconds?.at(-1) || (seedance ? 15 : 10));
@@ -268,16 +271,48 @@ export async function clothingModelPolicy(model: string, referenceCount = 4): Pr
 }
 
 export function clothingGenerationDuration(duration: number, policy: ClothingModelPolicy) {
+    if (policy.followSourceDuration) {
+        if (!Number.isFinite(duration) || duration < policy.minReferenceSeconds || duration > policy.maxReferenceSeconds) throw new OmniClothingError(`源片段需要在 ${policy.minReferenceSeconds}–${policy.maxReferenceSeconds} 秒之间，请调整切点后重新切片`);
+        return duration;
+    }
     const desired = Math.max(policy.minSeconds, Math.ceil(duration - 0.001));
     const result = policy.durationOptions.length ? policy.durationOptions.find((option) => option >= desired) : desired;
     if (!result || result > policy.maxSeconds) throw new OmniClothingError("片段超过所选模型的时长上限，请重新切片");
     return result;
 }
 
-export function assertInputs(project: OmniClothingProject) {
+export function assertInputs(project: OmniClothingProject, policy?: ClothingModelPolicy) {
     if (!project.sourceVideo) throw new OmniClothingError("请先上传服装源视频", 409);
     if (project.referenceImages.length < 4 || project.referenceImages.length > 5) throw new OmniClothingError("请上传 4–5 张新服装参考图", 409);
-    if (!project.model) throw new OmniClothingError("请先选择视频编辑模型", 409);
+    if (policy?.maxReferenceImages && project.referenceImages.length > policy.maxReferenceImages) throw new OmniClothingError(`当前视频编辑模型最多支持 ${policy.maxReferenceImages} 张服装参考图`, 409);
+}
+
+export function assertPreparedClothingSegments(project: OmniClothingProject) {
+    if (project.segments.some((segment) => segment.inputVersion !== project.inputVersion || segment.preparedAudioStrategy !== project.audioStrategy)) throw new OmniClothingError("请重新切片，确保分段视频已按当前音频策略准备", 409);
+}
+
+export function assertClothingResultTarget(project: OmniClothingProject, segmentId: unknown, inputVersion: unknown) {
+    assertNotBusy(project);
+    const segment = project.segments.find((item) => item.id === segmentId);
+    if (!segment) throw new OmniClothingError("视频片段不存在", 404);
+    if (inputVersion !== project.inputVersion || segment.inputVersion !== project.inputVersion || !segment.prompt) throw new OmniClothingError("片段素材或提示词已更新，请使用当前生成包重新生成", 409);
+    return segment;
+}
+
+export function assertClothingSegmentCompatible(segment: OmniClothingSegment, policy: ClothingModelPolicy) {
+    if (!policy.followSourceDuration) return;
+    const source = segment.sourceVideo;
+    if (!Number.isFinite(source.width) || source.width! < policy.minReferenceWidth! || !Number.isFinite(source.height) || source.height! <= 0 || !Number.isFinite(source.bytes) || source.bytes <= 0 || source.bytes > policy.maxReferenceBytes!) {
+        throw new OmniClothingError(`片段 ${segment.index} 不满足可灵 Omni 输入要求（宽度至少 700px、大小不超过 100MB），请重新切片`, 409);
+    }
+    const duration = source.durationSeconds;
+    if (!Number.isFinite(duration) || duration! < policy.minReferenceSeconds || duration! > policy.maxReferenceSeconds || !Number.isFinite(segment.generationDurationSeconds) || Math.abs(segment.generationDurationSeconds - duration!) > 0.001) {
+        throw new OmniClothingError(`片段 ${segment.index} 的源视频时长需要为 3–10 秒且生成时长跟随源片段，请调整切点后重新切片`, 409);
+    }
+}
+
+function isHuifengEditChannel(channel: ReturnType<typeof toSystemGenerationChannel>) {
+    return channel.advancedConfig?.protocol === "huifeng" && channel.model === HUIFENG_OMNI_EDIT_MODEL;
 }
 
 export function assertNotBusy(project: OmniClothingProject) {
@@ -296,7 +331,7 @@ export function requireMutation(project: OmniClothingProject | null) {
     return project;
 }
 export function clearSegmentResult(segment: OmniClothingSegment): OmniClothingSegment {
-    return { ...segment, clientRequestId: undefined, attemptStartedAt: undefined, videoTaskId: undefined, videoStatus: "idle", videoUrl: undefined, error: undefined };
+    return { ...segment, clientRequestId: undefined, attemptStartedAt: undefined, videoTaskId: undefined, videoStatus: "idle", videoUrl: undefined, importedVideo: undefined, error: undefined };
 }
 function deriveStatus(segments: OmniClothingSegment[]): OmniClothingProject["status"] {
     return segments.some((item) => item.videoStatus === "running" || item.videoStatus === "submitting") ? "generating" : segments.some((item) => item.videoStatus === "error") ? "error" : "ready";

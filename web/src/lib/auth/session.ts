@@ -5,6 +5,7 @@ import { deleteSession, getPublicUsersByIds, getUserBySession, sessionMaxAgeSeco
 import { authorizedWorkerUserId } from "@/lib/server/maintenance-auth";
 import { getTrustedProxyHops } from "@/lib/server/trusted-proxy";
 import { parseSessionCookie } from "./store-normalizers";
+import { resolveLogicalModelCapabilityProfile } from "@/lib/model-routing-config";
 
 const SESSION_COOKIE_NAME = "vozeb_pro_session";
 
@@ -150,7 +151,8 @@ export function serializePublicSettings(settings: AuthSettings) {
                 bindings: model.bindings
                     .filter((binding) => binding.enabled)
                     .map((binding) => {
-                        const capabilityProfile = publicCapabilityProfile(binding.capabilityProfile);
+                        const channel = settings.systemChannels.find((item) => item.id === binding.channelId);
+                        const capabilityProfile = publicCapabilityProfile(resolveLogicalModelCapabilityProfile(binding, model.capability, channel, binding.upstreamModel));
                         return {
                             id: binding.id,
                             channelId: binding.channelId,
@@ -185,6 +187,7 @@ function publicCapabilityProfile(profile: AuthSettings["logicalModels"][number][
         minDurationSeconds: profile.minDurationSeconds,
         maxDurationSeconds: profile.maxDurationSeconds,
         maxBatchSize: profile.maxBatchSize,
+        maxReferenceImages: profile.maxReferenceImages,
     };
     return Object.values(result).some((value) => value !== undefined && (!Array.isArray(value) || value.length)) ? result : undefined;
 }

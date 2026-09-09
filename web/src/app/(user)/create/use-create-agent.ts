@@ -26,6 +26,8 @@ import { getMaterializedCreativeProject, materializeCreativeProjectHandoff, type
 import { agentRequirementAcknowledgement } from "@/lib/agent-requirement-acknowledgement";
 
 import { createConversationIdFromSearch, latestResumableAgentRun } from "./create-conversation-navigation";
+import { mergeCreateAssetSelection, replaceCreateAssetSelection, retainCreateAssetSelection, toggleCreateAssetSelection } from "./create-asset-selection";
+import { materializeCreateDraftAssets, remapDraftAssetIds } from "./create-draft-materialization";
 import { getCreateDraftAttachment, useCreateDraftAttachmentsStore } from "./use-create-draft-attachments-store";
 
 type PendingCreateSubmission = {
@@ -48,6 +50,8 @@ type CreateSubmitOptions = {
     skillIds?: string[];
     modelIds?: string[];
     preferences?: CreativeGenerationPreferences;
+    onAssetIdsReplaced?: (replacements: ReadonlyMap<string, string>) => void;
+    retainAttachments?: boolean;
 };
 
 const MESSAGE_PAGE_SIZE = 50;
@@ -83,7 +87,7 @@ export function useCreateAgent() {
     const removeDraftAttachments = useCreateDraftAttachmentsStore((state) => state.remove);
     const clearDraftAttachments = useCreateDraftAttachmentsStore((state) => state.clear);
     const allAssets = useMemo(() => [...assets, ...draftAttachments.map((item) => item.asset)], [assets, draftAttachments]);
-    const selectedAssetIdsWithDrafts = useMemo(() => Array.from(new Set([...selectedAssetIds, ...draftAttachments.map((item) => item.asset.id)])), [draftAttachments, selectedAssetIds]);
+    const selectedAssetIdsWithDrafts = useMemo(() => mergeCreateAssetSelection(selectedAssetIds, draftAttachments.map((item) => item.asset.id)), [draftAttachments, selectedAssetIds]);
 
     const stopWatching = useCallback(() => {
         streamRef.current?.();
@@ -137,7 +141,9 @@ export function useCreateAgent() {
         setMessages(uniqueMessages(nextMessages));
         setHasOlderMessages(Boolean(nextMessages[0] && nextMessages[0].sequence > 1));
         setAssets(nextAssets);
-        setSelectedAssetIds([]);
+        const draftIds = currentDraftAssetIds();
+        const readyIds = new Set(nextAssets.filter((asset) => asset.status === "ready").map((asset) => asset.id));
+        setSelectedAssetIds((current) => retainCreateAssetSelection(current, draftIds, readyIds));
         setRunDetails(Object.fromEntries(runs.filter((run): run is CreativeAgentRun => Boolean(run && run.conversationId === id)).map((run) => [run.id, run])));
         const handoffs = nextMessages
             .map((item) => item.metadata.projectHandoff)
@@ -286,31 +292,39 @@ export function useCreateAgent() {
     const uploadAttachments = useCallback(
         async (files: File[]) => {
             if (!files.length) return [];
-            return addDraftAttachments(files, activeConversationRef.current || "");
+            const addedAssets = addDraftAttachments(files, activeConversationRef.current || "");
+            const draftIds = currentDraftAssetIds();
+            setSelectedAssetIds((current) => mergeCreateAssetSelection(current, draftIds));
+            return addedAssets;
         },
         [addDraftAttachments],
     );
 
     const materializeDraftAttachments = useCallback(
-        async (assetIds: string[], generation: number, submissionConversationId?: string) => {
+        async (assetIds: string[], generation: number, submissionConversationId?: string, onAssetIdsReplaced?: CreateSubmitOptions["onAssetIdsReplaced"]) => {
             const drafts = assetIds.map((id) => ({ id, draft: getCreateDraftAttachment(id) })).filter((item): item is { id: string; draft: NonNullable<ReturnType<typeof getCreateDraftAttachment>> } => Boolean(item.draft));
             if (!drafts.length) return { conversationId: submissionConversationId, assetIds, replacements: new Map<string, CreativeAsset>() };
-            const replacements = new Map<string, CreativeAsset>();
             if (isCurrentConversation(submissionConversationId, generation)) setUploading(true);
             let materializedConversationId = submissionConversationId;
             try {
                 materializedConversationId = await ensureConversation(generation);
-                for (const { id, draft } of drafts) {
-                    replacements.set(id, await uploadCreativeAsset(materializedConversationId, draft.file));
-                }
+                const uploadConversationId = materializedConversationId;
+                const replacements = await materializeCreateDraftAssets(
+                    drafts.map(({ id, draft }) => ({ id, file: draft.file })),
+                    (file) => uploadCreativeAsset(uploadConversationId, file),
+                    (uploaded) => {
+                        if (!isCurrentConversation(uploadConversationId, generation)) return;
+                        const uploadedAssets = Array.from(uploaded.values());
+                        const draftIds = currentDraftAssetIds();
+                        const replacedIds = new Map(Array.from(uploaded, ([id, asset]) => [id, asset.id]));
+                        setAssets((current) => [...current, ...uploadedAssets.filter((asset) => !current.some((item) => item.id === asset.id))]);
+                        setSelectedAssetIds((current) => replaceCreateAssetSelection(current, draftIds, replacedIds));
+                        onAssetIdsReplaced?.(replacedIds);
+                        removeDraftAttachments(uploaded.keys());
+                    },
+                );
                 return { conversationId: materializedConversationId, assetIds: assetIds.map((assetId) => replacements.get(assetId)?.id || assetId), replacements };
             } finally {
-                if (isCurrentConversation(materializedConversationId, generation) && replacements.size) {
-                    const uploadedAssets = Array.from(replacements.values());
-                    setAssets((current) => [...current, ...uploadedAssets.filter((asset) => !current.some((item) => item.id === asset.id))]);
-                    setSelectedAssetIds((current) => Array.from(new Set([...current, ...uploadedAssets.map((asset) => asset.id)])));
-                    removeDraftAttachments(replacements.keys());
-                }
                 if (isCurrentConversation(materializedConversationId, generation)) setUploading(false);
             }
         },
@@ -432,7 +446,7 @@ export function useCreateAgent() {
             const selectedIds = options?.assetIds || selectedAssetIdsWithDrafts;
             let prepared: Awaited<ReturnType<typeof materializeDraftAttachments>>;
             try {
-                prepared = await materializeDraftAttachments(selectedIds, generation, submissionConversationId);
+                prepared = await materializeDraftAttachments(selectedIds, generation, submissionConversationId, options?.onAssetIdsReplaced);
             } catch (error) {
                 if (generation === conversationGenerationRef.current) {
                     setSending(false);
@@ -477,8 +491,10 @@ export function useCreateAgent() {
                         updatedAt: now,
                     },
                 ]);
-                const consumedIds = new Set([...selectedIds, ...assetIds]);
-                setSelectedAssetIds((current) => current.filter((id) => !consumedIds.has(id)));
+                if (!options?.retainAttachments) {
+                    const consumedIds = new Set([...selectedIds, ...assetIds]);
+                    setSelectedAssetIds((current) => current.filter((id) => !consumedIds.has(id)));
+                }
             }
             return executeSubmission(snapshot);
         },
@@ -620,8 +636,14 @@ export function useCreateAgent() {
         materializeProject,
         selectedAssetIds: selectedAssetIdsWithDrafts,
         selectedAssets: allAssets.filter((asset) => selectedAssetIdsWithDrafts.includes(asset.id)),
-        toggleAsset: (id: string) => setSelectedAssetIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id])),
-        selectAsset: (id: string) => setSelectedAssetIds((current) => (current.includes(id) ? current : [...current, id])),
+        toggleAsset: (id: string) => {
+            const draftIds = currentDraftAssetIds();
+            setSelectedAssetIds((current) => toggleCreateAssetSelection(current, draftIds, id));
+        },
+        selectAsset: (id: string) => {
+            const draftIds = currentDraftAssetIds();
+            setSelectedAssetIds((current) => mergeCreateAssetSelection(current, draftIds, [id]));
+        },
         uploading,
         uploadAttachments,
         removeAttachment: (id: string) => {
@@ -636,15 +658,6 @@ function uniqueMessages(messages: CreativeMessage[]) {
     return Array.from(new Map(messages.map((item) => [item.id, item])).values()).sort((a, b) => a.sequence - b.sequence);
 }
 
-function remapDraftAssetIds(preferences: CreativeGenerationPreferences | undefined, replacements: Map<string, CreativeAsset>) {
-    if (!preferences?.video || !replacements.size) return preferences;
-    const remap = (id?: string) => (id ? replacements.get(id)?.id || id : undefined);
-    return {
-        ...preferences,
-        video: {
-            ...preferences.video,
-            firstFrameAssetId: remap(preferences.video.firstFrameAssetId),
-            lastFrameAssetId: remap(preferences.video.lastFrameAssetId),
-        },
-    };
+function currentDraftAssetIds() {
+    return useCreateDraftAttachmentsStore.getState().attachments.map((item) => item.asset.id);
 }

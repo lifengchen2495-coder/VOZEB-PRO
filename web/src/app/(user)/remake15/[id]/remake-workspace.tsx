@@ -344,7 +344,8 @@ export function RemakeWorkspace() {
                           ...patch,
                           replacementGeneration: patch.replacementGeneration ? { ...group.replacementGeneration, ...patch.replacementGeneration } : group.replacementGeneration,
                           imageGeneration: patch.imageGeneration ? { ...group.imageGeneration, ...patch.imageGeneration } : group.imageGeneration,
-                          videoGeneration: patch.videoGeneration ? { ...group.videoGeneration, ...patch.videoGeneration } : group.videoGeneration,
+                          videoGeneration: patch.videoPromptInstructions !== undefined && (patch.videoPromptInstructions.trim() || "") !== (group.videoPromptInstructions?.trim() || "") ? { status: "idle" as const } : patch.videoGeneration ? { ...group.videoGeneration, ...patch.videoGeneration } : group.videoGeneration,
+                          ...(patch.videoPromptInstructions !== undefined && (patch.videoPromptInstructions.trim() || "") !== (group.videoPromptInstructions?.trim() || "") ? { videoPrompt: "" } : {}),
                       }
                     : group,
             );
@@ -730,6 +731,7 @@ export function RemakeWorkspace() {
                     <RemakeProductionStage
                         project={project}
                         building={buildingProduction}
+                        instructionsDirty={saveState !== "saved"}
                         buildingGroupIds={buildingGroupIds}
                         getCurrentProject={() => projectRef.current || project}
                         onVoiceChange={updateVoice}

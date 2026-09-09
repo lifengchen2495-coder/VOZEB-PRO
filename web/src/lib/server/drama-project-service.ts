@@ -190,6 +190,7 @@ function normalizeCreateInput(value: unknown): Required<Omit<CreateDramaProjectI
 
 export function normalizeProject(value: unknown, current: DramaProject): DramaProject {
     const input = object(value);
+    if (input.videoPromptInstructions !== undefined && (typeof input.videoPromptInstructions !== "string" || input.videoPromptInstructions.length > 50_000)) throw new DramaProjectServiceError("视频提示词生成指令必须是 50,000 字以内的文本", 400);
     const episodes = array(input.episodes)
         .map((value, index) => normalizeEpisode(value, index))
         .filter((episode): episode is DramaEpisode => Boolean(episode));
@@ -212,6 +213,7 @@ export function normalizeProject(value: unknown, current: DramaProject): DramaPr
         props: normalizeNamedAssets(input.props, "prop"),
         clues: normalizeClues(input.clues),
         defaultVideoMode: videoMode(input.defaultVideoMode),
+        videoPromptInstructions: input.videoPromptInstructions === undefined ? current.videoPromptInstructions : optionalText(input.videoPromptInstructions),
         episodes,
         sourceAssets: normalizeSourceAssets(input.sourceAssets),
         createdAt: current.createdAt,

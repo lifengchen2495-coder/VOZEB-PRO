@@ -1,3 +1,5 @@
+import { remakeEffectiveVideoPromptInstructions } from "@/lib/remake15-video-prompt-instructions";
+
 import { saveAs } from "file-saver";
 
 import { safeExportFileName } from "@/lib/export-file";
@@ -53,6 +55,7 @@ export async function downloadRemakeProductionBundle(project: RemakeProject): Pr
     }
 
     const assetBindings = seedanceAssetBindings(project, manifest);
+    files.push(...project.groups.map((group) => ({ name: `提示词/视频提示词生成指令-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: remakeEffectiveVideoPromptInstructions(group) })));
 
     files.push(
         { name: "文案/原文案.txt", data: project.sourceCopy },

@@ -13,7 +13,7 @@ import type { ModelBillingRules } from "@/lib/model-billing";
 import type { LogicalModelCapabilityProfile } from "@/lib/auth/store-types";
 
 type ApiCallFormat = "openai" | "gemini";
-type SystemChannelProtocol = "auto" | "openai" | "yumeng" | "gemini" | "sub2api" | "newapi" | "vozeb-recommended" | "globalaiopc" | "seedance" | "stable-diffusion" | "volcengine-video" | "seedance-special" | "custom" | "compatible";
+type SystemChannelProtocol = "auto" | "openai" | "yumeng" | "huifeng" | "gemini" | "sub2api" | "newapi" | "vozeb-recommended" | "globalaiopc" | "seedance" | "stable-diffusion" | "volcengine-video" | "seedance-special" | "custom" | "compatible";
 
 type SystemChannelAdvancedConfig = {
     protocol: SystemChannelProtocol;

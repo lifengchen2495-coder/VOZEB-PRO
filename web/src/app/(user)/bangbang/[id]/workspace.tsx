@@ -3,10 +3,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Download, Loader2, Play, Save } from "lucide-react";
 import { BANGBANG_STEP_LABELS, bangbangCreationMode, bangbangBusy, bangbangStepBlockReason, type BangbangInputPatch, type BangbangProject, type BangbangStep } from "@/lib/bangbang-contract";
-import { acceptsBangbangRefresh, bangbangProjectPath, bangbangRequest, bangbangResponse, uploadBangbangMedia } from "../bangbang-api";
+import { acceptsBangbangRefresh, bangbangProjectPath, bangbangRequest, bangbangResponse, loadBangbangVideoPromptTemplate, uploadBangbangMedia, type BangbangVideoPromptTemplate } from "../bangbang-api";
 import { Button, Field, Textarea } from "../controls";
 import { bangbangWorkspaceStages, bangbangStageComplete, resumeBangbangStage, withBangbangDraft, type BangbangStage } from "./workspace-state";
 import { CharactersPanel, DirectionPanel, FullOutput, GroupPanel, InputPanel } from "./workspace-panels";
+import { VideoPromptInstructions } from "./video-prompt-instructions";
 
 const stepActions: Record<BangbangStep, string> = {
     transcript: "提取字幕",
@@ -33,6 +34,11 @@ export function BangbangWorkspace({ id }: { id: string }) {
     const [asr, setAsr] = useState<boolean>();
     const [autoSteps, setAutoSteps] = useState<BangbangStep[]>([]);
     const [orphanedPrompts, setOrphanedPrompts] = useState<Record<string, string>>({});
+    const [videoTemplate, setVideoTemplate] = useState<BangbangVideoPromptTemplate & { mode: "product" | "reference" }>();
+    const [videoTemplateLoading, setVideoTemplateLoading] = useState(false);
+    const [videoTemplateError, setVideoTemplateError] = useState("");
+    const [videoDefaultPreview, setVideoDefaultPreview] = useState(false);
+    const videoTemplateRequest = useRef(0);
     const current = useRef<BangbangProject | undefined>(undefined);
     const lock = useRef(false);
     const autoProductScript = useRef(false);
@@ -42,8 +48,33 @@ export function BangbangWorkspace({ id }: { id: string }) {
         setProject(value);
         setPatch({});
         setPrompts({});
+        setVideoDefaultPreview(false);
     }, []);
     const load = useCallback(() => bangbangRequest<BangbangProject>(bangbangProjectPath(id)), [id]);
+    const savedCreationMode = project ? bangbangCreationMode(project) : undefined;
+    const reloadVideoTemplate = useCallback(async () => {
+        if (!savedCreationMode) return;
+        const request = ++videoTemplateRequest.current;
+        setVideoTemplateLoading(true);
+        setVideoTemplateError("");
+        setVideoTemplate(undefined);
+        try {
+            const template = await loadBangbangVideoPromptTemplate(id);
+            if (request === videoTemplateRequest.current) setVideoTemplate({ ...template, mode: savedCreationMode });
+        } catch (error) {
+            if (request === videoTemplateRequest.current) setVideoTemplateError((error as Error).message);
+        } finally {
+            if (request === videoTemplateRequest.current) setVideoTemplateLoading(false);
+        }
+    }, [id, savedCreationMode]);
+    const invalidateVideoTemplate = useCallback(() => {
+        videoTemplateRequest.current++;
+    }, []);
+    useEffect(() => {
+        if (requestedStage !== "video-prompts" || !savedCreationMode) return;
+        void reloadVideoTemplate();
+        return invalidateVideoTemplate;
+    }, [requestedStage, savedCreationMode, reloadVideoTemplate, invalidateVideoTemplate]);
     useEffect(() => {
         let active = true;
         load()
@@ -132,12 +163,18 @@ export function BangbangWorkspace({ id }: { id: string }) {
         });
     const save = async () => {
         if (!current.current) throw new Error("项目尚未加载");
+        if (patch.videoPromptInstructions !== undefined) {
+            if (!videoTemplate || videoTemplate.mode !== bangbangCreationMode(current.current)) throw new Error("请先完整加载生成指令，再保存修改");
+            if (!patch.videoPromptInstructions.trim() && !videoDefaultPreview) throw new Error("生成指令不能为空；如需使用默认指令，请点击恢复默认");
+            if (patch.videoPromptInstructions.length > 50_000) throw new Error("生成指令不能超过 50000 字");
+        }
         let value = current.current;
         if (Object.keys(patch).length) {
             value = await bangbangRequest<BangbangProject>(bangbangProjectPath(id), { revision: value.revision, ...patch }, "PATCH");
             current.current = value;
             setProject(value);
             setPatch({});
+            setVideoDefaultPreview(false);
         }
         for (const [groupId, text] of Object.entries(prompts)) {
             if (!value.groups.some((group) => group.id === groupId)) {
@@ -176,6 +213,11 @@ export function BangbangWorkspace({ id }: { id: string }) {
         }
     };
     const operation = (step: BangbangStep) => action(step === "directions" && current.current && bangbangCreationMode(current.current) === "product" ? "创作方向" : BANGBANG_STEP_LABELS[step], async () => startOperation(step, await save()));
+    const saveVideoInstructions = () =>
+        void action("保存生成指令", async () => {
+            await save();
+            setNotice("生成指令已保存，请按当前指令生成视频提示词");
+        });
     const createProductScript = () =>
         action("根据产品生成剧本", async () => {
             const value = await save();
@@ -300,6 +342,18 @@ export function BangbangWorkspace({ id }: { id: string }) {
     const step = stage !== "input" && stage !== "images" ? stage : undefined;
     const blockReason = step ? bangbangStepBlockReason(view, step) : undefined;
     const output = step ? view.outputs[step]?.text : undefined;
+    const videoModePending = bangbangCreationMode(view) !== bangbangCreationMode(project);
+    const videoTemplateReady = Boolean(videoTemplate && videoTemplate.mode === bangbangCreationMode(project) && !videoTemplateLoading && !videoTemplateError);
+    const videoInstructionsText =
+        patch.videoPromptInstructions !== undefined
+            ? videoDefaultPreview && patch.videoPromptInstructions === ""
+                ? videoTemplate?.defaultText || ""
+                : patch.videoPromptInstructions
+            : project.videoPromptInstructions?.trim()
+              ? project.videoPromptInstructions
+              : videoTemplate?.defaultText || "";
+    const videoInstructionsValidation = videoTemplateReady && !videoInstructionsText.trim() ? "生成指令不能为空；可点击恢复默认" : videoInstructionsText.length > 50_000 ? "生成指令不能超过 50000 字" : undefined;
+    const videoInstructionsInvalid = patch.videoPromptInstructions !== undefined && (!videoTemplateReady || Boolean(videoInstructionsValidation));
     const panel = { project: view, disabled, change, upload };
     return (
         <main className="flex h-full min-h-0 flex-col bg-background">
@@ -320,7 +374,7 @@ export function BangbangWorkspace({ id }: { id: string }) {
                         检查状态
                     </Button>
                     <Button
-                        disabled={disabled || !dirty}
+                        disabled={disabled || !dirty || videoInstructionsInvalid}
                         onClick={() =>
                             void action("保存项目", async () => {
                                 await save();
@@ -413,7 +467,10 @@ export function BangbangWorkspace({ id }: { id: string }) {
                                 <p className="mt-2 text-sm leading-6 text-muted-foreground">{selected.hint}</p>
                             </div>
                             {step && (
-                                <Button disabled={disabled || Boolean(blockReason) || (step === "transcript" && asr === false)} onClick={() => void operation(step)}>
+                                <Button
+                                    disabled={disabled || Boolean(blockReason) || (step === "transcript" && asr === false) || (step === "video-prompts" && (!videoTemplateReady || videoModePending || Boolean(videoInstructionsValidation)))}
+                                    onClick={() => void operation(step)}
+                                >
                                     <Play className="size-3.5" />
                                     {output ? "重新" : ""}
                                     {productMode && step === "directions" ? "生成创作方向" : stepActions[step]}
@@ -509,6 +566,39 @@ export function BangbangWorkspace({ id }: { id: string }) {
                             />
                         )}
                         {stage === "images" && !view.groups.length && <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">先完成分镜规划、九格展开与提示词优化，再逐张生成九宫格。</p>}
+                        {stage === "video-prompts" && (
+                            <VideoPromptInstructions
+                                text={videoInstructionsText}
+                                source={patch.videoPromptInstructions !== undefined ? (videoDefaultPreview ? "default" : "custom") : project.videoPromptInstructions?.trim() ? "custom" : "default"}
+                                ready={videoTemplateReady}
+                                loading={videoTemplateLoading}
+                                loadError={videoTemplateError}
+                                modePending={videoModePending}
+                                disabled={disabled}
+                                dirty={patch.videoPromptInstructions !== undefined}
+                                hasOutput={Boolean(output || view.videoSegments.length)}
+                                validationError={videoInstructionsValidation}
+                                generationBlockReason={blockReason}
+                                onChange={(text) => {
+                                    setVideoDefaultPreview(false);
+                                    change({ videoPromptInstructions: text });
+                                }}
+                                onSave={saveVideoInstructions}
+                                onRestoreDefault={() => {
+                                    if (!videoTemplateReady) return;
+                                    setVideoDefaultPreview(true);
+                                    change({ videoPromptInstructions: "" });
+                                }}
+                                onGenerate={() => void operation("video-prompts")}
+                                onRetry={() => void reloadVideoTemplate()}
+                                onSaveMode={() =>
+                                    void action("保存创作方式", async () => {
+                                        await save();
+                                    })
+                                }
+                                onCopy={copy}
+                            />
+                        )}
                         {stage === "video-prompts" && view.videoSegments.length > 0 && (
                             <div className="divide-y rounded-lg border">
                                 {view.videoSegments.map((segment, index) => (

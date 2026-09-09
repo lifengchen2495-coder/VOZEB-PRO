@@ -20,8 +20,10 @@ import { usePublicSessionStore } from "@/stores/use-public-session-store";
 import type { PublicGalleryItem } from "@/services/api/work-governance";
 import { createAgentDraftFromHash } from "@/lib/create-agent-prompt";
 import { resolveSiteTitle } from "@/lib/site-brand";
+import { buildCommerceImageRequest, createCommerceImageBrief, validateCommerceImageBrief, type CommerceImageReferenceRole } from "@/lib/commerce-image-brief";
 
 import { CreativeComposer } from "./components/creative-composer";
+import { CommerceImageBriefPanel } from "./components/commerce-image-brief-panel";
 import { CreativeAssetsPanel } from "./components/creative-assets-panel";
 import { applyAgentGenerationCapability, shouldShowVideoFrameControls } from "./components/creative-composer-video-mode";
 import { CreativeConversationList } from "./components/creative-conversation-list";
@@ -48,6 +50,8 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
     const screens = Grid.useBreakpoint();
     const inputRef = useRef<TextAreaRef>(null);
     const attachmentInputRef = useRef<HTMLInputElement>(null);
+    const commerceUploadRoleRef = useRef<CommerceImageReferenceRole | undefined>(undefined);
+    const commerceDraftGenerationRef = useRef(0);
     const frameInputRef = useRef<HTMLInputElement>(null);
     const frameUploadRoleRef = useRef<FrameRole | undefined>(undefined);
     const initialConversationRestoredRef = useRef(false);
@@ -64,6 +68,7 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
     const promptRevisionRef = useRef(0);
     const optimizingRef = useRef(false);
     const [prompt, setPrompt] = useState("");
+    const [commerceBrief, setCommerceBrief] = useState(createCommerceImageBrief);
     const [optimizingPrompt, setOptimizingPrompt] = useState(false);
     const [skills, setSkills] = useState<AgentSkillSummary[]>([]);
     const [skillsLoading, setSkillsLoading] = useState(true);
@@ -94,9 +99,11 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
 
     useEffect(() => {
         let active = true;
-        void listAgentSkills("all")
+        void listAgentSkills(commerceImage ? "image" : "all")
             .then((items) => {
-                if (active) setSkills(items);
+                if (!active) return;
+                setSkills(items);
+                if (commerceImage) setSelectedSkillId((current) => (current && !items.some((skill) => skill.id === current) ? items[0]?.id : current));
             })
             .catch(() => {
                 if (active) setSkills([]);
@@ -107,7 +114,7 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
         return () => {
             active = false;
         };
-    }, []);
+    }, [commerceImage]);
 
     useEffect(() => {
         if (initialConversationRestoredRef.current) return;
@@ -126,14 +133,14 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
         const incomingDraft = createAgentDraftFromHash(window.location.hash);
         if (!incomingDraft || (!incomingDraft.prompt && !incomingDraft.mode)) return;
         if (incomingDraft.prompt) updatePrompt(incomingDraft.prompt);
-        if (incomingDraft.mode) {
+        if (incomingDraft.mode && !commerceImage) {
             setCreationMode(incomingDraft.mode);
             setGenerationPreferences(incomingDraft.mode === "agent" ? {} : { mode: incomingDraft.mode });
         }
         router.replace(basePath);
         window.requestAnimationFrame(() => inputRef.current?.focus());
         message.success(incomingDraft.prompt ? "已填入创作需求" : "已选择创作类型");
-    }, [basePath, message, router, updatePrompt]);
+    }, [basePath, commerceImage, message, router, updatePrompt]);
 
     useEffect(() => {
         if (!agent.conversationId || createConversationIdFromSearch(window.location.search) === agent.conversationId) return;
@@ -175,7 +182,14 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
         };
     }, [agent.conversationId, agent.conversationLoading, agent.messages.length]);
 
+    const clearCommerceBrief = () => {
+        commerceDraftGenerationRef.current += 1;
+        setCommerceBrief(createCommerceImageBrief());
+        updatePrompt("");
+    };
+
     const openConversation = (id: string) => {
+        if (commerceImage) clearCommerceBrief();
         router.push(createConversationHref(id, basePath));
         void openAgentConversation(id).catch((error) => {
             message.error(error instanceof Error ? error.message : "打开对话失败");
@@ -186,7 +200,8 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
     const newConversation = () => {
         newAgentConversation();
         if (commerceImage) {
-            setSelectedSkillId(defaultSkillId);
+            clearCommerceBrief();
+            setSelectedSkillId(skills.find((skill) => skill.id === defaultSkillId)?.id || skills[0]?.id);
             setCreationMode("image");
             setGenerationPreferences({ mode: "image" });
         }
@@ -194,7 +209,15 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
     };
 
     const submit = async () => {
-        if (!prompt.trim()) {
+        if (agent.sending || agent.conversationLoading) return;
+        const commerceInput = { brief: commerceBrief, assets: [...agent.assets, ...agent.selectedAssets], selectedAssetIds: agent.selectedAssetIds, prompt };
+        if (commerceImage) {
+            const error = validateCommerceImageBrief(commerceInput);
+            if (error) {
+                message.warning(error);
+                return;
+            }
+        } else if (!prompt.trim()) {
             message.warning("请先描述你的创作需求");
             inputRef.current?.focus();
             return;
@@ -214,18 +237,37 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
             return;
         }
         promptRevisionRef.current += 1;
+        const draftGeneration = commerceDraftGenerationRef.current;
         try {
             const preferences = { ...generationPreferences, ...(creationMode !== "agent" ? { mode: creationMode } : {}) };
+            const request = commerceImage ? buildCommerceImageRequest(commerceInput) : { prompt, publicPrompt: publicCreativeAssetPrompt(prompt) };
+            if (commerceImage) {
+                preferences.mode = "image";
+                preferences.image = {
+                    ...preferences.image,
+                    references: agent.selectedAssetIds.map((assetId) => ({ assetId, role: commerceBrief.referenceRoles[assetId] })),
+                };
+            }
             if (
-                await agent.submit(prompt, {
-                    publicPrompt: publicCreativeAssetPrompt(prompt),
+                await agent.submit(request.prompt, {
+                    publicPrompt: publicCreativeAssetPrompt(request.publicPrompt),
                     skillIds: selectedSkillId ? [selectedSkillId] : [],
                     ...(!smartPlanning && selectedModelIds.length ? { modelIds: selectedModelIds } : {}),
                     ...(Object.keys(preferences).length ? { preferences } : {}),
+                    ...(commerceImage
+                        ? {
+                              retainAttachments: true,
+                              onAssetIdsReplaced: (replacements: ReadonlyMap<string, string>) => {
+                                  if (draftGeneration !== commerceDraftGenerationRef.current) return;
+                                  setCommerceBrief((current) => ({ ...current, referenceRoles: Object.fromEntries(Object.entries(current.referenceRoles).map(([id, role]) => [replacements.get(id) || id, role])) }));
+                              },
+                          }
+                        : {}),
                 })
             ) {
+                if (commerceImage && draftGeneration !== commerceDraftGenerationRef.current) return;
                 updatePrompt("");
-                setSelectedSkillId(defaultSkillId);
+                if (!commerceImage) setSelectedSkillId(defaultSkillId);
                 setGenerationPreferences((current) => (current.video ? { ...current, video: { ...current.video, firstFrameAssetId: undefined, lastFrameAssetId: undefined } } : current));
             }
         } catch (error) {
@@ -252,10 +294,10 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
         }
     };
 
-    const uploadAttachments = async (files: File[], successMessage?: string) => {
-        const unsupported = files.find((file) => !isCreativeUploadMimeType(file.type));
+    const uploadAttachments = async (files: File[], successMessage?: string, role?: CommerceImageReferenceRole) => {
+        const unsupported = files.find((file) => !isCreativeUploadMimeType(file.type) || (commerceImage && !file.type.startsWith("image/")));
         if (unsupported) {
-            message.error(`${unsupported.name} 不是支持的图片、视频或音频格式`);
+            message.error(commerceImage ? `${unsupported.name} 不是支持的图片格式` : `${unsupported.name} 不是支持的图片、视频或音频格式`);
             return [] as CreativeAsset[];
         }
         const oversized = files.find((file) => file.size > CREATIVE_UPLOAD_MAX_BYTES);
@@ -263,8 +305,15 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
             message.error(`${oversized.name} 超过 20MB`);
             return [] as CreativeAsset[];
         }
+        const draftGeneration = commerceDraftGenerationRef.current;
         try {
             const items = await agent.uploadAttachments(files);
+            if (commerceImage && draftGeneration === commerceDraftGenerationRef.current && items.length) {
+                setCommerceBrief((current) => ({
+                    ...current,
+                    referenceRoles: { ...current.referenceRoles, ...Object.fromEntries(items.map((item) => [item.id, role || "product"])) },
+                }));
+            }
             if (items.length) message.success(successMessage || `已添加 ${items.length} 份素材`);
             return items;
         } catch (error) {
@@ -421,6 +470,7 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
         const currentAssetIds = agent.selectedAssetIds;
         const nextAssetIds = currentAssetIds.filter((assetId) => assetId !== id);
         const nextPrompt = remapCreativeAssetReferences(promptValueRef.current, [...agent.assets, ...agent.selectedAssets], currentAssetIds, nextAssetIds);
+        remapCommerceBriefReferences(currentAssetIds, nextAssetIds);
         agent.removeAttachment(id);
         if (nextPrompt !== promptValueRef.current) updatePrompt(nextPrompt);
         setGenerationPreferences((current) =>
@@ -438,11 +488,29 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
     };
 
     const toggleReferencedAsset = (id: string) => {
+        if (commerceImage && !agent.selectedAssetIds.includes(id)) {
+            const asset = agent.assets.find((item) => item.id === id);
+            if (asset?.type !== "image") {
+                message.warning("电商生图只支持引用图片素材");
+                return;
+            }
+        }
         const currentAssetIds = agent.selectedAssetIds;
         const nextAssetIds = currentAssetIds.includes(id) ? currentAssetIds.filter((assetId) => assetId !== id) : [...currentAssetIds, id];
         const nextPrompt = remapCreativeAssetReferences(promptValueRef.current, [...agent.assets, ...agent.selectedAssets], currentAssetIds, nextAssetIds);
+        remapCommerceBriefReferences(currentAssetIds, nextAssetIds);
         agent.toggleAsset(id);
         if (nextPrompt !== promptValueRef.current) updatePrompt(nextPrompt);
+    };
+
+    const remapCommerceBriefReferences = (currentAssetIds: string[], nextAssetIds: string[]) => {
+        if (!commerceImage) return;
+        const assets = [...agent.assets, ...agent.selectedAssets];
+        setCommerceBrief((current) => ({
+            ...current,
+            sellingPoints: remapCreativeAssetReferences(current.sellingPoints, assets, currentAssetIds, nextAssetIds),
+            requirements: remapCreativeAssetReferences(current.requirements, assets, currentAssetIds, nextAssetIds),
+        }));
     };
 
     const setAwayFromLatestState = (away: boolean) => {
@@ -511,6 +579,11 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
             busy={agent.sending}
             optimizing={optimizingPrompt}
             centered={!showConversation}
+            fixedMode={commerceImage}
+            hideAttachmentPreviews={commerceImage && !composerCompact}
+            canSubmit={commerceImage ? !agent.conversationLoading && Boolean(commerceBrief.productName.trim() || prompt.trim() || agent.selectedAssetIds.length) : undefined}
+            placeholder={commerceImage ? "补充画面细节或修改要求（选填）" : undefined}
+            submitLabel={commerceImage ? "生成图片" : undefined}
             onChange={updatePrompt}
             onOptimize={() => void optimizeCurrentPrompt()}
             onSubmit={() => void submit()}
@@ -553,13 +626,38 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                 frameInputRef.current?.click();
             }}
             onRemoveVideoFrame={removeVideoFrame}
-            onAttachment={() => attachmentInputRef.current?.click()}
+            onAttachment={() => {
+                commerceUploadRoleRef.current = undefined;
+                attachmentInputRef.current?.click();
+            }}
             onPasteImages={(files) => void uploadAttachments(files)}
             referenceAssets={agent.assets}
             selectedAssetIds={agent.selectedAssetIds}
-            onReferenceAsset={agent.selectAsset}
+            onReferenceAsset={(id) => {
+                if (!agent.selectedAssetIds.includes(id)) toggleReferencedAsset(id);
+            }}
         />
     );
+
+    const commerceBriefPanel =
+        commerceImage && !composerCompact ? (
+            <div className={cn("mx-auto mb-3 w-full max-w-[1080px]", showConversation && "max-h-[40dvh] overflow-y-auto px-3 sm:px-6")}>
+                <CommerceImageBriefPanel
+                    key={commerceDraftGenerationRef.current}
+                    brief={commerceBrief}
+                    assets={agent.selectedAssets}
+                    selectedAssetIds={agent.selectedAssetIds}
+                    onChange={setCommerceBrief}
+                    onUpload={(role) => {
+                        commerceUploadRoleRef.current = role;
+                        attachmentInputRef.current?.click();
+                    }}
+                    onRemoveAsset={removeAttachment}
+                    disabled={agent.sending || agent.uploading || agent.conversationLoading}
+                    compact={showConversation}
+                />
+            </div>
+        ) : null;
 
     const historyPanel = (
         <div className="flex h-full min-h-0 flex-col bg-white dark:bg-[#181b20]">
@@ -594,8 +692,13 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                         }
                     }}
                     onDelete={async (ids) => {
+                        const draftGeneration = commerceDraftGenerationRef.current;
                         try {
                             await agent.deleteConversations(ids);
+                            if (commerceImage && ids.includes(agent.conversationId || "") && draftGeneration === commerceDraftGenerationRef.current) {
+                                clearCommerceBrief();
+                                router.replace(basePath);
+                            }
                             message.success(ids.length > 1 ? `已删除 ${ids.length} 条对话` : "对话已删除");
                         } catch (error) {
                             message.error(error instanceof Error ? error.message : "删除对话失败");
@@ -707,17 +810,18 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                                 followLatest={!awayFromLatest}
                             />
                         ) : (
-                            <div className="mx-auto flex min-h-full w-full min-w-0 max-w-[1240px] flex-col items-center px-2.5 pb-3 pt-5 sm:px-8 sm:pb-8 sm:pt-14 lg:pt-[10vh]">
-                                <div className="text-center">
-                                    <h1 className="text-[23px] font-semibold leading-tight sm:text-[31px]">{commerceImage ? "电商图生成" : `${siteTitle} 创作 Agent`}</h1>
-                                    <p className="mt-2 text-sm text-[#8b949f] dark:text-[#7f8996]">{commerceImage ? "上传商品参考图，描述你需要的主图、场景图或详情页" : "从一个想法开始"}</p>
+                            <div className={cn("mx-auto flex min-h-full w-full min-w-0 max-w-[1240px] flex-col items-center px-2.5 pb-3 sm:px-8 sm:pb-8", commerceImage ? "pt-14 sm:pt-12" : "pt-5 sm:pt-14 lg:pt-[10vh]")}>
+                                <div className={commerceImage ? "w-full max-w-[1080px]" : "text-center"}>
+                                    <h1 className={cn("font-semibold leading-tight", commerceImage ? "text-[23px]" : "text-[23px] sm:text-[31px]")}>{commerceImage ? "电商图生成" : `${siteTitle} 创作 Agent`}</h1>
+                                    <p className="mt-2 text-sm text-[#8b949f] dark:text-[#7f8996]">{commerceImage ? "上传产品图，选择图片用途，让商品保持一致。" : "从一个想法开始"}</p>
                                 </div>
                                 <div ref={composerHostRef} data-testid="creative-composer-dock" data-compact="false" className="mt-5 w-full sm:mt-8">
+                                    {commerceBriefPanel}
                                     {composer}
                                 </div>
                                 <div className="mt-2 flex w-full min-w-0 flex-wrap justify-center gap-1.5 sm:mt-3 sm:gap-2">
                                     {skillsLoading ? <span className="px-2 py-2 text-xs text-[#9aa2ad]">正在加载创作 Skill...</span> : null}
-                                    {skills.filter((skill) => !commerceImage || skill.id === defaultSkillId).map((skill, index) => {
+                                    {skills.map((skill, index) => {
                                         const visual = skillVisual(skill, index);
                                         const Icon = visual.icon;
                                         return (
@@ -735,8 +839,12 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                                         );
                                     })}
                                 </div>
-                                <CreateWorkbenchOverview onUseAsset={useRecentAsset} />
-                                <CreateInspirationGallery onUsePrompt={usePublicPrompt} onUseImage={usePublicImage} />
+                                {!commerceImage ? (
+                                    <>
+                                        <CreateWorkbenchOverview onUseAsset={useRecentAsset} />
+                                        <CreateInspirationGallery onUsePrompt={usePublicPrompt} onUseImage={usePublicImage} />
+                                    </>
+                                ) : null}
                             </div>
                         )}
                     </section>
@@ -758,6 +866,7 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                                     回到底部
                                 </Button>
                             ) : null}
+                            {commerceBriefPanel}
                             {composer}
                         </div>
                     ) : null}
@@ -780,12 +889,14 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                 ref={attachmentInputRef}
                 type="file"
                 multiple
-                accept={CREATIVE_UPLOAD_ACCEPT}
+                accept={commerceImage ? "image/png,image/jpeg,image/webp,image/gif" : CREATIVE_UPLOAD_ACCEPT}
                 className="hidden"
                 onChange={(event) => {
                     const files = Array.from(event.target.files || []);
+                    const role = commerceUploadRoleRef.current;
+                    commerceUploadRoleRef.current = undefined;
                     event.target.value = "";
-                    void uploadAttachments(files);
+                    void uploadAttachments(files, undefined, role);
                 }}
             />
             <input

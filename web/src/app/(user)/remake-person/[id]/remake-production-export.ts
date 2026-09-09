@@ -1,4 +1,5 @@
 import { saveAs } from "file-saver";
+import { remakeVideoPromptSystemInstructions } from "@/lib/remake-person-video-prompt-instructions";
 
 import { safeExportFileName } from "@/lib/export-file";
 import { originalMediaDownloadUrl } from "@/lib/media-image-url";
@@ -76,6 +77,7 @@ ${group.imageGeneration.prompt}`)
             data: project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.videoPrompt}`).join("\n\n"),
         },
         ...project.groups.map((group) => ({ name: `提示词/Seedance-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: group.videoPrompt })),
+        ...project.groups.map((group) => ({ name: `提示词/生成指令-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: remakeVideoPromptSystemInstructions(group.id, group.videoPromptInstructions, !isRemakeNoNarrationCopy(project.sourceCopy), project.voice === "male" ? "male" : "female") })),
         { name: "提示词/素材绑定.json", data: JSON.stringify({ schema: "vozeb-remake-seedance-bindings/v1", groups: assetBindings }, null, 2) },
         {
             name: "manifest.json",
@@ -93,6 +95,7 @@ ${group.imageGeneration.prompt}`)
                         id: group.id,
                         ordinal: group.ordinal,
                         frameOrdinals: group.frameOrdinals,
+                        videoPromptInstructions: group.videoPromptInstructions || "",
                         storyboardImageTaskId: group.imageGeneration.taskId || null,
                         videoTaskId: group.videoGeneration.taskId || null,
                         assetBindings: assetBindings[index],

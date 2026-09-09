@@ -14,7 +14,7 @@ import { executeAgentRun } from "@/lib/server/agent-run-executor";
 import { processAgentRunReview } from "@/lib/server/agent-run-execution";
 import { getAgentRun, type AgentRun } from "@/lib/server/agent-run-store";
 import { hasCancellableUpstreamTaskId, isCancellationExecutionPhase, requestUpstreamGenerationCancellation, type GenerationCancellationTarget } from "@/lib/server/generation-task-cancellation-service";
-import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
+import { resolveModelRequestTimeoutMs, resolveModelTaskPollingWindowMs } from "@/lib/server/model-request-policy";
 import { refundAudioTask } from "@/lib/server/audio-task-refund";
 import { refundImageTask } from "@/lib/server/image-task-refund";
 import { refundTextTask } from "@/lib/server/text-task-refund";
@@ -874,7 +874,7 @@ async function processVideoLease(lease: GenerationTaskLease, workerId: string, o
             executionPhase: "polling",
             upstreamTaskId: task.upstream.id || lease.upstreamTaskId,
             queryPath: task.upstream.queryPath || task.config?.advancedConfig?.queryPath,
-            nextPollAt: generationTaskNextPollAt({ submittedAt: lease.submittedAt, now }),
+            nextPollAt: task.config.advancedConfig?.protocol === "huifeng" ? now + 10_000 : generationTaskNextPollAt({ submittedAt: lease.submittedAt, now }),
             lastPollAt: now,
             lastUpstreamStatus: step.status,
         });
@@ -990,7 +990,7 @@ function safeReviewReason(error: unknown, fallback: string) {
 function automaticQueryWindowExpired(lease: GenerationTaskLease, config: Parameters<typeof resolveModelRequestTimeoutMs>[0], capability: "text" | "image" | "video" | "audio", now: number, userRequested: boolean) {
     if (userRequested) return false;
     const startedAt = Number(lease.submittedAt);
-    return Number.isFinite(startedAt) && startedAt > 0 && now - startedAt >= resolveModelRequestTimeoutMs(config, capability);
+    return Number.isFinite(startedAt) && startedAt > 0 && now - startedAt >= resolveModelTaskPollingWindowMs(config, capability);
 }
 
 function persistenceRecoveryStartedAt(lease: GenerationTaskLease, now: number) {

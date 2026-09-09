@@ -120,9 +120,11 @@ export type CreativeRunEvent = {
 };
 
 export type CreativeGenerationMode = "image" | "video" | "audio";
+export type CommerceImageReferenceRole = "product" | "layout" | "background" | "person";
+export type CreativeImageReference = { assetId: string; role: CommerceImageReferenceRole };
 export type CreativeGenerationPreferences = {
     mode?: CreativeGenerationMode;
-    image?: { size?: string; quality?: string; count?: number };
+    image?: { size?: string; quality?: string; count?: number; references?: CreativeImageReference[] };
     video?: {
         size?: string;
         quality?: string;
@@ -186,6 +188,7 @@ export function normalizeCreativeRunRequest(value: unknown): CreativeRunRequest 
     if (skillIds.length > CREATIVE_RUN_SKILL_LIMIT) throw new CreativeRuntimeInputError(`一次最多启用 ${CREATIVE_RUN_SKILL_LIMIT} 个 Skill`);
     if (modelIds.length > CREATIVE_RUN_MODEL_LIMIT) throw new CreativeRuntimeInputError(`一次最多选择 ${CREATIVE_RUN_MODEL_LIMIT} 个模型`);
     if (videoFrameAssetIds(preferences?.video).some((id) => !assetIds.includes(id))) throw new CreativeRuntimeInputError("视频首尾帧必须来自本轮已选择的图片素材");
+    if (preferences?.image?.references?.some((reference) => !assetIds.includes(reference.assetId))) throw new CreativeRuntimeInputError("图片素材用途必须绑定本轮已选择的图片");
     if (surface === "chat" && (projectId || snapshot !== undefined)) throw new CreativeRuntimeInputError("普通对话不接受项目或快照");
     if (surface !== "chat" && !projectId) throw new CreativeRuntimeInputError(surface === "canvas" ? "画布标识不能为空" : "短剧项目标识不能为空");
     if (snapshot !== undefined && !(surface === "drama" && projectId) && new TextEncoder().encode(JSON.stringify(snapshot)).length > MAX_SNAPSHOT_BYTES) throw new CreativeRuntimeInputError("当前项目快照过大", 413);
@@ -212,7 +215,25 @@ function normalizeImagePreferences(value: unknown) {
     const quality = isCreativeAutoValue(rawQuality) ? "auto" : rawQuality;
     const count = Number(input.count);
     const normalizedCount = Number.isSafeInteger(count) && count > 0 ? count : undefined;
-    return size || quality || normalizedCount ? { ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(normalizedCount ? { count: normalizedCount } : {}) } : undefined;
+    const references = normalizeImageReferences(input.references);
+    return size || quality || normalizedCount || references ? { ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(normalizedCount ? { count: normalizedCount } : {}), ...(references ? { references } : {}) } : undefined;
+}
+
+function normalizeImageReferences(value: unknown): CreativeImageReference[] | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) throw new CreativeRuntimeInputError("图片素材用途格式不正确");
+    const references = new Map<string, CreativeImageReference>();
+    for (const item of value) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) throw new CreativeRuntimeInputError("图片素材用途格式不正确");
+        const assetId = typeof item.assetId === "string" ? item.assetId.trim() : "";
+        if (!assetId || assetId.length > MAX_ID) throw new CreativeRuntimeInputError("图片素材标识不正确");
+        const role = item.role;
+        if (role !== "product" && role !== "layout" && role !== "background" && role !== "person") throw new CreativeRuntimeInputError("图片素材用途不正确");
+        const previous = references.get(assetId);
+        if (previous && previous.role !== role) throw new CreativeRuntimeInputError("同一张图片不能绑定多个素材用途");
+        references.set(assetId, { assetId, role });
+    }
+    return references.size ? Array.from(references.values()) : undefined;
 }
 
 function normalizeVideoPreferences(value: unknown) {

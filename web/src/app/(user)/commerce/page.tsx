@@ -1,7 +1,7 @@
 import { ArrowUpRight, Clapperboard, ImagePlus } from "lucide-react";
 import Link from "next/link";
 
-import { commerceImageTool, commerceVideoTools } from "@/constant/commerce-tools";
+import { commerceImageTool, commerceVideoTools, commerceVideoWorkflowTool } from "@/constant/commerce-tools";
 
 export default function CommercePage() {
     return (
@@ -9,7 +9,7 @@ export default function CommercePage() {
             <div className="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6 sm:py-8">
                 <header className="border-b border-border pb-5 sm:pb-6">
                     <h1 className="text-xl font-semibold sm:text-2xl">电商创作</h1>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">选择视频复刻方式，或为你的商品制作图片。</p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">制作商品图片，按需求规划视频流程，或进入专用视频工作区。</p>
                 </header>
 
                 <section aria-labelledby="commerce-images" className="py-6">
@@ -25,7 +25,16 @@ export default function CommercePage() {
                 </section>
 
                 <section aria-labelledby="commerce-videos" className="pb-5">
-                    <h2 id="commerce-videos" className="mb-3 flex items-center gap-2 text-sm font-semibold"><Clapperboard className="size-4" aria-hidden="true" />视频复刻</h2>
+                    <h2 id="commerce-videos" className="mb-3 flex items-center gap-2 text-sm font-semibold"><Clapperboard className="size-4" aria-hidden="true" />商品视频</h2>
+                    <Link href={`/${commerceVideoWorkflowTool.slug}`} className="group mb-5 flex items-center gap-4 rounded-lg border border-border bg-muted/25 p-4 transition-colors hover:border-primary/40 hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:p-5">
+                        <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-background text-primary"><Clapperboard className="size-5" aria-hidden="true" /></span>
+                        <div className="min-w-0 flex-1">
+                            <h3 className="text-base font-semibold">{commerceVideoWorkflowTool.label}</h3>
+                            <p className="mt-1 text-sm leading-6 text-muted-foreground">{commerceVideoWorkflowTool.description}</p>
+                        </div>
+                        <ArrowUpRight className="size-5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
+                    </Link>
+                    <h3 className="mb-3 text-xs font-medium text-muted-foreground">专用视频工作区</h3>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         {commerceVideoTools.map((tool) => {
                             const Icon = tool.icon;

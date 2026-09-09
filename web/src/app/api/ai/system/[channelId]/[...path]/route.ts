@@ -15,7 +15,7 @@ import { fetchSafeOutbound } from "@/lib/server/safe-outbound-fetch";
 import { readRequestBodyBytes, RequestBodyTooLargeError } from "@/lib/server/request-body-limit";
 import { resolveGlobalAiOpcPathPreset, resolveGlobalAiOpcPreset } from "@/lib/globalaiopc-catalog";
 import { adaptGlobalAiOpcTextRequest, adaptGlobalAiOpcTextResponse, isGlobalAiOpcChannel } from "@/lib/server/globalaiopc-proxy";
-import { readVerifiedSystemAiBusinessRequestId, SYSTEM_AI_LOGICAL_MODEL_HEADER, SYSTEM_AI_UPSTREAM_MODEL_HEADER, systemAiPointsIdempotencyKey, systemAiRequestFingerprint } from "@/lib/server/system-ai-billing";
+import { readVerifiedSystemAiBusinessRequestId, readVerifiedSystemAiVideoBillingParameters, SYSTEM_AI_LOGICAL_MODEL_HEADER, SYSTEM_AI_UPSTREAM_MODEL_HEADER, systemAiPointsIdempotencyKey, systemAiRequestFingerprint, type SystemAiVideoBillingParameters } from "@/lib/server/system-ai-billing";
 import { isAgnesApiBaseUrl } from "@/lib/agnes-model-catalog";
 import { channelConnectionReady, protocolAuthHeaders, resolveChannelModelConfig } from "@/lib/channel-protocol-registry";
 import { normalizeYumengModelCenterBaseUrl } from "@/lib/yumeng-model-center";
@@ -137,6 +137,14 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
         },
     });
     if (!access.allowed) return NextResponse.json({ error: access.error }, { status: access.status });
+    if (pointsRequest?.usageKind === "video" && (modelConfig?.protocol || channel.advancedConfig?.protocol) === "huifeng") {
+        try {
+            const billing = readVerifiedSystemAiVideoBillingParameters(request.headers, access.logicalModelId, upstreamModel);
+            pointsRequest.amount = huifengVideoParameterMultiplier(upstreamModel, readRequestBody(contentType, requestBody.pointsPayload), billing, settings.generationPointMultipliers);
+        } catch (error) {
+            return NextResponse.json({ error: error instanceof Error ? error.message : "视频计费参数无效" }, { status: 400 });
+        }
+    }
     if (pointsRequest && resolveModelBillingRule(settings.modelBillingRules, access.logicalModelId).mode === "token") {
         if (access.capability !== "text") return NextResponse.json({ error: "按 Token 计费目前仅支持文本调用" }, { status: 400 });
         // OpenAI Chat 只有显式请求 include_usage 才保证流末帧携带用量。
@@ -619,10 +627,33 @@ function imageQualityMultiplier(payload: Record<string, unknown>, multipliers?: 
 
 function videoParameterMultiplier(payload: Record<string, unknown>, multipliers?: GenerationPointMultipliers) {
     const parameters = payload.parameters && typeof payload.parameters === "object" && !Array.isArray(payload.parameters) ? (payload.parameters as Record<string, unknown>) : {};
+    const params = payload.params && typeof payload.params === "object" && !Array.isArray(payload.params) ? (payload.params as Record<string, unknown>) : {};
     return (
-        multiplierValue(multipliers?.videoQuality, normalizeVideoQualityKey(payload.resolution_name || payload.resolution || payload.quality || payload.vquality || parameters.resolution || parameters.quality || parameters.resolution_name)) *
-        multiplierValue(multipliers?.videoSeconds, normalizeVideoSecondsKey(payload.duration || payload.seconds || parameters.durationSeconds || parameters.duration || parameters.seconds))
+        multiplierValue(multipliers?.videoQuality, normalizeVideoQualityKey(payload.resolution_name || payload.resolution || payload.quality || payload.vquality || parameters.resolution || parameters.quality || parameters.resolution_name || params.resolution)) *
+        multiplierValue(multipliers?.videoSeconds, normalizeVideoSecondsKey(payload.duration || payload.seconds || parameters.durationSeconds || parameters.duration || parameters.seconds || params.duration))
     );
+}
+
+function huifengVideoParameterMultiplier(model: string, payload: Record<string, unknown>, billing: SystemAiVideoBillingParameters | undefined, multipliers?: GenerationPointMultipliers) {
+    const params = payload.params && typeof payload.params === "object" && !Array.isArray(payload.params) ? (payload.params as Record<string, unknown>) : {};
+    const upstreamModel = model.trim().toLowerCase();
+    let duration: number;
+    let resolution: string;
+    if (upstreamModel === "omni_flash-10s") {
+        duration = 10;
+        resolution = "720P";
+    } else if (upstreamModel === "kling-v3-omni-videoref") {
+        // 编辑视频的时长只来自服务端已核验并签名的源片段，不能使用浏览器任意请求头。
+        if (!billing) throw new Error("视频编辑任务缺少可信源片段时长，请从项目提交");
+        duration = billing.durationSeconds;
+        resolution = "720P";
+    } else {
+        duration = Number(params.duration);
+        resolution = typeof params.resolution === "string" ? params.resolution : "";
+        if (!Number.isFinite(duration) || duration <= 0 || !resolution) throw new Error("Huifeng 视频任务缺少明确时长或分辨率，无法计费");
+    }
+    if (billing && (billing.durationSeconds !== duration || normalizeVideoQualityKey(billing.resolution) !== normalizeVideoQualityKey(resolution))) throw new Error("视频计费参数与模型实际生成参数不一致");
+    return videoParameterMultiplier({ duration, resolution }, multipliers);
 }
 
 function multiplierValue(values: Record<string, number> | undefined, key: string) {
@@ -687,7 +718,7 @@ function readMultipartFields(text: string): Record<string, string> {
 }
 
 function targetUrl(baseUrl: string, apiFormat: "openai" | "gemini", path: string[], search: string, globalAiOpc = false, protocol?: import("@/lib/auth/store").SystemChannelProtocol) {
-    const usesLiteralPath = protocol === "seedance-special" || protocol === "stable-diffusion" || protocol === "yumeng" || protocol === "custom";
+    const usesLiteralPath = protocol === "seedance-special" || protocol === "stable-diffusion" || protocol === "yumeng" || protocol === "huifeng" || protocol === "custom";
     const cleanPath = !usesLiteralPath && (path[0] === "v1" || path[0] === "v1beta") ? path.slice(1) : path;
     const resolvedBaseUrl = protocol === "yumeng" ? normalizeYumengModelCenterBaseUrl(baseUrl) : baseUrl;
     if (isAgnesApiBaseUrl(resolvedBaseUrl) && cleanPath[0]?.toLowerCase() === "agnesapi") {

@@ -74,6 +74,7 @@ export async function saveBangbangProjectForUser(userId: string, id: string, rev
         if (value.creationMode !== "product" && value.creationMode !== "reference") throw new BangbangProjectError("请选择产品原创或对标裂变");
         patch.creationMode = value.creationMode;
     }
+    if (value.videoPromptInstructions !== undefined) patch.videoPromptInstructions = text(value.videoPromptInstructions, 50_000);
     for (const key of ["title", "instructions", "selectedDirectionId", "customDirection", "storyboardImport", "transcriptText", "scriptText"] as const) {
         if (value[key] !== undefined) patch[key] = text(value[key], ["storyboardImport", "transcriptText", "scriptText"].includes(key) ? 150_000 : key === "instructions" || key === "customDirection" ? 20_000 : 160);
     }
@@ -174,6 +175,7 @@ export function applyBangbangInputPatch(current: BangbangProject, patch: Bangban
             groups: next.groups.map((group, position) => ({ ...group, ...(position === index ? { optimizedPrompt: groupPrompt.text } : {}), ...(position >= index ? { image: emptyImage(group) } : {}) })),
         };
     }
+    if ((next.videoPromptInstructions || "").trim() !== (current.videoPromptInstructions || "").trim()) next = invalidateBangbangFrom(next, "video-prompts");
     return next;
 }
 

@@ -42,6 +42,7 @@ export type BangbangProject = {
     directions: BangbangDirection[]; selectedDirectionId: string; customDirection: string;
     characters: BangbangCharacter[]; groups: BangbangGroup[]; sourceFrames: BangbangMedia[]; videoSegments: BangbangVideoSegment[];
     storyboardImport: string;
+    videoPromptInstructions?: string;
     operation?: BangbangOperation; error?: string;
 };
 export type BangbangProjectList = { items: BangbangProject[]; total: number; page: number; pageSize: number };
@@ -49,7 +50,7 @@ export type BangbangStepResult = {
     text: string; source?: BangbangOutput["source"]; sourceVideo?: BangbangMedia; sourceFrames?: BangbangMedia[];
     directions?: BangbangDirection[]; characters?: BangbangCharacter[]; groups?: BangbangGroup[]; videoSegments?: BangbangVideoSegment[];
 };
-export type BangbangInputPatch = Partial<Pick<BangbangProject, "title" | "creationMode" | "product" | "instructions" | "targetDuration" | "maxSegmentSeconds" | "references" | "modelSelection" | "selectedDirectionId" | "customDirection" | "storyboardImport">> & {
+export type BangbangInputPatch = Partial<Pick<BangbangProject, "title" | "creationMode" | "product" | "instructions" | "targetDuration" | "maxSegmentSeconds" | "references" | "modelSelection" | "selectedDirectionId" | "customDirection" | "storyboardImport" | "videoPromptInstructions">> & {
     sourceVideo?: BangbangMedia | null;
     transcriptText?: string;
     scriptText?: string;

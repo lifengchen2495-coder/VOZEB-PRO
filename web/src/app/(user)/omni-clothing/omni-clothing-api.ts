@@ -30,15 +30,18 @@ export async function clothingAction(id: string, action: string, input: Record<s
 export function deleteClothingProject(id: string) {
     return request(`/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
-export async function uploadClothingAsset(id: string, file: File, type: "image" | "video") {
+export async function uploadClothingAsset(id: string, file: File, type: "image" | "video", result?: { segmentId: string; inputVersion: number; revision: number }) {
     const maximum = (type === "image" ? 20 : 200) * 1024 * 1024;
     if (!file.size || file.size > maximum) throw new Error(`文件需大于 0 且不超过 ${type === "image" ? 20 : 200} MB`);
     return (
-        await request<{ asset: OmniClothingAsset }>(`/uploads?projectId=${encodeURIComponent(id)}&type=${type}`, {
-            method: "POST",
-            headers: { "Content-Type": file.type || "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
-            body: file,
-        })
+        await request<{ asset: OmniClothingAsset }>(
+            `/uploads?projectId=${encodeURIComponent(id)}&type=${type}${result ? `&purpose=result&segmentId=${encodeURIComponent(result.segmentId)}&inputVersion=${result.inputVersion}&revision=${result.revision}` : ""}`,
+            {
+                method: "POST",
+                headers: { "Content-Type": file.type || "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+                body: file,
+            },
+        )
     ).asset;
 }
 export async function downloadClothingBundle(id: string, title: string) {
@@ -51,7 +54,7 @@ export async function downloadClothingBundle(id: string, title: string) {
     const url = URL.createObjectURL(await response.blob());
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${title}-服装复刻完整包.zip`;
+    anchor.download = `${title}-服装手动生成包.zip`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();

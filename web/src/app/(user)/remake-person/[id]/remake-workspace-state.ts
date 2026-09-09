@@ -16,7 +16,7 @@ export type RemakePendingVideoProgress = {
 export function remakeVideoInputVersion(project: RemakeProject, groupId: string) {
     const group = project.groups.find((item) => item.id === groupId);
     return JSON.stringify([
-        project.id, groupId, group?.videoPrompt || "", assetIdentity(group?.imageGeneration.result || undefined),
+        project.id, groupId, group?.videoPromptInstructions || "", group?.videoPrompt || "", assetIdentity(group?.imageGeneration.result || undefined),
         project.modelSelection.video, assetIdentity(project.references.background), assetIdentity(project.references.character), assetIdentity(project.references.characterSupplement), assetIdentity(project.references.audio),
     ]);
 }

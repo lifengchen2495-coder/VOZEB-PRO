@@ -69,6 +69,11 @@ export function CreativeComposer({
     centered = false,
     compact = false,
     onExpand,
+    canSubmit,
+    placeholder,
+    fixedMode = false,
+    hideAttachmentPreviews = false,
+    submitLabel,
 }: {
     inputRef: RefObject<TextAreaRef | null>;
     value: string;
@@ -108,6 +113,11 @@ export function CreativeComposer({
     centered?: boolean;
     compact?: boolean;
     onExpand?: () => void;
+    canSubmit?: boolean;
+    placeholder?: string;
+    fixedMode?: boolean;
+    hideAttachmentPreviews?: boolean;
+    submitLabel?: string;
 }) {
     const [ready, setReady] = useState(false);
     const [skillPickerOpen, setSkillPickerOpen] = useState(false);
@@ -136,7 +146,7 @@ export function CreativeComposer({
     const allMediaAttachments = attachments.filter((asset) => (asset.type === "image" || asset.type === "video") && Boolean(asset.serverUrl || asset.remoteUrl));
     const visibleAttachments = attachments.filter((asset) => !showVideoFrames || !frameAssetIds.has(asset.id));
     const mediaAttachments = visibleAttachments.filter((asset) => (asset.type === "image" || asset.type === "video") && Boolean(asset.serverUrl || asset.remoteUrl));
-    const inputMediaAttachments = compact ? allMediaAttachments.filter((asset) => !frameAssetIds.has(asset.id)) : mediaAttachments;
+    const inputMediaAttachments = hideAttachmentPreviews ? [] : compact ? allMediaAttachments.filter((asset) => !frameAssetIds.has(asset.id)) : mediaAttachments;
     const otherAttachments = visibleAttachments.filter((asset) => !mediaAttachments.some((media) => media.id === asset.id));
 
     useEffect(() => setReady(true), []);
@@ -207,13 +217,13 @@ export function CreativeComposer({
                     ref={inputRef}
                     value={value}
                     maxLength={4000}
-                    autoSize={compactMode ? { minRows: 1, maxRows: 1 } : { minRows: centered ? 4 : 2, maxRows: 8 }}
+                    autoSize={compactMode ? { minRows: 1, maxRows: 1 } : { minRows: centered && !fixedMode ? 4 : 2, maxRows: 8 }}
                     variant="borderless"
                     className={cn(
                         "creative-composer-input relative z-[1] min-w-0 !border-0 !bg-transparent !px-1 !py-1 !text-[15px] !leading-7 !shadow-none !outline-none sm:!px-2",
                         hasMentionReferences && "!text-transparent caret-[#20242a] dark:caret-[#f3f5f7]",
                     )}
-                    placeholder={compactMode ? "输入你的创作想法" : "输入你的创作想法、脚本或画面要求"}
+                    placeholder={placeholder || (compactMode ? "输入你的创作想法" : "输入你的创作想法、脚本或画面要求")}
                     onFocus={() => {
                         if (compactMode) onExpand?.();
                     }}
@@ -318,7 +328,7 @@ export function CreativeComposer({
                         })}
                     </div>
                 ) : null}
-                <div data-testid="creative-composer-input-row" className={cn("flex min-w-0 items-center gap-2 sm:gap-3", compact ? "h-11 min-h-11 max-h-11" : centered ? "min-h-[112px] items-start" : "min-h-[64px] items-start")}>
+                <div data-testid="creative-composer-input-row" className={cn("flex min-w-0 items-center gap-2 sm:gap-3", compact ? "h-11 min-h-11 max-h-11" : centered && !fixedMode ? "min-h-[112px] items-start" : "min-h-[64px] items-start")}>
                     <div className={cn("hide-scrollbar flex shrink-0 gap-1.5 overflow-x-auto", compact ? "max-w-[42%] items-center overflow-y-hidden pl-1" : "max-w-[46%] items-start px-1 pb-1 pt-1 sm:max-w-[320px]")}>
                         {showVideoFrames ? (
                             <CreativeVideoFrameControls
@@ -395,7 +405,7 @@ export function CreativeComposer({
                                     shape="circle"
                                     className="!size-11 !min-w-11 !border-0 !bg-[linear-gradient(135deg,#5968ff,#604dff)] !text-white !shadow-[0_6px_16px_rgba(89,104,255,0.22)] hover:!bg-[linear-gradient(135deg,#5261f3,#5846ee)] disabled:!bg-none disabled:!bg-[#e2e5e8] disabled:!text-[#aeb5bd] disabled:!shadow-none dark:disabled:!bg-[#30353c] dark:disabled:!text-[#68717d]"
                                     icon={busy ? <Square className="size-3.5 fill-current" /> : <ArrowUp className="size-4" />}
-                                    disabled={!busy && !value.trim()}
+                                    disabled={!busy && !(canSubmit ?? Boolean(value.trim()))}
                                     onClick={busy ? onCancel : onSubmit}
                                     aria-label={busy ? "停止生成" : "发送"}
                                 />
@@ -405,64 +415,66 @@ export function CreativeComposer({
                 </div>
                 <div className={cn("min-w-0 items-center gap-2 overflow-hidden px-0.5 pb-0.5 pt-2", compact ? "hidden" : "flex")}>
                     <div className="hide-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto sm:gap-2">
-                        <Popover
-                            trigger="click"
-                            placement={composerPopoverPlacement}
-                            autoAdjustOverflow={creativeComposerPopoverOverflow(composerPopoverPlacement)}
-                            arrow={false}
-                            open={modePickerOpen}
-                            onOpenChange={setModePickerOpen}
-                            content={
-                                <div className="hide-scrollbar max-h-[calc(100vh-160px)] w-[calc(100vw-56px)] max-w-[300px] overflow-y-auto py-1 sm:w-72 sm:max-w-none">
-                                    <p className="px-2 pb-2 text-sm font-semibold text-[#20242a] dark:text-[#f3f5f7]">创作类型</p>
-                                    <div className="space-y-1">
-                                        {creativeModeOptions.map((option) => {
-                                            const selected = option.value === creationMode;
-                                            return (
-                                                <button
-                                                    key={option.value}
-                                                    type="button"
-                                                    className={cn(
-                                                        "flex min-h-12 w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[#eef3f6] dark:hover:bg-[#29323a]",
-                                                        selected ? "text-[#20242a] dark:text-white" : "text-[#4f5a67] dark:text-[#bec6cf]",
-                                                    )}
-                                                    onClick={() => {
-                                                        onChangeCreationMode(option.value);
-                                                        setModePickerOpen(false);
-                                                    }}
-                                                >
-                                                    <span
+                        {!fixedMode ? (
+                            <Popover
+                                trigger="click"
+                                placement={composerPopoverPlacement}
+                                autoAdjustOverflow={creativeComposerPopoverOverflow(composerPopoverPlacement)}
+                                arrow={false}
+                                open={modePickerOpen}
+                                onOpenChange={setModePickerOpen}
+                                content={
+                                    <div className="hide-scrollbar max-h-[calc(100vh-160px)] w-[calc(100vw-56px)] max-w-[300px] overflow-y-auto py-1 sm:w-72 sm:max-w-none">
+                                        <p className="px-2 pb-2 text-sm font-semibold text-[#20242a] dark:text-[#f3f5f7]">创作类型</p>
+                                        <div className="space-y-1">
+                                            {creativeModeOptions.map((option) => {
+                                                const selected = option.value === creationMode;
+                                                return (
+                                                    <button
+                                                        key={option.value}
+                                                        type="button"
                                                         className={cn(
-                                                            "grid size-8 shrink-0 place-items-center rounded-lg",
-                                                            selected ? "bg-white text-[#28738e] shadow-sm dark:bg-[#394550] dark:text-[#8ec7da]" : "bg-[#f2f4f6] text-[#7b8692] dark:bg-[#30363e] dark:text-[#a0aab5]",
+                                                            "flex min-h-12 w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[#eef3f6] dark:hover:bg-[#29323a]",
+                                                            selected ? "text-[#20242a] dark:text-white" : "text-[#4f5a67] dark:text-[#bec6cf]",
                                                         )}
+                                                        onClick={() => {
+                                                            onChangeCreationMode(option.value);
+                                                            setModePickerOpen(false);
+                                                        }}
                                                     >
-                                                        <CreativeModeIcon mode={option.value} />
-                                                    </span>
-                                                    <span className="min-w-0 flex-1">
-                                                        <span className="block text-xs font-medium">{option.label}</span>
-                                                        <span className="mt-0.5 block truncate text-[11px] text-[#8b949f] dark:text-[#7f8996]">{option.description}</span>
-                                                    </span>
-                                                    {selected ? <Check className="size-4 shrink-0" /> : null}
-                                                </button>
-                                            );
-                                        })}
+                                                        <span
+                                                            className={cn(
+                                                                "grid size-8 shrink-0 place-items-center rounded-lg",
+                                                                selected ? "bg-white text-[#28738e] shadow-sm dark:bg-[#394550] dark:text-[#8ec7da]" : "bg-[#f2f4f6] text-[#7b8692] dark:bg-[#30363e] dark:text-[#a0aab5]",
+                                                            )}
+                                                        >
+                                                            <CreativeModeIcon mode={option.value} />
+                                                        </span>
+                                                        <span className="min-w-0 flex-1">
+                                                            <span className="block text-xs font-medium">{option.label}</span>
+                                                            <span className="mt-0.5 block truncate text-[11px] text-[#8b949f] dark:text-[#7f8996]">{option.description}</span>
+                                                        </span>
+                                                        {selected ? <Check className="size-4 shrink-0" /> : null}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                </div>
-                            }
-                        >
-                            <Button
-                                type="text"
-                                className={creativeComposerToolButtonClass(modePickerOpen)}
-                                icon={<CreativeModeIcon mode={creationMode} />}
-                                aria-label={`当前创作类型：${currentMode.label}`}
-                                aria-haspopup="menu"
-                                aria-expanded={modePickerOpen}
+                                }
                             >
-                                <span className="hidden text-xs font-medium sm:inline">{currentMode.label}</span>
-                                <ChevronDown className="hidden size-3.5 sm:block" />
-                            </Button>
-                        </Popover>
+                                <Button
+                                    type="text"
+                                    className={creativeComposerToolButtonClass(modePickerOpen)}
+                                    icon={<CreativeModeIcon mode={creationMode} />}
+                                    aria-label={`当前创作类型：${currentMode.label}`}
+                                    aria-haspopup="menu"
+                                    aria-expanded={modePickerOpen}
+                                >
+                                    <span className="hidden text-xs font-medium sm:inline">{currentMode.label}</span>
+                                    <ChevronDown className="hidden size-3.5 sm:block" />
+                                </Button>
+                            </Popover>
+                        ) : null}
                         <CreativeGenerationControls
                             models={models}
                             selectedModels={selectedModels}
@@ -600,16 +612,21 @@ export function CreativeComposer({
                             </Button>
                         </Tooltip>
                     </div>
-                    <Tooltip title={busy ? "停止生成" : "发送"}>
+                    <Tooltip title={busy ? "停止生成" : submitLabel || "发送"}>
                         <Button
                             type="primary"
-                            shape="circle"
-                            className="shrink-0 !size-11 !min-w-11 !border-0 !bg-[#20242a] !text-white shadow-none hover:!bg-[#343b44] disabled:!bg-[#e2e5e8] disabled:!text-[#aeb5bd] dark:!bg-[#f1f3f5] dark:!text-[#20242a] dark:hover:!bg-white dark:disabled:!bg-[#30353c] dark:disabled:!text-[#68717d]"
+                            shape={submitLabel && !busy ? "default" : "circle"}
+                            className={cn(
+                                "shrink-0 !h-11 !min-w-11 !border-0 !bg-[#20242a] !text-white shadow-none hover:!bg-[#343b44] disabled:!bg-[#e2e5e8] disabled:!text-[#aeb5bd] dark:!bg-[#f1f3f5] dark:!text-[#20242a] dark:hover:!bg-white dark:disabled:!bg-[#30353c] dark:disabled:!text-[#68717d]",
+                                submitLabel && !busy ? "!rounded-xl !px-4 !text-xs" : "!w-11",
+                            )}
                             icon={busy ? <Square className="size-3.5 fill-current" /> : <ArrowUp className="size-4" />}
-                            disabled={!busy && !value.trim()}
+                            disabled={!busy && !(canSubmit ?? Boolean(value.trim()))}
                             onClick={busy ? onCancel : onSubmit}
-                            aria-label={busy ? "停止生成" : "发送"}
-                        />
+                            aria-label={busy ? "停止生成" : submitLabel || "发送"}
+                        >
+                            {!busy ? submitLabel : null}
+                        </Button>
                     </Tooltip>
                 </div>
             </div>

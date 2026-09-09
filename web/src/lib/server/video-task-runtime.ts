@@ -4,7 +4,7 @@ import { generationMediaProxyHeaders } from "@/lib/server/generation-media-autho
 import { finishGenerationAttempt } from "@/lib/server/generation-attempt";
 import { fetchInternalApi } from "@/lib/server/internal-origin";
 import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
-import { isProviderBusinessError, providerQueryPaths, readProviderError, videoPollingPolicy } from "@/lib/server/provider-task-config";
+import { isProviderBusinessError, providerQueryPaths, providerTaskPath, readProviderError, videoPollingPolicy } from "@/lib/server/provider-task-config";
 import { registerGenerationTaskAssetsForUser } from "@/lib/server/creative-runtime-service";
 import { normalizeVideoResult } from "@/lib/server/video-result-normalizer";
 import { VIDEO_PROVIDER_FAILED, VIDEO_PROVIDER_SUCCESS, parseVideoProviderJson, readVideoProviderHttpError, readVideoProviderStatus, readVideoProviderUrl, videoProviderMediaUrl } from "@/lib/server/video-provider-response";
@@ -14,6 +14,8 @@ import { maintenanceWorkerHeaders } from "@/lib/server/maintenance-auth";
 import { systemAiBillingHeaders } from "@/lib/server/system-ai-billing";
 import { refundVideoTask } from "@/lib/server/video-task-refund";
 import { geminiVideoQueryPath, parseGeminiVideoOperation } from "@/lib/server/gemini-video-provider";
+import { HUIFENG_VIDEO_POLL_INTERVAL_MS, parseHuifengVideoStatus } from "@/lib/server/huifeng-video-response";
+import { HUIFENG_QUERY_PATH } from "@/lib/huifeng-media";
 
 export type VideoUpstreamStep = { state: "pending"; status: string } | { state: "result_ready"; status: string; resultUrl: string } | { state: "failed"; status: string; error: string };
 
@@ -29,6 +31,7 @@ export async function refreshVideoTaskFromUpstream(task: VideoTask, origin: stri
 }
 
 export async function queryVideoTaskUpstream(task: VideoTask, origin: string, cookie = "", workerUserId = ""): Promise<VideoUpstreamStep> {
+    if (task.config.advancedConfig?.protocol === "huifeng") return queryHuifengVideoUpstream(task, origin, cookie, workerUserId);
     if (task.upstream.resultUrl) return { state: "result_ready", status: "completed", resultUrl: task.upstream.resultUrl };
     if (isGeminiVideoTask(task)) return queryGeminiVideoUpstream(task, origin, cookie, workerUserId);
     const data = await queryVideoUpstream(task, origin, cookie, workerUserId);
@@ -39,6 +42,19 @@ export async function queryVideoTaskUpstream(task: VideoTask, origin: string, co
     }
     if (isProviderBusinessError(data) || VIDEO_PROVIDER_FAILED.has(status)) return { state: "failed", status: status || "failed", error: readProviderError(data) || "视频生成失败" };
     return { state: "pending", status: status || "processing" };
+}
+
+async function queryHuifengVideoUpstream(task: VideoTask, origin: string, cookie: string, workerUserId: string): Promise<VideoUpstreamStep> {
+    if (!task.upstream.id) throw new Error("汇风视频任务缺少任务 ID，不能安全查询");
+    const path = task.upstream.queryPath || providerTaskPath(task.config.advancedConfig?.queryPath || HUIFENG_QUERY_PATH, task.upstream.id);
+    const response = await fetchInternalApi(`${origin}${task.config.baseUrl.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`, {
+        headers: videoProxyHeaders(task, cookie, workerUserId),
+        cache: "no-store",
+        signal: AbortSignal.timeout(Math.min(resolveModelRequestTimeoutMs(task.config, "video"), 60_000)),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(readVideoProviderHttpError(text, response.status));
+    return parseHuifengVideoStatus(parseVideoProviderJson(text), task.upstream.id);
 }
 
 async function queryGeminiVideoUpstream(task: VideoTask, origin: string, cookie: string, workerUserId: string): Promise<VideoUpstreamStep> {
@@ -72,6 +88,7 @@ export async function failVideoTaskFromWorker(task: VideoTask, error: string, re
 }
 
 function taskPollingPolicy(task: VideoTask) {
+    if (task.config.advancedConfig?.protocol === "huifeng") return { intervalMs: HUIFENG_VIDEO_POLL_INTERVAL_MS };
     return videoPollingPolicy(Boolean(globalAiOpcPreset(task)));
 }
 
@@ -223,5 +240,5 @@ function globalAiOpcPreset(task: VideoTask) {
 }
 
 function isGeminiVideoTask(task: VideoTask) {
-    return task.config.apiFormat === "gemini" && task.config.advancedConfig?.protocol !== "globalaiopc";
+    return task.config.apiFormat === "gemini" && !["globalaiopc", "huifeng"].includes(task.config.advancedConfig?.protocol || "");
 }

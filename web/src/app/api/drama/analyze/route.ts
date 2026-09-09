@@ -13,7 +13,9 @@ import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemA
 import { isStructuredTextFailure, rankTextPlanningCandidates, requestStructuredText, type TextPlanningCandidate } from "@/lib/server/text-planning-runtime";
 import { dramaAnalysisText, normalizeDramaVisualInput, type DramaAnalyzeBody, type NormalizedDramaVisualInput } from "@/lib/server/drama-analysis-input";
 import { dramaShotDurationInstruction, resolveDramaVideoDurationPolicy } from "@/lib/server/drama-shot-config";
-import { analyzeDramaVisualBatches } from "@/lib/server/drama-visual-analysis-runtime";
+import { analyzeDramaVideoPromptBatches, analyzeDramaVisualBatches } from "@/lib/server/drama-visual-analysis-runtime";
+import { dramaVideoPromptTool } from "@/lib/server/drama-video-prompt-analysis";
+import { dramaVideoPromptInstructions } from "@/lib/drama-video-prompt-instructions";
 
 export const runtime = "nodejs";
 
@@ -30,12 +32,13 @@ export async function POST(request: Request) {
     }
     const requestId = dramaAnalysisText(body.requestId);
     if (!requestId || requestId.length > 200) return NextResponse.json({ code: 400, data: null, msg: "剧本分析请求标识无效" }, { status: 400 });
-    const phase = body.phase === "visual" ? "visual" : "content";
+    const phase = body.phase === "visual" || body.phase === "video-prompts" ? body.phase : "content";
+    if (body.videoPromptInstructions !== undefined && (typeof body.videoPromptInstructions !== "string" || body.videoPromptInstructions.length > 50_000)) return NextResponse.json({ code: 400, data: null, msg: "视频提示词生成指令必须是 50,000 字以内的文本" }, { status: 400 });
     const script = dramaAnalysisText(body.script);
     if (phase === "content" && !script) return NextResponse.json({ code: 400, data: null, msg: "请先填写剧本" }, { status: 400 });
 
-    const visualInput = phase === "visual" ? normalizeDramaVisualInput(body) : null;
-    if (phase === "visual" && !visualInput?.shotIds.length) return NextResponse.json({ code: 400, data: null, msg: "请先完成内容审核" }, { status: 400 });
+    const visualInput = phase !== "content" ? normalizeDramaVisualInput(body) : null;
+    if (phase !== "content" && !visualInput?.shotIds.length) return NextResponse.json({ code: 400, data: null, msg: "请先完成内容审核" }, { status: 400 });
 
     const settings = await getAuthSettings();
     const model = settings.defaultModels.textModel;
@@ -50,15 +53,16 @@ export async function POST(request: Request) {
 
     let refundedPointsRemaining: number | undefined;
     try {
-        const tool = phase === "visual" ? dramaVisualTool : dramaContentTool;
-        const input = phase === "visual" ? visualInput!.payload : { script, summary: dramaAnalysisText(body.summary) };
+        const tool = phase === "video-prompts" ? dramaVideoPromptTool : phase === "visual" ? dramaVisualTool : dramaContentTool;
         const schemaInstruction = `即使渠道没有传递工具定义，也必须只返回符合以下 JSON Schema 的对象，不能返回输入对象，不能把 script 或 summary 作为顶层字段：${JSON.stringify(tool.parameters)}`;
         const messagesFor = (batchInput: unknown) => [
             {
                 role: "system",
                 content:
-                    phase === "visual"
-                        ? `你是影视视觉导演。输入内容已经由用户审核，必须严格保留每个 shotId、镜头数量、顺序、人物、场景、对白、旁白、原文和时长。为每个镜头补充图片提示词、视频提示词、起始/结束帧提示词、镜头运动和连续性数据；连续性必须明确景别、机位、构图、人物站位、视线、动作起止、屏幕运动方向和轴线规则。镜头之间要保持人物服装、道具、空间和视线关系连续。必须调用 design_drama_visuals。不要使用 Markdown。${schemaInstruction}`
+                    phase === "video-prompts"
+                        ? `${dramaVideoPromptInstructions(body.videoPromptInstructions)}\n逐一返回全部镜头的 shotId 和 videoPrompt，严格保留原始镜头数量与顺序；不得返回或修改图片提示词、首尾帧及其他结构字段。必须调用 design_drama_video_prompts。不要使用 Markdown。${schemaInstruction}`
+                        : phase === "visual"
+                        ? `你是影视视觉导演。输入内容已经由用户审核，必须严格保留每个 shotId、镜头数量、顺序、人物、场景、对白、旁白、原文和时长。为每个镜头补充图片提示词、视频提示词、起始/结束帧提示词、镜头运动和连续性数据；连续性必须明确景别、机位、构图、人物站位、视线、动作起止、屏幕运动方向和轴线规则。镜头之间要保持人物服装、道具、空间和视线关系连续。\n仅 videoPrompt 字段采用以下生成指令：\n${dramaVideoPromptInstructions(body.videoPromptInstructions)}\n必须调用 design_drama_visuals。不要使用 Markdown。${schemaInstruction}`
                         : `你是影视剧本编辑。只提取剧本明确存在的内容事实和镜头边界，不生成 imagePrompt、videoPrompt、镜头运动或画面风格，不添加无依据的主要情节。必须逐句保留所有角色直接说出的原话和原文明示的旁白，utterances 按原文顺序列出每一句；每条 dialogue 必须根据前后文填写明确说话人姓名或身份，禁止留空、填写“说话人/未知”或只写无法定位的代词；带引号的地名、招式名、物品名和章节名不是对白。禁止把多句台词压缩成“某人说明/表示/询问”的剧情摘要；说话人转换、明确动作反应或场景变化都应成为可审核的镜头边界，sourceText 必须保留对应连续原文。${durationInstruction}必须调用 analyze_drama_content。不要使用 Markdown。${schemaInstruction}`,
             },
             { role: "user", content: JSON.stringify(batchInput) },
@@ -66,8 +70,9 @@ export async function POST(request: Request) {
         let latestError: unknown;
         for (const candidate of rankTextPlanningCandidates(candidates.map((candidate) => ({ ...candidate, channelId: candidate.channel.id })))) {
             try {
-                if (phase === "visual") {
-                    const result = await analyzeDramaVisualBatches({
+                if (phase !== "content") {
+                    const analyzeBatches = phase === "video-prompts" ? analyzeDramaVideoPromptBatches : analyzeDramaVisualBatches;
+                    const result = await analyzeBatches({
                         input: visualInput!,
                         requestBatch: async (batch) => {
                             const call = await requestFunctionCall(
@@ -78,7 +83,7 @@ export async function POST(request: Request) {
                                 messagesFor(batch.payload),
                                 user.id,
                                 tool,
-                                visualBatchIdempotencyKey(user.id, requestId, candidate, batch),
+                                visualBatchIdempotencyKey(user.id, requestId, candidate, batch, phase),
                                 undefined,
                                 false,
                                 request.signal,
@@ -91,7 +96,7 @@ export async function POST(request: Request) {
                         shouldSplitError: isAdaptiveVisualBatchError,
                     });
                     if (result.data.shots.length !== visualInput!.shotIds.length) throw new Error("模型没有为全部镜头生成视觉结构");
-                    const response = NextResponse.json({ code: 0, data: result.data, msg: "视觉结构已生成" });
+                    const response = NextResponse.json({ code: 0, data: result.data, msg: phase === "video-prompts" ? "视频提示词已生成" : "视觉结构已生成" });
                     const pointsRemaining = result.calls
                         .map((call) => call.pointsRemaining)
                         .filter((value): value is number => typeof value === "number")
@@ -136,8 +141,8 @@ export async function POST(request: Request) {
     }
 }
 
-function visualBatchIdempotencyKey(userId: string, requestId: string, candidate: TextPlanningCandidate, batch: NormalizedDramaVisualInput) {
-    return systemAiIdempotencyKey("drama-analyze", userId, "visual", requestId, batch.shotIds.join("\0"), candidate.channel.id, candidate.upstreamModel);
+function visualBatchIdempotencyKey(userId: string, requestId: string, candidate: TextPlanningCandidate, batch: NormalizedDramaVisualInput, phase = "visual") {
+    return systemAiIdempotencyKey("drama-analyze", userId, phase, requestId, batch.shotIds.join("\0"), candidate.channel.id, candidate.upstreamModel);
 }
 
 function isAdaptiveVisualBatchError(error: unknown) {

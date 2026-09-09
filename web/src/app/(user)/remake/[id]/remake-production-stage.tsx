@@ -5,6 +5,8 @@ import { App, Button, Image, Input, Segmented, Tag, Tooltip } from "antd";
 import { Check, Copy, Download, FileAudio, FileText, LoaderCircle, Play, RefreshCw, Sparkles, Video, VolumeX } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { VideoPromptInstructionEditor } from "@/components/video-prompt-instruction-editor";
+import { remakeVideoPromptInstructions } from "@/lib/remake-video-prompt-instructions";
 import { browserReadableMediaUrl } from "@/lib/browser-media-url";
 import { mediaDownloadFileName } from "@/lib/media-file";
 import { imagePreviewUrl, originalMediaDownloadUrl } from "@/lib/media-image-url";
@@ -73,17 +75,23 @@ export function RemakeProductionStage({
     const resumeTimersRef = useRef(new Set<number>());
     const [batchStarting, setBatchStarting] = useState(false);
     const [exporting, setExporting] = useState(false);
+    const [instructionDrafts, setInstructionDrafts] = useState<Record<string, string>>({});
+    const instructionDraftsRef = useRef(instructionDrafts);
+    instructionDraftsRef.current = instructionDrafts;
+    const [savingInstructions, setSavingInstructions] = useState(false);
+    const hasInstructionChanges = (group: RemakeRangeGroup) => instructionDrafts[group.id] !== undefined && instructionDrafts[group.id].trim() !== (group.videoPromptInstructions || "");
     const [resumeNonce, setResumeNonce] = useState(0);
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     const prerequisites = productionPrerequisites(project);
-    const promptsReady = project.groups.length === 4 && project.groups.every((group) => group.videoPrompt.trim());
+    const promptsReady = project.groups.length === 4 && project.groups.every((group) => group.videoPrompt.trim() && !hasInstructionChanges(group));
     const reportReady = project.copy.status === "completed" && Boolean(project.copy.rawReport.trim());
     const videosReady = remakeVideosReady(project);
-    const productionReady = remakeProductionReady(project);
+    const productionReady = remakeProductionReady(project) && !project.groups.some(hasInstructionChanges);
     const videoActive = project.groups.some((group) => isVideoActive(group)) || startingGroupsRef.current.size > 0;
-    const sharedBusy = building || buildingGroupIds.length > 0 || promptBuildPendingRef.current.size > 0 || batchPromptBuildPendingRef.current || videoActive;
+    const sharedBusy = savingInstructions || building || buildingGroupIds.length > 0 || promptBuildPendingRef.current.size > 0 || batchPromptBuildPendingRef.current || videoActive;
     const isPromptBuilding = useCallback((groupId: string) => building || batchPromptBuildPendingRef.current || buildingGroupIds.includes(groupId) || promptBuildPendingRef.current.has(groupId), [building, buildingGroupIds]);
     const canStartGroupVideo = (group: RemakeRangeGroup) => Boolean(
+        !hasInstructionChanges(group) &&
         group.videoPrompt.trim() &&
         group.imageGeneration.status === "completed" &&
         group.imageGeneration.result?.url &&
@@ -117,6 +125,31 @@ export function RemakeProductionStage({
         },
         [onGroupChange],
     );
+
+    const saveInstructions = async (groupId?: string) => {
+        const drafts = { ...instructionDraftsRef.current };
+        const targets = latestProjectRef.current.groups.filter((group) => !groupId || group.id === groupId);
+        setSavingInstructions(true);
+        try {
+            for (const group of targets) {
+                const draft = drafts[group.id];
+                if (draft === undefined || draft.trim() === (group.videoPromptInstructions || "")) continue;
+                emitGroupChange(group.id, { videoPromptInstructions: draft.trim(), videoPrompt: "", videoGeneration: { status: "idle", taskId: null, model: undefined, result: null, error: null, needsReview: false } });
+            }
+            if (!await onFlush()) throw new Error("生成指令保存失败，请处理保存冲突后重试");
+            latestProjectRef.current = getCurrentProject?.() || latestProjectRef.current;
+            setInstructionDrafts((current) => {
+                const remaining = { ...current };
+                for (const group of targets) {
+                    if (current[group.id] === drafts[group.id]) delete remaining[group.id];
+                }
+                instructionDraftsRef.current = remaining;
+                return remaining;
+            });
+        } finally {
+            setSavingInstructions(false);
+        }
+    };
 
     const emitModelChange = useCallback(
         (kind: "prompt" | "video", model: string) => {
@@ -203,6 +236,8 @@ export function RemakeProductionStage({
             const current = latestProjectRef.current;
             const group = current.groups.find((item) => item.id === groupId);
             if (!group || startingGroupsRef.current.has(groupId) || deferredGroupsRef.current.has(groupId)) return;
+            const draft = instructionDraftsRef.current[groupId];
+            if (draft !== undefined && draft.trim() !== (group.videoPromptInstructions || "")) return message.warning("请先保存生成指令并重新生成本组视频提示词");
             if (group.videoGeneration.needsReview && group.videoGeneration.taskId && group.videoGeneration.model) {
                 return waitForGroupVideo(groupId, group.videoPrompt, { id: group.videoGeneration.taskId, serverTaskId: group.videoGeneration.taskId, provider: "generation", pollPath: "server", model: group.videoGeneration.model, durationSeconds: 15 }, announce, true);
             }
@@ -335,7 +370,10 @@ export function RemakeProductionStage({
             batchPromptBuildPendingRef.current = true;
         }
         try {
+            await saveInstructions(groupId);
             await onBuild(groupId);
+        } catch (reason) {
+            message.error(reason instanceof Error ? reason.message : "生成指令保存失败，请重试");
         } finally {
             if (groupId) promptBuildPendingRef.current.delete(groupId);
             else batchPromptBuildPendingRef.current = false;
@@ -350,7 +388,8 @@ export function RemakeProductionStage({
     const exportBundle = async () => {
         setExporting(true);
         try {
-            await downloadRemakeProductionBundle(project);
+            await saveInstructions();
+            await downloadRemakeProductionBundle(getCurrentProject?.() || latestProjectRef.current);
             message.success("飞书复刻生产包已下载");
         } catch (reason) {
             message.error(reason instanceof Error ? reason.message : "生产包下载失败");
@@ -449,8 +488,21 @@ export function RemakeProductionStage({
                                     group={group}
                                     building={isPromptBuilding(group.id)}
                                     promptDisabled={isPromptBuilding(group.id) || !prerequisites.ready || isVideoActive(group) || startingGroupsRef.current.has(group.id)}
-                                    disabled={!group.videoPrompt.trim() || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !project.references.product?.url || startingGroupsRef.current.has(group.id)}
-                                    onBuild={() => void buildPrompts(group.id)}
+                                    disabled={hasInstructionChanges(group) || !group.videoPrompt.trim() || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !project.references.product?.url || startingGroupsRef.current.has(group.id)}
+                                    instructionValue={instructionDrafts[group.id] ?? group.videoPromptInstructions}
+                                    instructionsDirty={hasInstructionChanges(group)}
+                                    instructionsDisabled={sharedBusy}
+                                    onInstructionsChange={(value) => {
+                                        if (sharedBusy) return;
+                                        const next = { ...instructionDraftsRef.current, [group.id]: value };
+                                        instructionDraftsRef.current = next;
+                                        setInstructionDrafts(next);
+                                    }}
+                                    onSaveInstructions={async () => {
+                                        await saveInstructions(group.id);
+                                        message.success(`分镜 ${group.id} 的生成指令已保存`);
+                                    }}
+                                    onBuild={() => buildPrompts(group.id)}
                                     onGenerate={() => void startGroupVideo(group.id)}
                                     onCopy={(text) => void copyPrompt(text, `分镜 ${group.id} 完整视频 Prompt 已复制`)}
                                 />
@@ -472,7 +524,20 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, building, promptDisabled, disabled, onBuild, onGenerate, onCopy }: { group: RemakeRangeGroup; building: boolean; promptDisabled: boolean; disabled: boolean; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
+function VideoGroupCard({ group, building, promptDisabled, disabled, instructionValue, instructionsDirty, instructionsDisabled, onInstructionsChange, onSaveInstructions, onBuild, onGenerate, onCopy }: {
+    group: RemakeRangeGroup;
+    building: boolean;
+    promptDisabled: boolean;
+    disabled: boolean;
+    instructionValue?: string;
+    instructionsDirty: boolean;
+    instructionsDisabled: boolean;
+    onInstructionsChange: (value: string) => void;
+    onSaveInstructions: () => Promise<void>;
+    onBuild: () => void | Promise<void>;
+    onGenerate: () => void;
+    onCopy: (text: string) => void;
+}) {
     const generation = group.videoGeneration;
     const active = isVideoActive(group) && !generation.needsReview;
     const videoUrl = generation.result?.url ? browserReadableMediaUrl(generation.result.url) : "";
@@ -497,6 +562,21 @@ function VideoGroupCard({ group, building, promptDisabled, disabled, onBuild, on
                         {generation.needsReview ? "检查状态" : generation.status === "completed" ? "重新生成" : generation.status === "error" ? "重试" : "生成视频"}
                     </Button>
                 </div>
+            </div>
+            <div className="p-3">
+                <VideoPromptInstructionEditor
+                    label={`分镜 ${group.id} 视频提示词生成指令`}
+                    defaultText={remakeVideoPromptInstructions(group.id)}
+                    value={instructionValue}
+                    dirty={instructionsDirty}
+                    disabled={instructionsDisabled}
+                    hasOutput={Boolean(group.videoPrompt)}
+                    onChange={onInstructionsChange}
+                    onSave={onSaveInstructions}
+                    onGenerate={onBuild}
+                    generationDisabled={promptDisabled}
+                />
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">修改只重置本组视频提示词和视频结果，已生成的图片与文案会保留。输出仍按 15 秒、四个三帧区间及素材引用格式生成。</p>
             </div>
             <div className="grid min-w-0 gap-3 p-3 sm:grid-cols-[110px_minmax(0,1fr)]">
                 <div className="relative aspect-[9/16] w-[110px] overflow-hidden rounded-md border border-border bg-[#15181c]">
@@ -564,7 +644,7 @@ function videoAsset(stored: UploadedFile, groupId: string): RemakeMediaAsset {
 }
 
 function remakeVideoClientRequestId(project: RemakeProject, group: RemakeRangeGroup, model: string) {
-    const input = [project.id, group.id, model, group.videoPrompt, group.imageGeneration.result?.storageKey || group.imageGeneration.result?.url, project.references.product?.storageKey || project.references.product?.url, project.references.character?.storageKey || project.references.character?.url, project.references.audio?.storageKey || project.references.audio?.url].join("\n");
+    const input = [project.id, group.id, group.videoPromptInstructions || "", model, group.videoPrompt, group.imageGeneration.result?.storageKey || group.imageGeneration.result?.url, project.references.product?.storageKey || project.references.product?.url, project.references.character?.storageKey || project.references.character?.url, project.references.audio?.storageKey || project.references.audio?.url].join("\n");
     return `remake-video:${group.id}:${stableTextHash(input)}`;
 }
 

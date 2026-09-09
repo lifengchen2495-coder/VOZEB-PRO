@@ -24,6 +24,7 @@ import type { AgentFunctionCallResult } from "./agent-function-call";
 import { agentSurfaceImageSize, canvasReferenceContext, canvasReferenceSupportsTask, canvasSnapshotNodes, isMediaReferenceType, resolveAgentTaskRatio, resolveCanvasTaskTargetNodeId, selectedCanvasReferenceNodes } from "./agent-run-task-input";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders } from "./system-ai-billing";
 import { acceptsMediaReference, mergeTaskReferences, taskImageUrls, taskReferences, textConstraintInstruction } from "./agent-run-execution-helpers";
+import { applyImageReferenceRoles, assertImageReferenceAssets, finalImageReferenceAliases } from "./agent-image-reference-policy";
 
 export { planToOps, taskResultOps } from "./agent-run-canvas-ops";
 export { acceptsMediaReference, mergeTaskReferences, requestedTextLimit, reviewCorrection, taskImageUrls, taskReferences, taskResultItems, textConstraintInstruction } from "./agent-run-execution-helpers";
@@ -172,6 +173,8 @@ export function normalizeTasks(
     const selectedNodeIds = new Set(selectedCanvasNodeIds(snapshot).filter((id) => nodes.has(id)));
     const selectedCanvasReferences = surface === "canvas" ? selectedCanvasReferenceNodes(snapshot) : [];
     const assets = new Map(referencedAssets.map((asset) => [asset.id, asset]));
+    const imageBindings = generationPreferences?.image?.references || [];
+    assertImageReferenceAssets(imageBindings, referencedAssets);
     const referenceAliases = creativeAssetReferenceAliases(
         referencedAssets,
         referencedAssets.map((asset) => asset.id),
@@ -189,10 +192,11 @@ export function normalizeTasks(
         const target = targetNodeId ? nodes.get(targetNodeId) : undefined;
         const canvasReferences = selectedCanvasReferences.filter((reference) => canvasReferenceSupportsTask(reference.type, item.type));
         const frameIds = item.type === "video" ? videoFrameAssetIds(generationPreferences?.video) : [];
-        const frameIdSet = new Set(frameIds);
-        const explicitFrameAssets = resolveTaskReferences(frameIds, assets, item.type);
-        const plannedAssets = target ? [] : resolveTaskReferences(item.assetIds, assets, item.type).filter((asset) => !frameIdSet.has(asset.id));
-        const selectedAssets = [...explicitFrameAssets, ...plannedAssets];
+        const explicitIds = item.type === "image" ? imageBindings.map((reference) => reference.assetId) : frameIds;
+        const explicitIdSet = new Set(explicitIds);
+        const explicitAssets = resolveTaskReferences(explicitIds, assets, item.type);
+        const plannedAssets = target ? [] : resolveTaskReferences(item.assetIds, assets, item.type).filter((asset) => !explicitIdSet.has(asset.id));
+        const selectedAssets = [...explicitAssets, ...plannedAssets];
         const frameRoles = new Map<string, VideoReferenceRole>([
             ...(generationPreferences?.video?.firstFrameAssetId ? ([[generationPreferences.video.firstFrameAssetId, "first_frame"]] as const) : []),
             ...(generationPreferences?.video?.lastFrameAssetId ? ([[generationPreferences.video.lastFrameAssetId, "last_frame"]] as const) : []),
@@ -212,6 +216,7 @@ export function normalizeTasks(
         const primaryReference = references[0];
         const referenceContext = selectedAssets.map((asset) => creativeAssetContext(asset, referenceAliases.get(asset.id))).join("\n");
         const selectedCanvasContext = canvasReferenceContext(canvasReferences);
+        const prompt = `${withCreativeFoundation(optimizedPrompt, plan.foundation)}${skillInstructions ? `\n\n执行以下已选 Skill 约束：\n${skillInstructions}` : ""}${textConstraintInstruction(requestPrompt, item.type)}${target ? `\n\n基于画布已有节点进行局部修改：${target.summary}` : ""}${selectedCanvasContext ? `\n\n使用本轮画布引用：\n${selectedCanvasContext}` : ""}${referenceContext ? `\n\n使用已引用创作资产：${referenceContext}` : ""}`;
         return {
             id: item.id?.trim() || `task-${index}`,
             targetNodeId: target ? targetNodeId : undefined,
@@ -223,7 +228,7 @@ export function normalizeTasks(
             type: item.type,
             model: resolvePlannedModel(settings, item.type, item.model),
             optimizedPrompt,
-            prompt: `${withCreativeFoundation(optimizedPrompt, plan.foundation)}${skillInstructions ? `\n\n执行以下已选 Skill 约束：\n${skillInstructions}` : ""}${textConstraintInstruction(requestPrompt, item.type)}${target ? `\n\n基于画布已有节点进行局部修改：${target.summary}` : ""}${selectedCanvasContext ? `\n\n使用本轮画布引用：\n${selectedCanvasContext}` : ""}${referenceContext ? `\n\n使用已引用创作资产：${referenceContext}` : ""}`,
+            prompt: item.type === "image" ? applyImageReferenceRoles(prompt, imageBindings, references, referenceAliases) : prompt,
             count: resolveAgentTaskCount(
                 item.type,
                 item.type === "image" ? generationPreferences?.image?.count || item.count : item.type === "video" ? generationPreferences?.video?.count || item.count : item.count,
@@ -694,13 +699,14 @@ export async function withDependencyContext(runId: string, task: AgentRunTask): 
     const assetContext = dependencyAssets.map((asset) => creativeAssetContext(asset)).join("\n");
     const context = [taskContext, assetContext].filter(Boolean).join("\n");
     const primaryReference = references[0];
+    const prompt = task.type === "image" ? applyImageReferenceRoles(task.prompt, run.generationPreferences?.image?.references || [], references, finalImageReferenceAliases(taskReferences(task))) : task.prompt;
     return {
         ...task,
         referenceAssetId: primaryReference?.assetId || task.referenceAssetId,
         referenceUrl: primaryReference?.url || task.referenceUrl,
         referenceType: primaryReference?.type || task.referenceType,
         references,
-        prompt: context ? `${task.prompt}\n\n请保持与以下已完成产物一致，并将依赖媒体作为真实生成参考：\n${context}` : task.prompt,
+        prompt: context ? `${prompt}\n\n请保持与以下已完成产物一致，并将依赖媒体作为真实生成参考：\n${context}` : prompt,
     };
 }
 

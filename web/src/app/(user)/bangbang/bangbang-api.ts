@@ -9,6 +9,14 @@ export async function bangbangRequest<T>(path: string, body?: unknown, method = 
     return bangbangResponse<T>(await fetch(`/api/bangbang${path}`, { method, cache: "no-store", ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) }));
 }
 export const bangbangProjectPath = (id: string) => `/projects/${encodeURIComponent(id)}`;
+export type BangbangVideoPromptTemplate = { defaultText: string; text: string; source: "default" | "custom" };
+export async function loadBangbangVideoPromptTemplate(id: string): Promise<BangbangVideoPromptTemplate> {
+    const template = await bangbangRequest<BangbangVideoPromptTemplate>(`${bangbangProjectPath(id)}/video-prompt-template`);
+    if (!template || typeof template.defaultText !== "string" || !template.defaultText.trim() || typeof template.text !== "string" || !template.text.trim() || (template.source !== "default" && template.source !== "custom"))
+        throw new Error("生成指令未完整加载，请重试");
+    if (template.defaultText.length > 50_000 || template.text.length > 50_000) throw new Error("生成指令超过 50000 字，请联系管理员检查模板");
+    return template;
+}
 export async function uploadBangbangMedia(projectId: string, file: File): Promise<BangbangMedia> {
     const limit = file.type.startsWith("video/") ? 200 : 20;
     if (file.size > limit * 1024 * 1024) throw new Error(`文件不能超过 ${limit} MB`);

@@ -12,6 +12,7 @@ import type { AgentRunPlannerAudit } from "./agent-run-audit";
 import { AGENT_REQUEST_SCHEMA } from "./agent-prompt-json";
 import { normalizeAgentRunCanvasSnapshot, selectedCanvasNodeIds } from "./agent-run-canvas-snapshot";
 import { getDramaProject } from "./drama-project-store";
+import { assertImageReferenceAssets } from "./agent-image-reference-policy";
 
 export type AgentRunStatus = "planning" | "running" | "paused" | "completed" | "failed" | "cancelled";
 export type AgentRunReviewStatus = "review_pending" | "reviewing" | "review_completed" | "review_unavailable";
@@ -131,6 +132,11 @@ const TTL = 365 * 24 * 60 * 60 * 1000;
 
 export async function createAgentRun(userId: string, input: CreativeRunRequest) {
     await assertVideoFrameAssets(userId, input);
+    const imageReferences = input.preferences?.image?.references || [];
+    if (imageReferences.length) {
+        if (imageReferences.some((reference) => !input.assetIds.includes(reference.assetId))) throw new CreativeRuntimeInputError("图片素材用途必须绑定本轮已选择的图片");
+        assertImageReferenceAssets(imageReferences, await getCreativeAssetsByIds(imageReferences.map((reference) => reference.assetId), userId), userId);
+    }
     const now = Date.now();
     const conversationId = input.conversationId || `conversation-${nanoid()}`;
     const snapshot = input.surface === "canvas" ? normalizeAgentRunCanvasSnapshot(input.snapshot, input.projectId) : input.surface === "drama" && input.projectId ? await resolveDramaRunSnapshot(userId, input.projectId, input.snapshot) : input.snapshot;

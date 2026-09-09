@@ -4,6 +4,7 @@ export const SYSTEM_AI_LOGICAL_MODEL_HEADER = "x-vozeb-pro-logical-model";
 export const SYSTEM_AI_POINTS_IDEMPOTENCY_HEADER = "x-vozeb-pro-points-idempotency-key";
 export const SYSTEM_AI_POINTS_SIGNATURE_HEADER = "x-vozeb-pro-points-signature";
 export const SYSTEM_AI_UPSTREAM_MODEL_HEADER = "x-vozeb-pro-upstream-model";
+export const SYSTEM_AI_VIDEO_BILLING_HEADER = "x-vozeb-pro-video-billing";
 
 const SYSTEM_AI_POINTS_SIGNATURE_VERSION = "v1";
 const SYSTEM_AI_POINTS_PROCESS_SECRET = "__vozebProSystemAiPointsProcessSecret" as const;
@@ -13,19 +14,24 @@ export type SystemAiBilling = {
     pointsRecordId?: string;
 };
 
-export function systemAiBillingHeaders(logicalModel: string, idempotencyKey?: string, upstreamModel?: string) {
+export type SystemAiVideoBillingParameters = { durationSeconds: number; resolution: string };
+
+export function systemAiBillingHeaders(logicalModel: string, idempotencyKey?: string, upstreamModel?: string, videoBilling?: SystemAiVideoBillingParameters) {
     const normalizedLogicalModel = logicalModel.trim();
     const normalizedIdempotencyKey = idempotencyKey?.trim();
     const normalizedUpstreamModel = upstreamModel?.trim();
+    const videoPayload = videoBilling ? encodeVideoBillingParameters(videoBilling) : "";
+    if (videoPayload && (!normalizedLogicalModel || !normalizedIdempotencyKey || !normalizedUpstreamModel)) throw new Error("视频计费参数缺少任务身份");
     return {
         ...(normalizedLogicalModel ? { [SYSTEM_AI_LOGICAL_MODEL_HEADER]: normalizedLogicalModel } : {}),
         ...(normalizedIdempotencyKey
             ? {
                   [SYSTEM_AI_POINTS_IDEMPOTENCY_HEADER]: normalizedIdempotencyKey,
-                  [SYSTEM_AI_POINTS_SIGNATURE_HEADER]: signSystemAiBusinessRequest(normalizedLogicalModel, normalizedIdempotencyKey, normalizedUpstreamModel || ""),
+                  [SYSTEM_AI_POINTS_SIGNATURE_HEADER]: signSystemAiBusinessRequest(normalizedLogicalModel, normalizedIdempotencyKey, normalizedUpstreamModel || "", videoPayload),
               }
             : {}),
         ...(normalizedUpstreamModel ? { [SYSTEM_AI_UPSTREAM_MODEL_HEADER]: normalizedUpstreamModel } : {}),
+        ...(videoPayload ? { [SYSTEM_AI_VIDEO_BILLING_HEADER]: videoPayload } : {}),
     };
 }
 
@@ -33,11 +39,29 @@ export function readVerifiedSystemAiBusinessRequestId(headers: Headers, logicalM
     const businessRequestId = headers.get(SYSTEM_AI_POINTS_IDEMPOTENCY_HEADER)?.trim().slice(0, 200) || "";
     const signature = headers.get(SYSTEM_AI_POINTS_SIGNATURE_HEADER)?.trim() || "";
     if (!businessRequestId || !signature) return undefined;
-    const expected = signSystemAiBusinessRequest(logicalModel.trim(), businessRequestId, upstreamModel.trim());
+    const expected = signSystemAiBusinessRequest(logicalModel.trim(), businessRequestId, upstreamModel.trim(), headers.get(SYSTEM_AI_VIDEO_BILLING_HEADER) || "");
     const receivedBytes = Buffer.from(signature);
     const expectedBytes = Buffer.from(expected);
     if (receivedBytes.length !== expectedBytes.length || !timingSafeEqual(receivedBytes, expectedBytes)) return undefined;
     return businessRequestId;
+}
+
+export function readVerifiedSystemAiVideoBillingParameters(headers: Headers, logicalModel: string, upstreamModel: string): SystemAiVideoBillingParameters | undefined {
+    const payload = headers.get(SYSTEM_AI_VIDEO_BILLING_HEADER);
+    if (payload === null) return undefined;
+    if (!payload || payload.length > 512 || !/^[A-Za-z0-9_-]+$/.test(payload) || !readVerifiedSystemAiBusinessRequestId(headers, logicalModel, upstreamModel)) throw new Error("视频计费参数签名无效，请从项目重新提交");
+    try {
+        const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as SystemAiVideoBillingParameters;
+        if (encodeVideoBillingParameters(parsed) !== payload) throw new Error("invalid");
+        return parsed;
+    } catch {
+        throw new Error("视频计费参数格式无效，请从项目重新提交");
+    }
+}
+
+function encodeVideoBillingParameters(value: SystemAiVideoBillingParameters) {
+    if (!value || !Number.isFinite(value.durationSeconds) || value.durationSeconds <= 0 || typeof value.resolution !== "string" || !/^(?:480|720|1080|2160)p?$|^4k$/i.test(value.resolution.trim())) throw new Error("视频计费参数格式无效");
+    return Buffer.from(JSON.stringify({ durationSeconds: value.durationSeconds, resolution: value.resolution.trim().toUpperCase() }), "utf8").toString("base64url");
 }
 
 export function systemAiPointsIdempotencyKey(input: { userId: string; businessRequestId: string; logicalModel: string; channelId: string; upstreamModel: string; callType: string }) {
@@ -58,9 +82,9 @@ export function systemAiIdempotencyKey(scope: string, ...parts: string[]) {
     return `${prefix}:${digest}`;
 }
 
-function signSystemAiBusinessRequest(logicalModel: string, businessRequestId: string, upstreamModel: string) {
+function signSystemAiBusinessRequest(logicalModel: string, businessRequestId: string, upstreamModel: string, videoPayload = "") {
     return createHmac("sha256", systemAiPointsSigningSecret())
-        .update([SYSTEM_AI_POINTS_SIGNATURE_VERSION, normalizeBillingModel(logicalModel), businessRequestId, normalizeBillingModel(upstreamModel)].join("\0"))
+        .update([videoPayload ? "v2" : SYSTEM_AI_POINTS_SIGNATURE_VERSION, normalizeBillingModel(logicalModel), businessRequestId, normalizeBillingModel(upstreamModel), ...(videoPayload ? [videoPayload] : [])].join("\0"))
         .digest("base64url");
 }
 

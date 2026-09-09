@@ -40,6 +40,7 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
     const [form] = Form.useForm<SkillFormValues>();
     const [mode, setMode] = useState<"manual" | "github">("github");
     const [sourceUrl, setSourceUrl] = useState("");
+    const [githubToken, setGithubToken] = useState("");
     const [candidates, setCandidates] = useState<AgentSkillImportCandidate[]>([]);
     const [selectedPath, setSelectedPath] = useState("");
     const [importedSkill, setImportedSkill] = useState<ImportedAgentSkill>();
@@ -47,6 +48,7 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
+        setGithubToken("");
         if (!open) return;
         setMode("github");
         setSourceUrl("");
@@ -59,13 +61,13 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
 
     const extract = async () => {
         if (!sourceUrl.trim()) {
-            setImportError("请输入公开 GitHub 地址");
+            setImportError("请输入 GitHub 地址");
             return;
         }
         setImportError("");
         setLoading(true);
         try {
-            const result = await importAgentSkillFromGithub({ url: sourceUrl.trim(), path: selectedPath || undefined });
+            const result = await importAgentSkillFromGithub({ url: sourceUrl.trim(), path: selectedPath || undefined, githubToken: githubToken.trim() || undefined });
             setCandidates(result.candidates);
             if (result.candidates.length) {
                 setSelectedPath(result.candidates[0].path);
@@ -73,6 +75,7 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
                 return;
             }
             if (result.skill) {
+                setGithubToken("");
                 setImportedSkill(result.skill);
                 form.setFieldsValue(valuesFromSkill(result.skill));
             }
@@ -133,7 +136,10 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
             cancelText="取消"
             confirmLoading={loading}
             keyboard={!loading}
-            onCancel={onClose}
+            onCancel={() => {
+                setGithubToken("");
+                onClose();
+            }}
             onOk={() => form.submit()}
             mask={{ closable: !loading }}
             styles={{ body: { maxHeight: "min(72dvh, 720px)", overflowY: "auto", paddingTop: 8 } }}
@@ -167,7 +173,7 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
 
                 {mode === "github" ? (
                     <div className="space-y-3 rounded-lg border border-blue-200 bg-blue-50/60 p-4 dark:border-blue-900/70 dark:bg-blue-950/20">
-                        <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">公开 Skill 地址</div>
+                        <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">GitHub Skill 地址</div>
                         <div className="flex flex-col gap-2 sm:flex-row">
                             <Input
                                 name="sourceUrl"
@@ -185,6 +191,17 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
                             <Button type="primary" icon={<Download className="size-4" />} loading={loading} onClick={() => void extract()}>
                                 提取
                             </Button>
+                        </div>
+                        <div className="space-y-1.5">
+                            <label htmlFor="agent-skill-github-token" className="text-sm text-stone-700 dark:text-stone-300">GitHub Token（私有仓库）</label>
+                            <Input.Password
+                                id="agent-skill-github-token"
+                                value={githubToken}
+                                autoComplete="off"
+                                placeholder="可选，留空使用服务器配置"
+                                onChange={(event) => setGithubToken(event.target.value)}
+                            />
+                            <div className="text-xs leading-5 text-stone-600 dark:text-stone-400">使用对目标仓库具有 Contents 只读权限的 fine-grained Token；仅用于本次提取，不会保存到 Skill。</div>
                         </div>
                         {importError ? <Alert type="error" showIcon message={importError} /> : null}
                         {candidates.length ? (
@@ -209,7 +226,7 @@ export function AgentSkillCreateModal({ open, existingSkills, onClose, onCreate 
                                 }
                             />
                         ) : (
-                            <div className="text-xs leading-5 text-stone-600 dark:text-stone-400">读取公开仓库中的 SKILL.md 后，由后台默认文本模型整理为中文原生规则；不会执行仓库代码，整理后仍可编辑确认。</div>
+                            <div className="text-xs leading-5 text-stone-600 dark:text-stone-400">读取仓库中的 SKILL.md 后，由后台默认文本模型整理为中文原生规则；不会执行仓库代码，整理后仍可编辑确认。</div>
                         )}
                     </div>
                 ) : null}

@@ -10,6 +10,7 @@ import { createImageGenerationTask, waitForImageGenerationTask } from "@/service
 import { createServerVideoGenerationTask } from "@/services/api/video";
 import { syncUserPointsFromHeaders } from "@/services/api/points";
 import { compileDramaShotPrompts } from "@/lib/drama-prompt-compiler";
+import { dramaVideoPromptInput } from "@/lib/drama-video-prompt-instructions";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useDramaStore } from "../stores/use-drama-store";
@@ -19,6 +20,7 @@ import { DramaAgentPanel } from "./drama-agent-panel";
 import { DramaAssetsPanel } from "./drama-assets-panel";
 import { DramaStageHeader, stableTaskUrl } from "./drama-editor-elements";
 import { DramaGenerationPanel } from "./drama-generation-panel";
+import { DramaVideoPromptInstructions } from "./drama-video-prompt-instructions";
 import { DramaReviewPanel } from "./drama-review-panel";
 import { DramaStoryboardShotCard } from "./drama-storyboard-shot-card";
 import { DramaVersionModal } from "./drama-project-modals";
@@ -78,6 +80,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     const [selectedShotId, setSelectedShotId] = useState<string>();
     const [analyzing, setAnalyzing] = useState(false);
     const [designing, setDesigning] = useState(false);
+    const [editingVideoPrompts, setEditingVideoPrompts] = useState(false);
     const [versionsOpen, setVersionsOpen] = useState(false);
     const [versions, setVersions] = useState<DramaProjectVersion[]>([]);
     const [versionsLoading, setVersionsLoading] = useState(false);
@@ -134,23 +137,9 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                    ...dramaVideoPromptInput(project, episode),
                     requestId: `drama-visual:${project.id}:${episode.id}:${nanoid()}`,
                     phase: "visual",
-                    summary: project.summary,
-                    style: project.style,
-                    episode: {
-                        id: episode.id,
-                        title: episode.title,
-                        outline: episode.outline,
-                        hook: episode.hook,
-                        nextPreview: episode.nextPreview,
-                        sourceRange: episode.sourceRange,
-                    },
-                    characters: project.characters,
-                    scenes: project.scenes,
-                    props: project.props,
-                    clues: project.clues,
-                    shots: episode.shots,
                 }),
             });
             syncUserPointsFromHeaders(response.headers, "system");
@@ -309,6 +298,8 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
             const response = await fetch(`/api/video-tasks/${encodeURIComponent(running.generationTaskId!)}`, { cache: "no-store" });
             syncUserPointsFromHeaders(response.headers, "system");
             const payload = (await response.json().catch(() => ({}))) as { task?: { status?: string; result?: { url?: string }; error?: string }; error?: string };
+            const latest = useDramaStore.getState().projects.find((item) => item.id === project.id)?.episodes.find((item) => item.id === episode.id)?.shots.find((item) => item.id === running.id);
+            if (!latest || latest.generationTaskId !== running.generationTaskId || latest.generationAttempt !== running.generationAttempt || latest.generationStatus !== "running") return;
             if (!response.ok) return updateShot(project.id, episode.id, running.id, { generationStatus: "error", generationError: payload.error || "视频任务查询失败" });
             if (payload.task?.status === "success")
                 updateShot(project.id, episode.id, running.id, {
@@ -410,7 +401,9 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                 <DramaScriptPanel project={project} episode={episode} analyzing={analyzing} onAnalyze={() => void analyzeScript()} onStageChange={changeStage} selectedShotId={selectedShotId} onSelectedShotChange={setSelectedShotId} />
                             ) : null}
 
-                            {!assetsOpen && stage === "review" ? <DramaReviewPanel project={project} episode={episode} designing={designing} onDesignVisuals={() => void designVisuals()} onStageChange={changeStage} /> : null}
+                            {!assetsOpen && stage !== "script" ? <DramaVideoPromptInstructions key={project.id} project={project} episode={episode} disabled={designing || analyzing} onBusyChange={setEditingVideoPrompts} /> : null}
+
+                            {!assetsOpen && stage === "review" ? <DramaReviewPanel project={project} episode={episode} designing={designing || editingVideoPrompts} onDesignVisuals={() => void designVisuals()} onStageChange={changeStage} /> : null}
 
                             {!assetsOpen && stage === "storyboard" ? (
                                 <div>

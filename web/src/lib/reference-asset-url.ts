@@ -1,4 +1,11 @@
 export const REFERENCE_ASSET_SIGNATURE_PURPOSE = "provider-read";
+export const REFERENCE_ASSET_LONG_SIGNATURE_PURPOSE = "provider-read-long";
+
+export type ReferenceAssetSignaturePurpose = typeof REFERENCE_ASSET_SIGNATURE_PURPOSE | typeof REFERENCE_ASSET_LONG_SIGNATURE_PURPOSE;
+
+export function isProviderReadSignaturePurpose(value: string | null): value is ReferenceAssetSignaturePurpose {
+    return value === REFERENCE_ASSET_SIGNATURE_PURPOSE || value === REFERENCE_ASSET_LONG_SIGNATURE_PURPOSE;
+}
 
 export function isReferenceAssetUrl(value: string) {
     try {
@@ -21,7 +28,7 @@ export function hasProviderReadSignatureShape(value: string) {
     try {
         const url = new URL(value, "https://vozeb.invalid");
         const expires = url.searchParams.get("expires") || "";
-        return isProviderMediaAssetUrl(url.toString()) && url.searchParams.get("purpose") === REFERENCE_ASSET_SIGNATURE_PURPOSE && /^\d+$/.test(expires) && Number(expires) > 0 && Boolean(url.searchParams.get("signature"));
+        return isProviderMediaAssetUrl(url.toString()) && isProviderReadSignaturePurpose(url.searchParams.get("purpose")) && /^\d+$/.test(expires) && Number(expires) > 0 && Boolean(url.searchParams.get("signature"));
     } catch {
         return false;
     }

@@ -59,16 +59,18 @@ export class GithubSkillImportError extends Error {
     }
 }
 
-export async function importAgentSkillFromGithub(input: { url: string; path?: string }): Promise<AgentSkillImportResult> {
+export async function importAgentSkillFromGithub(input: { url: string; path?: string; githubToken?: string }): Promise<AgentSkillImportResult> {
     const location = parseGitHubLocation(input.url);
-    const repository = await githubJson<GitHubRepository>(`/repos/${location.owner}/${location.repository}`);
+    const token = input.githubToken?.trim() || process.env.VOZEB_PRO_GITHUB_SKILL_TOKEN?.trim() || "";
+    if (token.length > 4096 || /[^\x21-\x7e]/.test(token)) throw new GithubSkillImportError("GitHub Token 格式无效，请只填写令牌本身");
+    const repository = await githubJson<GitHubRepository>(`/repos/${location.owner}/${location.repository}`, token);
     const requestedRef = location.ref || repository.default_branch || "main";
-    const ref = await resolveCommit(location, requestedRef);
+    const ref = await resolveCommit(location, requestedRef, token);
     const scope = location.path && location.mode !== "blob" ? trimPath(location.path) : "";
 
     if (location.mode === "blob") {
         const sourcePath = requireSkillPath(location.path);
-        return { repository: `${location.owner}/${location.repository}`, ref, candidates: [], skill: await readSkill(location, ref, sourcePath, repository.license?.spdx_id || undefined) };
+        return { repository: `${location.owner}/${location.repository}`, ref, candidates: [], skill: await readSkill(location, ref, sourcePath, repository.license?.spdx_id || undefined, token) };
     }
 
     const requestedPath = input.path ? trimPath(input.path) : undefined;
@@ -76,20 +78,20 @@ export async function importAgentSkillFromGithub(input: { url: string; path?: st
         if (!isSkillPath(requestedPath) || (scope && requestedPath !== scope && !requestedPath.startsWith(`${scope}/`))) {
             throw new GithubSkillImportError("所选 Skill 路径不属于当前 GitHub 地址");
         }
-        return { repository: `${location.owner}/${location.repository}`, ref, candidates: [], skill: await readSkill(location, ref, requestedPath, repository.license?.spdx_id || undefined) };
+        return { repository: `${location.owner}/${location.repository}`, ref, candidates: [], skill: await readSkill(location, ref, requestedPath, repository.license?.spdx_id || undefined, token) };
     }
 
-    const entries = await githubJson<{ tree?: GitHubTreeEntry[]; truncated?: boolean }>(`/repos/${location.owner}/${location.repository}/git/trees/${encodeURIComponent(ref)}?recursive=1`, MAX_TREE_LENGTH);
+    const entries = await githubJson<{ tree?: GitHubTreeEntry[]; truncated?: boolean }>(`/repos/${location.owner}/${location.repository}/git/trees/${encodeURIComponent(ref)}?recursive=1`, token, MAX_TREE_LENGTH);
     const candidates = (entries.tree || [])
         .filter((entry) => entry.type === "blob" && typeof entry.path === "string" && isSkillPath(entry.path))
         .map((entry) => ({ path: trimPath(entry.path as string), name: skillNameFromPath(entry.path as string) }))
         .filter((entry) => !scope || entry.path === scope || entry.path.startsWith(`${scope}/`))
         .slice(0, MAX_CANDIDATES);
 
-    if (!candidates.length) throw new GithubSkillImportError("这个公开仓库或目录中没有找到 SKILL.md");
+    if (!candidates.length) throw new GithubSkillImportError("这个仓库或目录中没有找到 SKILL.md");
     if (candidates.length > 1) return { repository: `${location.owner}/${location.repository}`, ref, candidates };
 
-    return { repository: `${location.owner}/${location.repository}`, ref, candidates: [], skill: await readSkill(location, ref, candidates[0].path, repository.license?.spdx_id || undefined) };
+    return { repository: `${location.owner}/${location.repository}`, ref, candidates: [], skill: await readSkill(location, ref, candidates[0].path, repository.license?.spdx_id || undefined, token) };
 }
 
 export function parseGitHubLocation(value: string): GitHubLocation {
@@ -97,12 +99,13 @@ export function parseGitHubLocation(value: string): GitHubLocation {
     try {
         url = new URL(value.trim());
     } catch {
-        throw new GithubSkillImportError("请输入有效的 GitHub 公开地址");
+        throw new GithubSkillImportError("请输入有效的 GitHub 地址");
     }
     const hostname = url.hostname.toLowerCase();
     if (url.protocol !== "https:" || !["github.com", "www.github.com", "raw.githubusercontent.com"].includes(hostname)) {
-        throw new GithubSkillImportError("只支持 github.com 的公开仓库、目录或 SKILL.md 地址");
+        throw new GithubSkillImportError("只支持 github.com 的仓库、目录或 SKILL.md 地址");
     }
+    if (url.username || url.password) throw new GithubSkillImportError("GitHub 地址不能包含凭据，请在 GitHub Token 输入框中填写令牌");
     let parts: string[];
     try {
         parts = url.pathname
@@ -112,7 +115,7 @@ export function parseGitHubLocation(value: string): GitHubLocation {
     } catch {
         throw new GithubSkillImportError("GitHub 地址包含无效路径");
     }
-    if (parts.length < 2 || !isGithubSegment(parts[0]) || !isGithubSegment(parts[1])) throw new GithubSkillImportError("GitHub 地址缺少公开仓库信息");
+    if (parts.length < 2 || !isGithubSegment(parts[0]) || !isGithubSegment(parts[1])) throw new GithubSkillImportError("GitHub 地址缺少仓库信息");
     const owner = parts[0];
     const repository = parts[1].replace(/\.git$/i, "");
     if (!repository) throw new GithubSkillImportError("GitHub 仓库地址无效");
@@ -131,9 +134,12 @@ export function parseGitHubLocation(value: string): GitHubLocation {
     return { owner, repository, ref: parts[3], path, mode: parts[2] };
 }
 
-async function readSkill(location: GitHubLocation, ref: string, sourcePath: string, repositoryLicense?: string): Promise<ImportedAgentSkill> {
-    const rawUrl = `${RAW_GITHUB_ORIGIN}/${location.owner}/${location.repository}/${encodePath(ref)}/${encodePath(sourcePath)}`;
-    const markdown = await githubText(rawUrl, MAX_MARKDOWN_LENGTH);
+async function readSkill(location: GitHubLocation, ref: string, sourcePath: string, repositoryLicense?: string, token = ""): Promise<ImportedAgentSkill> {
+    // 私有文件通过 Contents API 读取，令牌始终只发送到 GitHub API 域名。
+    const sourceUrl = token
+        ? `${GITHUB_API}/repos/${location.owner}/${location.repository}/contents/${encodePath(sourcePath)}?ref=${encodeURIComponent(ref)}`
+        : `${RAW_GITHUB_ORIGIN}/${location.owner}/${location.repository}/${encodePath(ref)}/${encodePath(sourcePath)}`;
+    const markdown = await githubText(sourceUrl, MAX_MARKDOWN_LENGTH, token, token ? "application/vnd.github.raw+json" : "application/vnd.github+json");
     return parseSkillMarkdown(markdown, {
         id: `github-${location.owner}-${location.repository}-${sourcePath
             .replace(/[^a-z0-9]+/gi, "-")
@@ -183,8 +189,8 @@ function parseSkillMarkdown(markdown: string, source: { id: string; repository: 
     };
 }
 
-async function resolveCommit(location: GitHubLocation, ref: string) {
-    const commit = await githubJson<GitHubCommit>(`/repos/${location.owner}/${location.repository}/commits/${encodeURIComponent(ref)}`);
+async function resolveCommit(location: GitHubLocation, ref: string, token: string) {
+    const commit = await githubJson<GitHubCommit>(`/repos/${location.owner}/${location.repository}/commits/${encodeURIComponent(ref)}`, token);
     const sha = commit.sha?.trim().toLowerCase() || "";
     if (!/^[a-f0-9]{40}$/.test(sha)) throw new GithubSkillImportError("GitHub 没有返回可固定的 commit，无法安全导入", 502);
     return sha;
@@ -203,15 +209,17 @@ function readFrontmatter(markdown: string): { values: SkillFrontmatter; body: st
     }
 }
 
-async function githubJson<T>(path: string, maxLength = 500_000): Promise<T> {
-    return JSON.parse(await githubText(`${GITHUB_API}${path}`, maxLength)) as T;
+async function githubJson<T>(path: string, token: string, maxLength = 500_000): Promise<T> {
+    return JSON.parse(await githubText(`${GITHUB_API}${path}`, maxLength, token)) as T;
 }
 
-async function githubText(url: string, maxLength: number): Promise<string> {
+async function githubText(url: string, maxLength: number, token = "", accept = "application/vnd.github+json"): Promise<string> {
     let response: Response;
     try {
+        const headers = new Headers({ Accept: accept, "User-Agent": "VOZEB-PRO-agent-skill-import", "X-GitHub-Api-Version": "2022-11-28" });
+        if (token && new URL(url).origin === GITHUB_API) headers.set("Authorization", `Bearer ${token}`);
         response = await fetchSafeOutbound(url, {
-            headers: { Accept: "application/vnd.github+json", "User-Agent": "VOZEB-PRO-agent-skill-import" },
+            headers,
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
             redirect: "error",
             cache: "no-store",
@@ -220,8 +228,19 @@ async function githubText(url: string, maxLength: number): Promise<string> {
         throw new GithubSkillImportError("GitHub 地址暂时无法访问，请检查服务器网络或稍后重试", 502);
     }
     if (!response.ok) {
-        if (response.status === 404) throw new GithubSkillImportError("未找到公开仓库或 SKILL.md，请确认地址可在浏览器直接打开", 404);
-        if (response.status === 403) throw new GithubSkillImportError("GitHub 暂时限制了请求，请稍后重试", 429);
+        if (response.status === 401) throw new GithubSkillImportError("GitHub Token 无效或已过期，请更新令牌后重试", 401);
+        if (response.status === 404) {
+            throw new GithubSkillImportError(
+                token
+                    ? "未找到仓库或 SKILL.md，或 GitHub Token 无权访问；请检查地址、令牌授权的仓库及 Contents 只读权限"
+                    : "未找到仓库或 SKILL.md；私有仓库需要填写 GitHub Token，或配置服务器 VOZEB_PRO_GITHUB_SKILL_TOKEN",
+                404,
+            );
+        }
+        if (response.status === 429 || (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after")))) {
+            throw new GithubSkillImportError("GitHub 暂时限制了请求，请稍后重试", 429);
+        }
+        if (response.status === 403) throw new GithubSkillImportError("GitHub 拒绝访问，请检查 Token 的仓库授权及 Contents 只读权限；组织仓库还需满足组织授权要求", 403);
         throw new GithubSkillImportError(`GitHub 返回了 ${response.status}，暂时无法提取 Skill`, 502);
     }
     const length = Number(response.headers.get("content-length") || 0);

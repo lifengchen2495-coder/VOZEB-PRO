@@ -4,7 +4,8 @@ import { fileTypeFromBuffer } from "file-type";
 import sharp from "sharp";
 
 import { writePersistentMediaDataUrl, writeReferenceMediaFile } from "@/lib/server/reference-asset-store";
-import { getOmniClothingProjectForUser, OmniClothingError } from "@/lib/server/omni-clothing-project-service";
+import { assertClothingResultTarget, assertRevision, getOmniClothingProjectForUser, OmniClothingError } from "@/lib/server/omni-clothing-project-service";
+import { assertClothingResultDuration, clothingResultUploadContext, probeClothingVideo } from "@/lib/server/omni-clothing-media-service";
 import { checkRateLimit, rateLimitHeaders } from "@/lib/server/security";
 
 import { clothingResponse, withClothingUser } from "../route-utils";
@@ -18,7 +19,11 @@ export async function POST(request: Request) {
     return withClothingUser(request, async (userId) => {
         const query = new URL(request.url).searchParams;
         const project = await getOmniClothingProjectForUser(userId, query.get("projectId") || "");
-        const limit = await checkRateLimit(`omni-clothing-upload:${userId}`, { maxRequests: 40, windowMs: 15 * 60_000 });
+        const isResult = query.get("purpose") === "result";
+        if (isResult) assertRevision(project, Number(query.get("revision")));
+        const segment = isResult ? assertClothingResultTarget(project, query.get("segmentId"), Number(query.get("inputVersion"))) : undefined;
+        if (isResult && query.get("type") !== "video") throw new OmniClothingError("回传结果需要视频文件", 415);
+        const limit = await checkRateLimit(`omni-clothing-${isResult ? "result-upload" : "upload"}:${userId}`, { maxRequests: isResult ? 240 : 40, windowMs: 15 * 60_000 });
         if (!limit.allowed) return Response.json({ code: 429, data: null, msg: "上传过于频繁，请稍后重试" }, { status: 429, headers: rateLimitHeaders(limit) });
         let name: string;
         try {
@@ -28,8 +33,9 @@ export async function POST(request: Request) {
         } catch {
             throw new OmniClothingError("素材名称不正确");
         }
-        const context = { ownerUserId: userId, projectId: project.id, originalName: name, source: "omni-clothing-source-upload" };
+        const context = { ...(segment ? clothingResultUploadContext(userId, project, segment) : { ownerUserId: userId, projectId: project.id, source: "omni-clothing-source-upload" }), originalName: name };
         let stored;
+        let videoMetadata;
         if (query.get("type") === "image") {
             const bytes = await boundedImageBody(request);
             const detected = await fileTypeFromBuffer(bytes);
@@ -41,6 +47,10 @@ export async function POST(request: Request) {
             let temporary: Awaited<ReturnType<typeof streamRequestToTemporaryVideo>> | undefined;
             try {
                 temporary = await streamRequestToTemporaryVideo(request);
+                if (segment) {
+                    videoMetadata = await probeClothingVideo(temporary.filePath, undefined, true);
+                    assertClothingResultDuration(segment, videoMetadata.durationSeconds);
+                }
                 stored = await writeReferenceMediaFile(temporary.filePath, "video", temporary.mimeType, true, context);
             } catch (error) {
                 if (error instanceof OmniClothingUploadInputError) throw new OmniClothingError(error.message, error.status);
@@ -49,7 +59,7 @@ export async function POST(request: Request) {
                 if (temporary) await cleanupTemporaryVideoUpload(temporary);
             }
         }
-        return clothingResponse({ asset: { url: `/api/reference-assets/${stored.token.split("/").map(encodeURIComponent).join("/")}`, storageKey: stored.token, mimeType: stored.mimeType, bytes: stored.bytes, name } });
+        return clothingResponse({ asset: { url: `/api/reference-assets/${stored.token.split("/").map(encodeURIComponent).join("/")}`, storageKey: stored.token, mimeType: stored.mimeType, bytes: stored.bytes, name, ...videoMetadata } });
     });
 }
 

@@ -22,6 +22,7 @@ description: VOZEB PRO 环境变量、模型渠道、服务器媒体与支付配
 | `VOZEB_PRO_DATABASE_SSL_CA`                  | 私有 CA 可选     | PEM CA 证书，可使用真实换行或 `\\n`；用于托管数据库的私有证书链                       |
 | `VOZEB_PRO_ENCRYPTION_KEY`                   | 生产必填         | 64 位十六进制或精确 32 字节 Base64 密钥，部署后必须保持稳定                           |
 | `VOZEB_PRO_INSTALL_TOKEN`                    | 首次安装必填     | 至少 32 个字符；只用于初始化数据库和创建首个管理员，安装完成后可移除                  |
+| `VOZEB_PRO_GITHUB_SKILL_TOKEN`               | 私有 Skill 可选  | GitHub 仓库读取 Token；提取页面填写的本次 Token 优先，留空时使用此服务器配置           |
 | `VOZEB_PRO_INTERNAL_ORIGIN`                  | 推荐             | 服务端回调自身 API，Docker 默认 `http://127.0.0.1:3000`                               |
 | `VOZEB_PRO_DATA_DIR`                         | 否               | 服务器媒体和文件模式数据目录                                                          |
 | `VOZEB_PRO_COOKIE_SECURE`                    | 否               | 留空自动判断；特殊代理可强制 `true/false`                                             |
@@ -133,6 +134,18 @@ ALL_PROXY=http://proxy-host:7890
 未知上游选择“自定义协议”，粘贴官方文档 URL、完整 cURL、请求 JSON 和成功响应 JSON。系统先做确定性解析，在默认文本模型可用时生成受固定 Schema 约束的补充草稿；草稿应用到具体模型后仍需管理员复核。渠道启用后，管理员在用户端文本、图片、视频或音频工作台发起真实业务请求验证返回与扣费。当前草稿保存在具体渠道中，不提供跨渠道的全局版本发布或回滚。
 
 默认文本模型同时用于工作台 Agent、Canvas 规划和创作复盘。渠道 API Key 通过服务端保存，普通用户只看到逻辑模型名称。
+
+## GitHub Skill 提取
+
+管理员在 Agent Skills 的“新增 Skill → 从 GitHub 提取”中填写仓库或 `SKILL.md` 地址。私有仓库无需改为公开：可以在页面填写本次使用的 GitHub Token，也可以在服务器配置 `VOZEB_PRO_GITHUB_SKILL_TOKEN`。页面 Token 优先，留空时使用服务器配置；两者都不会保存到 Skill，页面 Token 也不会在浏览器中持久化。
+
+在 GitHub 创建 fine-grained personal access token，仅选择需要读取的仓库，并授予仓库 `Contents: Read-only` 权限。源码开发将环境变量写入 `web/.env.local` 后重启应用；Docker Compose 部署写入根目录 `.env` 后执行 `docker compose up -d --force-recreate app`，让重新创建的应用容器加载配置。
+
+```dotenv
+VOZEB_PRO_GITHUB_SKILL_TOKEN=replace-with-your-github-token
+```
+
+提取功能读取选定的 `SKILL.md`，再由后台默认文本模型整理为可编辑的中文规则。当前不会完整导入 `references` 等关联资料，也不会自动同步仓库更新。
 
 ## 生成任务 Worker 与回调
 

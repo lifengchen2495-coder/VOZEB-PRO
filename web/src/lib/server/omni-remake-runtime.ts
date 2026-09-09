@@ -2,12 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
-import { omniPlanningPrompt, parseOmniAnalysis, parseOmniPlan, type OmniMedia, type OmniProject } from "@/lib/omni-remake-contract";
+import { omniManualSegmentPrompts, omniPlanningPrompt, parseOmniAnalysis, parseOmniPlan, type OmniMedia, type OmniProject, type OmniSegment } from "@/lib/omni-remake-contract";
 import { runFfmpeg, runFfprobe } from "./ffmpeg";
 import { downloadMediaToFile } from "./media-download";
 import { writeReferenceMediaFile } from "./reference-asset-store";
 import { finishOmniOperation, ownedOmniMedia } from "./omni-remake-project-service";
-import { understandOmniVideo } from "./omni-remake-video-understanding";
 import { resolveLogicalModelCandidates } from "./logical-model-router";
 import { buildRemakeScriptVisualBoards, requestRemakeProductionVisionPrompt, resolveRemakeProductionVisionProtocol, RemakeProductionVisionError } from "./remake15-production-vision-runtime";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "./system-ai-billing";
@@ -29,6 +28,7 @@ export async function runOmniOperation(input: OperationInput) {
     let committed = false;
     try {
         let patch: Partial<OmniProject>;
+        if (operation.kind === "analysis") throw new Error("自动视频分析已停用，请导入在外部完成的分析 JSON");
         if (operation.kind === "merge") patch = { mergedVideo: await mergeOmniClips(input, directory, created) };
         else {
             if (!input.project.sourceVideo) throw new Error("请先上传参考视频");
@@ -36,14 +36,15 @@ export async function runOmniOperation(input: OperationInput) {
             const sourcePath = join(directory, "source.mp4");
             await download(input.project.sourceVideo.url, sourcePath, input);
             const probe = await probeOmniVideo(sourcePath);
-            if (operation.kind === "analysis") {
-                const call = await understandOmniVideo({ ...input, sourcePath, workDirectory: directory, duration: probe.duration, operationId: operation.id });
-                charges.push(call);
-                const analysis = parseOmniAnalysis(call.raw, probe.duration, input.project.audioMode);
-                patch = { sourceVideo: { ...input.project.sourceVideo, ...probe }, analysisRaw: call.raw, analysisSummary: analysis.summary, segments: analysis.segments, materialAnalysis: "", plan: "", mergedVideo: undefined };
-            } else {
+            {
                 assertOmniPreparationReady(input.project);
-                const prepared = await planOmniSegments(input, charges);
+                parseOmniAnalysis(input.project.analysisRaw, probe.duration, input.project.audioMode);
+                for (const media of [...input.project.references.product, ...(input.project.replaceCharacter ? input.project.references.character : []), ...(input.project.replaceBackground ? input.project.references.background : [])]) await ownedOmniMedia(input.userId, media, "image");
+                const prepared = operation.promptMode === "ai" ? await planOmniSegments(input, charges) : {
+                    materialAnalysis: input.project.materialAnalysis || "参考素材按产品、人物与背景角色整理；请在外部生成前核对。",
+                    plan: input.project.plan || "按片段顺序使用来源视频与对应参考图，在 Google 手动生成后回传各段结果。",
+                    segments: input.project.segments.map((segment) => segment.prompt.trim() && segment.promptZh.trim() ? segment : { ...segment, ...omniManualSegmentPrompts(input.project, segment) }),
+                };
                 const segments = [];
                 for (const segment of prepared.segments) {
                     const clipPath = join(directory, `${segment.id}.mp4`);
@@ -83,10 +84,9 @@ export async function runOmniOperation(input: OperationInput) {
                     const measured = await probeOmniVideo(clipPath);
                     if (Math.abs(measured.duration - segment.duration) > 0.2) throw new Error(`片段 ${segment.id} 切分时长不正确，未保存结果`);
                     const sourceClip = await persistVideo(clipPath, `${segment.id}-source.mp4`, input, created);
-                    const guard = omniSegmentGuard(input.project, segment.audioStrategy);
-                    segments.push({ ...segment, sourceClip: { ...sourceClip, ...measured }, prompt: `${segment.prompt}\n\n${guard.en}`, promptZh: `${segment.promptZh}\n\n${guard.zh}` });
+                    segments.push({ ...segment, sourceClip: { ...sourceClip, ...measured }, video: { status: "idle" as const, attemptNo: segment.video.attemptNo } });
                 }
-                patch = { materialAnalysis: prepared.materialAnalysis, plan: prepared.plan, segments, mergedVideo: undefined };
+                patch = { sourceVideo: { ...input.project.sourceVideo, ...probe }, materialAnalysis: prepared.materialAnalysis, plan: prepared.plan, segments, mergedVideo: undefined };
             }
         }
         await finishOmniOperation(input.userId, input.project.id, operation.id, { ...patch, error: undefined });
@@ -125,8 +125,9 @@ export function assertOmniPreparationReady(project: OmniProject) {
 
 async function planOmniSegments(input: OperationInput, charges: Charge[]) {
     const project = input.project;
+    const model = project.modelSelection.prompt.trim();
+    if (!model) throw new Error("使用 AI 润色前，请明确选择提示词模型；也可以使用本地模板直接准备");
     const settings = await getAuthSettings();
-    const model = project.modelSelection.prompt || settings.defaultModels.textModel;
     const referenceInputs = [
         ...project.references.product.map((asset, index) => ({ role: "product" as const, label: `产品参考图 ${index + 1}`, asset })),
         ...(project.replaceCharacter ? project.references.character.map((asset, index) => ({ role: "character" as const, label: `人物参考图 ${index + 1}`, asset })) : []),
@@ -188,12 +189,56 @@ async function planOmniSegments(input: OperationInput, charges: Charge[]) {
 }
 
 export async function probeOmniVideo(path: string) {
-    const result = await runFfprobe(["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", path], { timeoutMs: 30000 });
-    const payload = JSON.parse(result.stdout) as { format?: { duration?: string }; streams?: Array<{ codec_type?: string; width?: number; height?: number }> };
+    const result = await runFfprobe(["-v", "error", "-show_entries", "stream=codec_type,width,height,duration,start_time:stream_tags=DURATION", "-of", "json", path], { timeoutMs: 30000 });
+    const payload = JSON.parse(result.stdout) as { streams?: Array<{ codec_type?: string; width?: number; height?: number; duration?: string; start_time?: string; tags?: { DURATION?: string } }> };
     const video = payload.streams?.find((stream) => stream.codec_type === "video");
-    const duration = Number(payload.format?.duration);
+    const tagged = video?.tags?.DURATION?.match(/^(\d+):(\d+):(\d+(?:\.\d+)?)$/);
+    let duration = Number(video?.duration) || (tagged ? Number(tagged[1]) * 3600 + Number(tagged[2]) * 60 + Number(tagged[3]) : 0);
+    if (!Number.isFinite(duration) || duration <= 0) {
+        // 容器总时长可能来自更长的音轨，按视频包时间验证实际画面长度。
+        const packets = await runFfprobe(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", path], { timeoutMs: 30000 });
+        const first = Number(video?.start_time) || 0;
+        let last = -Infinity;
+        // FFmpeg 工具保留输出尾部；仅需要最后的视频包时间，不解析可能被截断的 JSON。
+        const packetLines = packets.stdout.trim().split(/\r?\n/);
+        if (packets.stdout.length >= 20_000) packetLines.shift();
+        for (const row of packetLines) {
+            const fields = row.split(",");
+            const start = Number(fields[0]);
+            const span = Number(fields[1]);
+            if (!Number.isFinite(start)) continue;
+            last = Math.max(last, start + (Number.isFinite(span) && span > 0 ? span : 0));
+        }
+        duration = last - first;
+    }
     if (!video?.width || !video.height || !Number.isFinite(duration) || duration <= 0) throw new Error("视频缺少可解码画面或有效时长");
     return { duration: Math.round(duration * 1000) / 1000, width: video.width, height: video.height, hasAudio: Boolean(payload.streams?.some((stream) => stream.codec_type === "audio")) };
+}
+
+export async function inspectOmniVideoAsset(input: { userId: string; media: OmniMedia; origin: string; credential: string }): Promise<OmniMedia & { duration: number }> {
+    const media = await ownedOmniMedia(input.userId, input.media, "video");
+    const directory = await mkdtemp(join(tmpdir(), "vozeb-omni-inspect-"));
+    try {
+        const path = join(directory, "video");
+        await download(media.url, path, input);
+        return { ...media, ...await probeOmniVideo(path) };
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
+export async function prepareOmniManualResult(input: { userId: string; projectId: string; media: OmniMedia; segment: OmniSegment; version: string; origin: string; credential: string }): Promise<OmniMedia> {
+    const directory = await mkdtemp(join(tmpdir(), "vozeb-omni-manual-result-"));
+    try {
+        const path = join(directory, "video");
+        await download(input.media.url, path, input);
+        const measured = await probeOmniVideo(path);
+        if (measured.duration + 0.15 < input.segment.duration) throw new Error(`回传视频实际画面只有 ${measured.duration} 秒，短于片段 ${input.segment.id} 所需的 ${input.segment.duration} 秒`);
+        const asset = await writeReferenceMediaFile(path, "video", input.media.mimeType, true, { ownerUserId: input.userId, projectId: input.projectId, source: "omni-remake-manual-result", originalName: input.media.originalName || `${input.segment.id}-result.mp4`, taskId: input.version, runId: input.media.storageKey, maxBytes: MAX_VIDEO_BYTES });
+        return { url: `/api/reference-assets/${asset.token.split("/").map(encodeURIComponent).join("/")}`, storageKey: asset.token, mimeType: asset.mimeType, bytes: asset.bytes, originalName: input.media.originalName, ...measured };
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
 }
 
 async function mergeOmniClips(input: OperationInput, directory: string, created: string[]) {
@@ -207,7 +252,7 @@ async function mergeOmniClips(input: OperationInput, directory: string, created:
         const sourcePath = join(directory, `result-${index}.mp4`);
         await download(segment.video.result!.url, sourcePath, input);
         const source = await probeOmniVideo(sourcePath);
-        if (source.duration + 0.25 < segment.duration) throw new Error(`片段 ${segment.id} 的生成视频短于来源，不能拼接残缺成片`);
+        if (source.duration + 0.15 < segment.duration) throw new Error(`片段 ${segment.id} 的生成视频短于来源，不能拼接残缺成片`);
         const args = ["-y", "-hide_banner", "-loglevel", "error", "-i", sourcePath];
         // 保留源声时从已切分的原片恢复真实音轨，避免供应商生成的口播改变原文。
         if (segment.audioStrategy === "preserve_audio" && segment.sourceClip) {
@@ -220,7 +265,7 @@ async function mergeOmniClips(input: OperationInput, directory: string, created:
             "-t",
             String(segment.duration),
             "-vf",
-            `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
+            `${source.duration < segment.duration ? `tpad=stop_mode=clone:stop_duration=${(segment.duration - source.duration).toFixed(3)},` : ""}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
             "-r",
             "30",
             "-c:v",

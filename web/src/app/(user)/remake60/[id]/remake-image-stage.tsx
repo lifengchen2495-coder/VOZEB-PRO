@@ -37,6 +37,7 @@ type ImageStage = "replacement" | "storyboard";
 export type RemakeGroupPatch = {
     replacementGeneration?: Partial<RemakeRangeGroup["replacementGeneration"]>;
     imageGeneration?: Partial<RemakeRangeGroup["imageGeneration"]>;
+    videoPromptInstructions?: string;
     videoPrompt?: string;
     videoGeneration?: Partial<RemakeRangeGroup["videoGeneration"]>;
 };

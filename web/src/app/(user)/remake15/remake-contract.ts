@@ -1,3 +1,5 @@
+import { normalizeRemakeVideoPromptInstructions } from "@/lib/remake15-video-prompt-instructions";
+
 export type RemakeCopyStrategy = "keep" | "manual";
 export type RemakeVoice = "source" | "female" | "male";
 export type RemakeAnalysisMode = "video" | "vision" | "hybrid" | "frames-only";
@@ -130,6 +132,7 @@ export type RemakeRangeGroup = {
         result?: RemakeMediaAsset | null;
         error?: string | null;
     };
+    videoPromptInstructions?: string;
     videoPrompt: string;
     videoGeneration: {
         status: RemakeImageGenerationStatus;
@@ -445,6 +448,7 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
                 result: normalizeMediaAsset(firstDefined(generation.result, generation.output, group.generatedImage, group.generated_image)),
                 error: stringValue(firstDefined(generation.error, group.imageError, group.image_error)) || undefined,
             },
+            videoPromptInstructions: normalizeRemakeVideoPromptInstructions(group.videoPromptInstructions),
             videoPrompt: stringValue(firstDefined(group.videoPrompt, group.video_prompt, group.seedancePrompt, group.seedance_prompt)),
             videoGeneration: {
                 status: normalizeImageGenerationStatus(firstDefined(videoGeneration.status, group.videoStatus, group.video_status)),

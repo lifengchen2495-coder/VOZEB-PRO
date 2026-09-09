@@ -5,6 +5,7 @@ import { App, Button, Image, Input, Progress, Tag, Tooltip } from "antd";
 import { Check, Copy, ImagePlus, Images, LoaderCircle, Play, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { ReferenceImageGenerator } from "@/components/reference-image-generator";
 import { friendlyAgentError } from "@/components/agent/agent-message-format";
 import { imagePreviewUrl } from "@/lib/media-image-url";
 import { createImageGenerationTask, isImageGenerationTaskDeferredError, waitForImageGenerationTask } from "@/services/api/image";
@@ -37,6 +38,7 @@ type ImageStage = "replacement" | "storyboard";
 export type RemakeGroupPatch = {
     replacementGeneration?: Partial<RemakeRangeGroup["replacementGeneration"]>;
     imageGeneration?: Partial<RemakeRangeGroup["imageGeneration"]>;
+    videoPromptInstructions?: string;
     videoPrompt?: string;
     videoGeneration?: Partial<RemakeRangeGroup["videoGeneration"]>;
 };
@@ -384,6 +386,33 @@ export function RemakeImageStage({
                             disabled={disabled || Boolean(uploadingKey) || generationActive}
                             onChoose={() => inputRefs.current[slot.key]?.click()}
                             onRemove={() => emitReferenceChange(slot.key, undefined)}
+                            generateAction={slot.key === "character" ? (
+                                <ReferenceImageGenerator
+                                    key={`${project.id}:character`}
+                                    projectId={project.id}
+                                    role="character"
+                                    context={[project.title, project.sourceCopy].filter(Boolean).join("\n")}
+                                    imageModel={selectedImageModel}
+                                    disabled={disabled || Boolean(uploadingKey) || generationActive}
+                                    className="!h-7 !px-1.5"
+                                    onSelect={async (asset) => {
+                                        if (disabled || uploadingKeyRef.current || generationActive) throw new Error("请等待当前操作完成后再使用人物图");
+                                        if (latestProjectRef.current.references.character?.url === asset.url) {
+                                            if (!(await onFlush())) throw new Error("项目尚未保存，请先处理保存错误后重试");
+                                            return;
+                                        }
+                                        uploadingKeyRef.current = "character";
+                                        setUploadingKey("character");
+                                        try {
+                                            emitReferenceChange("character", asset);
+                                            if (!(await onFlush())) throw new Error("人物图尚未保存，请先处理项目保存错误后重试");
+                                        } finally {
+                                            uploadingKeyRef.current = undefined;
+                                            setUploadingKey(undefined);
+                                        }
+                                    }}
+                                />
+                            ) : undefined}
                         >
                             <input
                                 ref={(node) => {
@@ -421,7 +450,7 @@ export function RemakeImageStage({
     );
 }
 
-function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; children: React.ReactNode }) {
+function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, generateAction, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; generateAction?: React.ReactNode; children: React.ReactNode }) {
     return (
         <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card p-2.5">
             <div className="relative aspect-square w-20 shrink-0 overflow-hidden rounded-md border border-border bg-muted/30">
@@ -435,10 +464,11 @@ function ReferenceSlot({ label, detail, required, asset, loading, disabled, onCh
                     </Tag>
                 </div>
                 <div className="mt-0.5 truncate text-xs text-muted-foreground">{asset?.originalName || detail}</div>
-                <div className="mt-1.5 flex items-center gap-1">
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
                     <Button size="small" type="text" className="!h-7 !px-1.5" icon={<Upload className="size-3.5" />} loading={loading} disabled={disabled} onClick={onChoose}>
                         {asset ? "替换" : "上传"}
                     </Button>
+                    {generateAction}
                     {asset ? <Button size="small" type="text" danger className="!size-7 !min-w-0 !p-0" icon={<Trash2 className="size-3.5" />} disabled={disabled} aria-label={`移除${label}`} onClick={onRemove} /> : null}
                 </div>
             </div>

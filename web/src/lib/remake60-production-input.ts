@@ -57,6 +57,7 @@ export type RemakeProductionInputProject = {
         sourceContactSheet?: MediaInput;
         replacementGeneration: GenerationInput;
         imageGeneration: GenerationInput;
+        videoPromptInstructions?: string;
         videoPrompt: string;
         videoGeneration: GenerationInput;
     }>;
@@ -109,7 +110,7 @@ export function remakeProductionInputSnapshot(project: RemakeProductionInputProj
             sourceContactSheet: mediaInput(group.sourceContactSheet),
             replacementGeneration: generationInput(group.replacementGeneration),
             imageGeneration: generationInput(group.imageGeneration),
-            ...(selected === undefined || selected.has(group.id) ? { videoPrompt: group.videoPrompt, videoGeneration: generationInput(group.videoGeneration) } : {}),
+            ...(selected === undefined || selected.has(group.id) ? { videoPromptInstructions: group.videoPromptInstructions?.trim() || "", videoPrompt: group.videoPrompt, videoGeneration: generationInput(group.videoGeneration) } : {}),
         })),
     });
 }

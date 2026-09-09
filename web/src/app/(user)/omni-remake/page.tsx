@@ -59,7 +59,7 @@ export default function OmniRemakePage() {
                     <ScanSearch className="size-7" />
                     <h1 className="text-2xl font-semibold">Omni 全品类复刻</h1>
                 </div>
-                <p className="text-sm text-muted-foreground">按原片时长分析与切片，指定产品、人物及背景素材，逐段生成后合并成片。</p>
+                <p className="text-sm text-muted-foreground">导入原片分析，准备参考片段、产品／人物／背景图和提示词；下载后手动生成，再回传合并成片。</p>
             </header>
             <form
                 className="flex max-w-xl gap-3"

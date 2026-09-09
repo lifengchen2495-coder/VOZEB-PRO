@@ -1,6 +1,7 @@
 import type { ApiCallFormat, LogicalModelCapability, SystemChannelAdvancedConfig, SystemChannelAuthMode, SystemChannelModelConfig, SystemChannelProtocol, SystemModelChannel } from "@/lib/auth/store-types";
 import { inferModelCapability, normalizeModelId } from "@/lib/model-capability";
 import { SEEDANCE_SPECIAL_MODELS } from "@/lib/seedance-special";
+import { HUIFENG_BASE_URL, HUIFENG_DEFAULT_VIDEO_OPERATION, HUIFENG_VIDEO_MODELS } from "@/lib/huifeng-media";
 import { normalizeYumengModelCenterBaseUrl, YUMENG_DEFAULT_IMAGE_OPERATION, YUMENG_DEFAULT_VIDEO_OPERATION, YUMENG_MODEL_CENTER_BASE_URL, YUMENG_MODEL_CENTER_MODELS } from "@/lib/yumeng-model-center";
 
 type ProtocolOperation = Omit<SystemChannelModelConfig, "capability" | "source" | "protocol" | "apiFormat"> & {
@@ -153,6 +154,19 @@ export const registeredChannelProtocolDefinitions: ChannelProtocolDefinition[] =
         builtInModels: YUMENG_MODEL_CENTER_MODELS,
         capabilities: ["image", "video"],
         operations: { image: YUMENG_DEFAULT_IMAGE_OPERATION, video: YUMENG_DEFAULT_VIDEO_OPERATION },
+        strict: true,
+    },
+    {
+        id: "huifeng",
+        label: "汇风 Omni",
+        description: "汇风 Omni Flash／Omni 1.1 文生、图生视频接口；按型号校验参考图、时长和清晰度。",
+        apiFormat: "openai",
+        authMode: "bearer",
+        defaultBaseUrl: HUIFENG_BASE_URL,
+        modelCatalogPaths: [],
+        builtInModels: HUIFENG_VIDEO_MODELS.filter((model) => ["omni_flash-10s", "omni-1.1"].includes(model.id)),
+        capabilities: ["video"],
+        operations: { video: HUIFENG_DEFAULT_VIDEO_OPERATION },
         strict: true,
     },
     {

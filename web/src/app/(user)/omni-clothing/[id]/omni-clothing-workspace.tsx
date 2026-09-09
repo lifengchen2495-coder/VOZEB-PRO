@@ -6,22 +6,36 @@ import { useParams } from "next/navigation";
 import { App, Button, Image, Input, InputNumber, Popconfirm, Segmented, Skeleton, Tag } from "antd";
 import { ArrowLeft, Check, Download, Film, RefreshCw, Save, Scissors, Shirt, Sparkles, Trash2, Upload } from "lucide-react";
 
-import { ModelPicker } from "@/components/model-picker";
 import { browserReadableMediaUrl } from "@/lib/browser-media-url";
-import { omniClothingStatusLabel, type OmniClothingProject, type OmniClothingSegment } from "@/lib/omni-clothing-contract";
-import { cancelServerVideoGenerationTask, createServerVideoGenerationTask, recoverVideoGenerationTask } from "@/services/api/video";
+import { omniClothingStatusLabel, type OmniClothingAsset, type OmniClothingProject, type OmniClothingSegment } from "@/lib/omni-clothing-contract";
+import { cancelServerVideoGenerationTask, recoverVideoGenerationTask } from "@/services/api/video";
 import type { VideoGenerationTask } from "@/services/api/video-types";
-import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { useUserStore } from "@/stores/use-user-store";
 
 import { clothingAction, downloadClothingBundle, loadClothingProject, saveClothingProject, uploadClothingAsset } from "../omni-clothing-api";
 
-type Draft = Pick<OmniClothingProject, "title" | "garmentDescription" | "audioStrategy" | "model" | "maxSegmentSeconds" | "referenceImages" | "sourceVideo">;
+type Draft = Pick<OmniClothingProject, "title" | "garmentDescription" | "audioStrategy" | "maxSegmentSeconds" | "referenceImages" | "sourceVideo">;
+type PendingResult = { asset: OmniClothingAsset; segmentId: string; inputVersion: number; revision: number; prompt: string; previousVideoUrl?: string; uploadedAt: number };
+function storedPendingResults(prefix: string) {
+    const records: Record<string, PendingResult> = {};
+    for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (!key?.startsWith(`${prefix}:upload:`)) continue;
+        try {
+            const pending = JSON.parse(localStorage.getItem(key) || "null") as PendingResult | null;
+            if (!pending?.asset?.storageKey || !pending.segmentId || !Number.isFinite(pending.inputVersion)) continue;
+            if (!records[pending.segmentId] || records[pending.segmentId].uploadedAt < pending.uploadedAt) records[pending.segmentId] = pending;
+        } catch {
+            /* 其他损坏记录不影响可恢复的结果。 */
+        }
+    }
+    return records;
+}
 function draftFrom(project: OmniClothingProject): Draft {
     return {
         title: project.title,
         garmentDescription: project.garmentDescription,
         audioStrategy: project.audioStrategy,
-        model: project.model,
         maxSegmentSeconds: project.maxSegmentSeconds,
         referenceImages: project.referenceImages,
         sourceVideo: project.sourceVideo,
@@ -34,18 +48,35 @@ function taskFrom(segment: OmniClothingSegment, model: string): VideoGenerationT
 export function OmniClothingWorkspace() {
     const { id } = useParams<{ id: string }>();
     const { message } = App.useApp();
-    const config = useEffectiveConfig();
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const userId = useUserStore((state) => state.user?.id || "");
     const [project, setProject] = useState<OmniClothingProject | null>(null);
     const [draft, setDraft] = useState<Draft | null>(null);
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
     const [boundaries, setBoundaries] = useState("");
+    const [pendingResults, setPendingResults] = useState<Record<string, PendingResult>>({});
+    const pendingKey = `omni-clothing-results:${userId}:${id}`;
     const projectRef = useRef<OmniClothingProject | null>(null);
     const busyRef = useRef(false);
     const mountedRef = useRef(true);
     const sourceInputRef = useRef<HTMLInputElement>(null);
     const imageInputRef = useRef<HTMLInputElement>(null);
+    const maximumReferenceImages = 5;
+    useEffect(() => {
+        const restore = () => {
+            try {
+                setPendingResults(storedPendingResults(pendingKey));
+            } catch {
+                setPendingResults({});
+            }
+        };
+        restore();
+        const onStorage = (event: StorageEvent) => {
+            if (event.key?.startsWith(`${pendingKey}:upload:`)) restore();
+        };
+        window.addEventListener("storage", onStorage);
+        return () => window.removeEventListener("storage", onStorage);
+    }, [pendingKey]);
     const accept = useCallback((next: OmniClothingProject) => {
         if (!mountedRef.current || (projectRef.current && projectRef.current.id === next.id && projectRef.current.revision > next.revision)) return next;
         projectRef.current = next;
@@ -120,7 +151,7 @@ export function OmniClothingWorkspace() {
     }
     async function upload(files: File[], type: "image" | "video") {
         await run(type === "image" ? "上传服装参考图" : "上传源视频", async () => {
-            if (type === "image" && draft!.referenceImages.length + files.length > 5) throw new Error("最多上传 5 张服装参考图");
+            if (type === "image" && draft!.referenceImages.length + files.length > maximumReferenceImages) throw new Error(`最多上传 ${maximumReferenceImages} 张服装参考图`);
             const current = await saveDraft();
             const assets = [];
             for (const file of type === "video" ? files.slice(0, 1) : files) assets.push(await uploadClothingAsset(id, file, type));
@@ -128,55 +159,48 @@ export function OmniClothingWorkspace() {
             message.success(type === "video" ? "源视频已保存" : "服装参考图已保存");
         });
     }
-    async function generate(segmentId: string) {
-        await run("提交视频任务", async () => {
-            await saveDraft();
-            let current = accept(await loadClothingProject(id));
-            let segment = current.segments.find((item) => item.id === segmentId)!;
-            if (segment.videoStatus === "running") return;
-            if (segment.videoStatus !== "submitting") {
-                current = accept(await clothingAction(id, "attempt", { revision: current.revision, segmentId }));
-                segment = current.segments.find((item) => item.id === segmentId)!;
+    function rememberResult(segmentId: string, pending?: PendingResult, adoptedStorageKey?: string) {
+        try {
+            // 每个上传独立保存；采用 A 时不会删除另一个标签刚上传的 B。
+            if (pending) localStorage.setItem(`${pendingKey}:upload:${encodeURIComponent(pending.asset.storageKey)}`, JSON.stringify(pending));
+            else if (adoptedStorageKey) localStorage.removeItem(`${pendingKey}:upload:${encodeURIComponent(adoptedStorageKey)}`);
+            if (mountedRef.current && projectRef.current?.id === id && useUserStore.getState().user?.id === userId) setPendingResults(storedPendingResults(pendingKey));
+        } catch {
+            setPendingResults((saved) => {
+                if (pending) return { ...saved, [segmentId]: pending };
+                if (saved[segmentId]?.asset.storageKey !== adoptedStorageKey) return saved;
+                const next = { ...saved };
+                delete next[segmentId];
+                return next;
+            });
+            message.warning("浏览器无法保存恢复记录，请在离开页面前完成采用；视频已保留在素材库");
+        }
+    }
+    async function importResult(segmentId: string, file?: File) {
+        await run(file ? "上传并保存片段结果" : "重试采用已上传结果", async () => {
+            const owner = useUserStore.getState().user?.id;
+            if (!owner || owner !== userId) throw new Error("登录状态已变化，请刷新后回传结果");
+            let pending = pendingResults[segmentId];
+            const current = file ? projectRef.current! : accept(await loadClothingProject(id));
+            const segment = current.segments.find((item) => item.id === segmentId);
+            if (!segment) throw new Error("片段已被重新切分，请使用当前生成包");
+            if (file) {
+                const target = { segmentId, inputVersion: current.inputVersion, revision: current.revision };
+                const asset = await uploadClothingAsset(id, file, "video", target);
+                pending = { ...target, asset, prompt: segment.prompt, previousVideoUrl: segment.videoUrl, uploadedAt: Date.now() };
+                rememberResult(segmentId, pending);
             }
-            const generationConfig = {
-                ...config,
-                model: current.model,
-                videoModel: current.model,
-                videoSeconds: String(segment.generationDurationSeconds),
-                videoGenerateAudio: "false",
-                videoWatermark: "false",
-                size: sourceRatio(current),
-                vquality: config.vquality || "720",
-            };
-            try {
-                const task = await createServerVideoGenerationTask(
-                    generationConfig,
-                    segment.prompt,
-                    current.referenceImages.map((asset, index) => ({ id: `clothing-${index + 1}`, name: asset.name, type: asset.mimeType, dataUrl: "", url: asset.url, serverUrl: asset.url, storageKey: asset.storageKey })),
-                    [
-                        {
-                            id: segment.id,
-                            name: segment.sourceVideo.name,
-                            type: segment.sourceVideo.mimeType,
-                            url: segment.sourceVideo.url,
-                            storageKey: segment.sourceVideo.storageKey,
-                            durationMs: Math.round(segment.durationSeconds * 1000),
-                            bytes: segment.sourceVideo.bytes,
-                        },
-                    ],
-                    [],
-                    { projectId: current.id, generationSlotId: `omni-clothing-video:${segment.id}`, clientRequestId: segment.clientRequestId, attemptNo: segment.attemptNo, source: "video-workbench" },
-                );
-                accept(await clothingAction(id, "bind", { segmentId, taskId: task.serverTaskId || task.id }));
-                message.success(`片段 ${segment.index} 已提交，刷新页面也可继续查看`);
-            } catch (reason) {
-                try {
-                    accept(await clothingAction(id, "submission-failed", { segmentId, attemptNo: segment.attemptNo, clientRequestId: segment.clientRequestId }));
-                } catch (recordError) {
-                    console.warn("服装视频提交状态未保存", recordError);
-                }
-                throw reason;
+            if (!pending) throw new Error("没有待采用的视频，请选择结果文件");
+            if (owner !== useUserStore.getState().user?.id || projectRef.current?.id !== id) throw new Error("当前账号或项目已变化，结果已保留，请返回原项目采用");
+            if (segment.videoUrl === pending.asset.url) {
+                rememberResult(segmentId, undefined, pending.asset.storageKey);
+                message.success("该结果已保存");
+                return;
             }
+            if (current.inputVersion !== pending.inputVersion || segment.prompt !== pending.prompt || segment.videoUrl !== pending.previousVideoUrl) throw new Error("片段素材、提示词或结果已变化；已上传视频保留在素材库，请核对后重新选择结果");
+            accept(await clothingAction(id, "import-result", { revision: file ? pending.revision : current.revision, segmentId, inputVersion: pending.inputVersion, asset: pending.asset }));
+            rememberResult(segmentId, undefined, pending.asset.storageKey);
+            message.success(`片段 ${segment.index} 的结果已保存`);
         });
     }
 
@@ -207,7 +231,8 @@ export function OmniClothingWorkspace() {
         );
     const locked = Boolean(busy || active);
     const dirty = JSON.stringify(draft) !== JSON.stringify(draftFrom(project));
-    const imagesReady = draft.referenceImages.length >= 4 && draft.referenceImages.length <= 5;
+    const imagesReady = draft.referenceImages.length >= 4 && draft.referenceImages.length <= maximumReferenceImages;
+    const referenceCountLabel = "4–5";
     const allDone = project.segments.length > 0 && project.segments.every((segment) => segment.videoStatus === "success");
     const patchDraft = (patch: Partial<Draft>) => setDraft((value) => (value ? { ...value, ...patch } : value));
     return (
@@ -220,7 +245,7 @@ export function OmniClothingWorkspace() {
                             服装视频复刻
                         </Link>
                         <h1 className="mt-2 truncate text-xl font-semibold">{project.title}</h1>
-                        <p className="mt-1 text-sm text-muted-foreground">替换服装，保留人物、背景、动作和镜头节奏</p>
+                        <p className="mt-1 text-sm text-muted-foreground">准备素材 → 下载生成包 → 到谷歌手动生成 → 回传合并</p>
                     </div>
                     <div className="flex items-center gap-2">
                         <Tag>{omniClothingStatusLabel(project.status)}</Tag>
@@ -298,7 +323,9 @@ export function OmniClothingWorkspace() {
                                 <Shirt className="size-4" />
                                 2. 新服装参考图
                             </h2>
-                            <Tag color={imagesReady ? "green" : undefined}>{draft.referenceImages.length} / 4–5 张</Tag>
+                            <Tag color={imagesReady ? "green" : undefined}>
+                                {draft.referenceImages.length} / {referenceCountLabel} 张
+                            </Tag>
                         </div>
                         <p className="mt-2 text-xs leading-5 text-muted-foreground">建议包含正面、背面、侧面和材质细节，均为同一套目标服装。</p>
                         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
@@ -321,7 +348,7 @@ export function OmniClothingWorkspace() {
                                     </div>
                                 ))}
                             </Image.PreviewGroup>
-                            {draft.referenceImages.length < 5 && (
+                            {draft.referenceImages.length < maximumReferenceImages && (
                                 <button
                                     disabled={locked}
                                     className="flex min-h-36 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground disabled:opacity-40"
@@ -362,18 +389,12 @@ export function OmniClothingWorkspace() {
 
                 <section className="mt-5 rounded-xl border border-border p-4">
                     <h2 className="font-semibold">3. 视频切片与声音</h2>
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="mt-4 grid gap-4 sm:grid-cols-3">
                         <div>
                             <label className="mb-2 block text-sm" htmlFor="clothing-title">
                                 项目名称
                             </label>
                             <Input id="clothing-title" value={draft.title} disabled={locked} maxLength={120} onChange={(event) => patchDraft({ title: event.target.value })} />
-                        </div>
-                        <div>
-                            <span className="mb-2 block text-sm">视频编辑模型</span>
-                            <div className={locked ? "pointer-events-none opacity-50" : ""}>
-                                <ModelPicker config={config} value={draft.model} capability="video" fullWidth onChange={(model) => patchDraft({ model })} onMissingConfig={() => openConfigDialog(true)} />
-                            </div>
                         </div>
                         <div>
                             <label className="mb-2 block text-sm" htmlFor="clothing-max-seconds">
@@ -385,7 +406,7 @@ export function OmniClothingWorkspace() {
                             </div>
                         </div>
                         <div>
-                            <span className="mb-2 block text-sm">成片音频</span>
+                            <span className="mb-2 block text-sm">分段素材与成片音频</span>
                             <Segmented
                                 disabled={locked}
                                 value={draft.audioStrategy}
@@ -397,11 +418,13 @@ export function OmniClothingWorkspace() {
                             />
                         </div>
                     </div>
-                    <p className="mt-3 text-xs leading-5 text-muted-foreground">优先在镜头变化处切分，并遵守所选模型时长上限。连续长镜头会按上限拆分，可在下面手动调整切点。保留源音频时，合并阶段会恢复原视频声音。</p>
+                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                        优先在镜头变化处切分，连续长镜头按上限拆分。请按你使用的谷歌工具设置单片上限。无音频模式在切片时即移除音轨；保留源音频时，合并阶段恢复原视频声音。更改音频策略需要重新切片。
+                    </p>
                     <div className="mt-4 flex flex-wrap items-center gap-3">
                         <Button
                             type="primary"
-                            disabled={locked || !draft.sourceVideo || !imagesReady || !draft.model}
+                            disabled={locked || !draft.sourceVideo || !imagesReady}
                             icon={<Scissors className="size-4" />}
                             onClick={() =>
                                 void run("检测自然边界并切片", async () => {
@@ -453,10 +476,29 @@ export function OmniClothingWorkspace() {
                     )}
                 </section>
 
+                <section className="mt-5 rounded-xl border border-border p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <h2 className="font-semibold">4. 下载手动生成包</h2>
+                            <p className="mt-2 text-sm text-muted-foreground">包含真实服装图、处理好声音的源片段、逐段英文提示词、中文说明和片段清单，生成前即可下载。</p>
+                            <p className="mt-2 text-xs leading-5 text-muted-foreground">解压后按片段顺序到谷歌工具上传素材并粘贴提示词。具体参考输入方式和输出时长以你使用的工具为准，生成结果下载后回传到下方对应片段。</p>
+                        </div>
+                        <Button
+                            type="primary"
+                            icon={<Download className="size-4" />}
+                            disabled={Boolean(busy || project.operation || dirty || !project.segments.length || project.segments.some((segment) => !segment.prompt))}
+                            onClick={() => void run("下载手动生成包", () => downloadClothingBundle(id, project.title))}
+                        >
+                            下载手动生成包 ZIP
+                        </Button>
+                    </div>
+                    {project.segments.some((segment) => segment.preparedAudioStrategy !== project.audioStrategy) && <p className="mt-3 text-xs text-amber-600">旧切片尚未确认音频策略，请重新切片后再下载生成包。</p>}
+                </section>
+
                 {project.segments.length > 0 && (
                     <section className="mt-6">
                         <div className="flex flex-wrap items-center justify-between gap-3">
-                            <h2 className="text-lg font-semibold">4. 逐片生成 · 共 {project.segments.length} 段</h2>
+                            <h2 className="text-lg font-semibold">5. 手动生成与回传 · 共 {project.segments.length} 段</h2>
                             <span className="text-sm text-muted-foreground">已完成 {project.segments.filter((segment) => segment.videoStatus === "success").length} 段</span>
                         </div>
                         <div className="mt-4 space-y-4">
@@ -466,7 +508,12 @@ export function OmniClothingWorkspace() {
                                     segment={segment}
                                     disabled={Boolean(busy || project.operation || dirty)}
                                     editingDisabled={locked || dirty}
-                                    onGenerate={() => void generate(segment.id)}
+                                    pendingResult={pendingResults[segment.id]?.asset}
+                                    onImport={(file) => void importResult(segment.id, file)}
+                                    onDiscard={() => {
+                                        rememberResult(segment.id, undefined, pendingResults[segment.id]?.asset.storageKey);
+                                        message.info("已放弃采用，上传视频仍保留在素材库");
+                                    }}
                                     onPromptSave={(prompt) =>
                                         void run("保存片段提示词", async () => {
                                             accept(await clothingAction(id, "prompt", { revision: projectRef.current!.revision, segmentId: segment.id, prompt }));
@@ -498,8 +545,8 @@ export function OmniClothingWorkspace() {
                 <section className="my-6 rounded-xl border border-border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
-                            <h2 className="font-semibold">5. 合并与导出</h2>
-                            <p className="mt-2 text-xs text-muted-foreground">按源时间线合并全部片段，自动裁掉模型补足的尾帧。</p>
+                            <h2 className="font-semibold">6. 合并回传结果</h2>
+                            <p className="mt-2 text-xs text-muted-foreground">按源时间线合并全部片段，裁掉超过源片段时长的尾部。</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
                             <Button
@@ -514,17 +561,6 @@ export function OmniClothingWorkspace() {
                                 }
                             >
                                 合并成片
-                            </Button>
-                            <Button
-                                disabled={Boolean(busy || !project.mergedVideo || dirty)}
-                                icon={<Download className="size-4" />}
-                                onClick={() =>
-                                    void run("导出完整素材包", async () => {
-                                        await downloadClothingBundle(id, project.title);
-                                    })
-                                }
-                            >
-                                完整包 ZIP
                             </Button>
                         </div>
                     </div>
@@ -543,7 +579,7 @@ export function OmniClothingWorkspace() {
                                     <Download className="size-4" />
                                     下载成片 MP4
                                 </a>
-                                <p className="mt-4 text-xs leading-5 text-muted-foreground">完整包包含源视频、服装参考图、源切片、生成片段、成片和逐片提示词。</p>
+                                <p className="mt-4 text-xs leading-5 text-muted-foreground">再次下载手动生成包时，也会包含当前已回传片段和成片。</p>
                             </div>
                         </div>
                     )}
@@ -557,7 +593,9 @@ export function ClothingSegmentCard({
     segment,
     disabled,
     editingDisabled,
-    onGenerate,
+    pendingResult,
+    onImport,
+    onDiscard,
     onPromptSave,
     onRecover,
     onCancel,
@@ -566,14 +604,19 @@ export function ClothingSegmentCard({
     segment: OmniClothingSegment;
     disabled: boolean;
     editingDisabled: boolean;
-    onGenerate: () => void;
+    pendingResult?: OmniClothingAsset;
+    onImport: (file?: File) => void;
+    onDiscard: () => void;
     onPromptSave: (prompt: string) => void;
     onRecover: () => void;
     onCancel: () => void;
     onAbandon: () => void;
 }) {
     const [prompt, setPrompt] = useState(segment.prompt);
-    const label = { idle: "待生成", submitting: "等待提交确认", running: "生成中", success: "已完成", error: "生成未完成" }[segment.videoStatus];
+    const [resultFile, setResultFile] = useState<File | undefined>();
+    const resultInputRef = useRef<HTMLInputElement>(null);
+    const { message } = App.useApp();
+    const label = { idle: "待手动生成 / 回传", submitting: "原提交待检查", running: "原任务处理中", success: "结果已保存", error: "待回传结果" }[segment.videoStatus];
     const boundary = { scene: "镜头变化处", duration: "按时长拆分", manual: "手动切点", end: "视频结尾" }[segment.boundary];
     return (
         <article className="rounded-xl border border-border p-4">
@@ -586,7 +629,7 @@ export function ClothingSegmentCard({
                         </span>
                     </h3>
                     <p className="mt-1 text-xs text-muted-foreground">
-                        源片 {segment.durationSeconds} 秒 · 模型输出 {segment.generationDurationSeconds} 秒 · {boundary}
+                        保留 {segment.durationSeconds} 秒源动作 · {boundary}
                     </p>
                 </div>
                 <Tag color={segment.videoStatus === "success" ? "green" : segment.videoStatus === "error" ? "red" : undefined}>{label}</Tag>
@@ -608,8 +651,17 @@ export function ClothingSegmentCard({
                         <Button size="small" disabled={editingDisabled || !prompt.trim() || prompt === segment.prompt} onClick={() => onPromptSave(prompt)}>
                             保存提示词
                         </Button>
-                        <Button size="small" disabled={!prompt} onClick={() => void navigator.clipboard.writeText(prompt)}>
-                            复制
+                        <Button
+                            size="small"
+                            disabled={!prompt}
+                            onClick={() =>
+                                void navigator.clipboard
+                                    .writeText(prompt)
+                                    .then(() => message.success("提示词已复制"))
+                                    .catch(() => message.error("复制失败，请手动选择提示词复制"))
+                            }
+                        >
+                            复制英文提示词
                         </Button>
                     </div>
                 </div>
@@ -632,17 +684,45 @@ export function ClothingSegmentCard({
                                     </Button>
                                 </Popconfirm>
                             </>
-                        ) : (
-                            <Button type="primary" disabled={disabled || !segment.prompt || prompt !== segment.prompt} icon={<Sparkles className="size-4" />} onClick={onGenerate}>
-                                {segment.videoStatus === "submitting" ? "继续提交" : segment.videoStatus === "success" ? "重新生成" : "生成本片段"}
-                            </Button>
-                        )}
-                        {segment.videoStatus === "submitting" && segment.error && (
+                        ) : segment.videoStatus === "submitting" ? (
                             <Button disabled={disabled} onClick={onAbandon}>
-                                检查并放弃未提交任务
+                                检查原提交
                             </Button>
+                        ) : (
+                            <>
+                                <input
+                                    ref={resultInputRef}
+                                    hidden
+                                    type="file"
+                                    accept="video/mp4,video/quicktime,video/webm"
+                                    onChange={(event) => {
+                                        setResultFile(event.target.files?.[0]);
+                                        event.target.value = "";
+                                    }}
+                                />
+                                <Button disabled={editingDisabled || !segment.prompt || prompt !== segment.prompt || Boolean(pendingResult)} icon={<Upload className="size-4" />} onClick={() => resultInputRef.current?.click()}>
+                                    {segment.videoStatus === "success" ? "选择替换结果" : "选择生成结果"}
+                                </Button>
+                                {resultFile && !pendingResult && (
+                                    <Button type="primary" disabled={editingDisabled || prompt !== segment.prompt} onClick={() => onImport(resultFile)}>
+                                        回传结果
+                                    </Button>
+                                )}
+                                {pendingResult && (
+                                    <>
+                                        <Button type="primary" disabled={editingDisabled} onClick={() => onImport()}>
+                                            重试采用已上传结果
+                                        </Button>
+                                        <Button disabled={disabled} onClick={onDiscard}>
+                                            放弃采用
+                                        </Button>
+                                    </>
+                                )}
+                            </>
                         )}
                     </div>
+                    {(pendingResult || resultFile) && <p className="mt-2 break-all text-xs text-muted-foreground">{pendingResult ? `已上传待采用：${pendingResult.name}` : `已选择：${resultFile?.name}`}</p>}
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">回传 MP4、MOV 或 WebM，最大 200 MB。视频需覆盖本段 {segment.durationSeconds} 秒动作，最长 60 秒；多余尾部会在合并时裁剪。</p>
                     {segment.videoUrl && (
                         <a href={browserReadableMediaUrl(segment.videoUrl)} download={`服装片段-${segment.index}.mp4`} className="mt-2 inline-block text-xs underline">
                             下载生成片段
@@ -657,9 +737,4 @@ export function ClothingSegmentCard({
             </div>
         </article>
     );
-}
-
-function sourceRatio(project: OmniClothingProject) {
-    const ratio = (project.sourceVideo?.width || 720) / (project.sourceVideo?.height || 1280);
-    return ratio > 0.9 && ratio < 1.1 ? "1:1" : ratio > 1 ? "16:9" : "9:16";
 }

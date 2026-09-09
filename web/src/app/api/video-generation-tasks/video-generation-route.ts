@@ -6,7 +6,7 @@ import { generationModelId, toSystemGenerationChannel } from "@/lib/server/gener
 import { finishGenerationAttempt, startGenerationAttempt, type GenerationAttempt } from "@/lib/server/generation-attempt";
 import { fetchInternalApi, resolveInternalOrigin } from "@/lib/server/internal-origin";
 import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
-import { assertReferenceCapabilities, assertReferenceUrls, assertVideoReferenceRoles, buildVideoProviderRequest, isProviderBusinessError, readProviderError, readProviderString, resolvedProviderCreatePaths } from "@/lib/server/provider-task-config";
+import { assertReferenceCapabilities, assertReferenceUrls, assertVideoReferenceRoles, buildVideoProviderRequest, isProviderBusinessError, providerTaskPath, readProviderError, readProviderString, resolvedProviderCreatePaths } from "@/lib/server/provider-task-config";
 import { buildGlobalAiOpcVideoRequest, resolveGlobalAiOpcPreset } from "@/lib/globalaiopc-catalog";
 import { createVideoTask, transitionVideoTask, updateVideoTask, type VideoTask } from "@/lib/server/video-task-store";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
@@ -32,6 +32,7 @@ import { writeVideoGenerationLog } from "@/lib/server/video-task-log";
 import { buildOpenAiVideoFormData } from "./video-task-openai";
 import { normalizeVideoGenerationReferences, regularVideoReferences, videoFrameReferences, type VideoGenerationReference } from "@/lib/video-reference-contract";
 import { assertYumengVideoReferences, buildYumengVideoRequest } from "@/lib/yumeng-model-center";
+import { inspectHuifengVideoReference } from "@/lib/server/huifeng-video-reference";
 import { normalizeVideoProviderImageReferences } from "@/lib/server/video-reference-image";
 import { normalizeRemakeVideoAudioReferences } from "@/lib/server/remake-video-audio";
 import { getRemakeProjectForUser, RemakeProjectServiceError } from "@/lib/server/remake-project-service";
@@ -42,6 +43,8 @@ import { getRemakeProjectForUser as getRemakeProductProjectForUser, RemakeProjec
 import { getRemakeProjectForUser as getRemakePersonProjectForUser, RemakeProjectServiceError as RemakePersonProjectServiceError } from "@/lib/server/remake-person-project-service";
 import { validateOmniClothingVideoRequest, OmniClothingError } from "@/lib/server/omni-clothing-project-service";
 import { validateOmniVideoRequest, OmniProjectError } from "@/lib/server/omni-remake-project-service";
+import { buildHuifengVideoRequest, HUIFENG_CREATE_PATH, HUIFENG_OMNI_EDIT_MODEL, HUIFENG_QUERY_PATH } from "@/lib/huifeng-media";
+import { parseHuifengVideoCreateResponse } from "@/lib/server/huifeng-video-response";
 
 const CREATE_PATHS = ["/video/generations", "/videos/generations", "/videos/videos", "/videos"];
 type CreateVideoTaskBody = { config?: Record<string, unknown>; prompt?: string; references?: VideoGenerationReference[]; source?: string; context?: GenerationTaskContext };
@@ -67,6 +70,10 @@ export async function POST(request: Request) {
     if (!headerRequestId && body.context?.clientRequestId) {
         const existing = await getStoredGenerationTaskByRequest<VideoTask>("video", user.id, body.context.clientRequestId, body.context.attemptNo);
         if (existing) return NextResponse.json({ task: publicTask(existing) });
+    }
+    const workflowIdentifiers = [clean(body.context?.projectId), clean(body.context?.generationSlotId), clean(body.source)];
+    if (workflowIdentifiers.some((value) => /^(?:omni-clothing|omni-remake)(?:$|[-:])/.test(value))) {
+        return NextResponse.json({ error: "Omni 复刻当前采用手动视频生成，请下载参考片段、参考图和提示词，在外部生成后上传结果" }, { status: 410 });
     }
     if (headerRequestId) body.context = { ...(body.context || {}), clientRequestId: headerRequestId, ...(headerAttemptNo ? { attemptNo: headerAttemptNo } : {}) };
     const concurrencyRequestId = clean(body.context?.clientRequestId) || `video-request:${user.id}:${crypto.randomUUID()}`;
@@ -171,12 +178,16 @@ export async function POST(request: Request) {
             let capabilityError: unknown;
             let attempts: GenerationAttempt[] = [];
             let localTask: VideoTask | undefined;
+            let huifengSource: Awaited<ReturnType<typeof inspectHuifengVideoReference>> | undefined;
             for (let index = 0; index < channels.length; index += 1) {
                 const channel = channels[index];
                 const geminiVideo = isGeminiVideoChannel(channel);
+                const huifengVideo = channel.advancedConfig?.protocol === "huifeng";
                 const parameters = {
                     ...requestedParameters,
-                    videoSeconds: geminiVideo
+                    videoSeconds: huifengVideo
+                        ? workflowDuration ?? Number(body.config?.videoSeconds ?? requestedParameters.videoSeconds)
+                        : geminiVideo
                         ? normalizeGeminiVideoDuration(requestedParameters.videoSeconds)
                         : resolveUpstreamVideoDuration(requestedParameters.videoSeconds, settings.generationDefaults.videoSeconds, {
                               durationRange: channel.advancedConfig?.durationRange,
@@ -186,12 +197,19 @@ export async function POST(request: Request) {
                 };
                 let providerReferences = references;
                 try {
+                    if (huifengVideo && channel.model === HUIFENG_OMNI_EDIT_MODEL) {
+                        const sourceVideo = references.find((reference) => reference.type === "video");
+                        if (!sourceVideo) throw new Error("汇风 Omni 视频编辑需要参考视频");
+                        huifengSource ||= await inspectHuifengVideoReference({ url: sourceVideo.url, origin, publicOrigin, credential: cookie });
+                        if (workflowDuration && Math.abs(huifengSource.duration - workflowDuration) > 0.15) throw new Error("参考视频实际时长与已保存片段不一致，请重新准备片段");
+                        parameters.videoSeconds = huifengSource.duration;
+                    }
                     if (isRemake15VideoRequest && parameters.videoSeconds !== 15) throw new Error("当前渠道不支持 15 秒复刻视频，请选择支持 15 秒的视频模型");
-                    if (workflowDuration && parameters.videoSeconds !== workflowDuration) throw new Error(`当前渠道不支持本片段的 ${workflowDuration} 秒时长，请选择兼容的视频模型`);
+                    if (workflowDuration && !(huifengVideo && channel.model === HUIFENG_OMNI_EDIT_MODEL) && parameters.videoSeconds !== workflowDuration) throw new Error(`当前渠道不支持本片段的 ${workflowDuration} 秒时长，请选择兼容的视频模型`);
                     assertCapabilityConstraints(channel.capabilityProfile, {
                         capability: "video",
                         referenceCount: references.filter((reference) => reference.type === "image").length,
-                        durationSeconds: requestedParameters.videoSeconds === -1 ? undefined : requestedParameters.videoSeconds,
+                        durationSeconds: huifengVideo ? parameters.videoSeconds : requestedParameters.videoSeconds === -1 ? undefined : requestedParameters.videoSeconds,
                         aspectRatio: requestedParameters.size,
                         resolution: requestedParameters.vquality,
                     });
@@ -210,9 +228,13 @@ export async function POST(request: Request) {
                                 : channel.advancedConfig,
                             references,
                         );
-                        if (channel.advancedConfig?.protocol !== "yumeng") assertVideoReferenceRoles(channel.advancedConfig, references, globalPreset?.videoReferenceRoles);
+                        if (channel.advancedConfig?.protocol !== "yumeng" && !huifengVideo) assertVideoReferenceRoles(channel.advancedConfig, references, globalPreset?.videoReferenceRoles);
                         if (channel.advancedConfig?.protocol === "vozeb-recommended") assertVozebRecommendedVideoReferences(channel.model, references);
                         if (channel.advancedConfig?.protocol === "yumeng") assertYumengVideoReferences(channel.model, references);
+                        if (huifengVideo) {
+                            huifengVideoRequest(channel.model, providerPrompt, parameters, references);
+                            providerReferences = await Promise.all(references.map((reference) => signProviderReference(reference, user, publicOrigin, true)));
+                        }
                         assertReferenceUrls(channel.advancedConfig, references, Boolean(globalPreset));
                     }
                     if ((isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake) && (channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video") && references.some((reference) => reference.type === "audio")) {
@@ -228,7 +250,7 @@ export async function POST(request: Request) {
                     id: "",
                     provider: "generation" as const,
                     model: channel.model,
-                    pollPath: geminiVideo ? geminiVideoCreatePath(channel.model) : channel.advancedConfig?.createPath || CREATE_PATHS[0],
+                    pollPath: geminiVideo ? geminiVideoCreatePath(channel.model) : channel.advancedConfig?.createPath || (huifengVideo ? HUIFENG_CREATE_PATH : CREATE_PATHS[0]),
                 };
                 if (!localTask) {
                     localTask = await createVideoTask({
@@ -316,7 +338,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "当前用户视频任务已达到并发上限" }, { status: 429, ...(retryAfter ? { headers: { "Retry-After": String(retryAfter) } } : {}) });
 }
 
-export async function signProviderReference(reference: VideoGenerationReference, user: { id: string; role: "user" | "admin" }, publicOrigin: string) {
+export async function signProviderReference(reference: VideoGenerationReference, user: { id: string; role: "user" | "admin" }, publicOrigin: string, longRunning = false) {
     let url: URL;
     try {
         url = new URL(reference.url, publicOrigin);
@@ -327,7 +349,8 @@ export async function signProviderReference(reference: VideoGenerationReference,
     const scope = url.pathname.startsWith("/api/reference-assets/") ? "reference" : url.pathname.startsWith("/api/generation-log-assets/") ? "generation" : null;
     if (!scope) return reference;
     const registeredOwnerUserId = await requireManagedMediaInputOwner(url.pathname, { id: user.id, role: user.role }, scope);
-    return { ...reference, url: scope === "reference" ? signReferenceAssetInputUrl(reference.url, publicOrigin, registeredOwnerUserId) : signGenerationAssetInputUrl(reference.url, publicOrigin, registeredOwnerUserId) };
+    const options = longRunning ? { purpose: "provider-read-long" as const } : undefined;
+    return { ...reference, url: scope === "reference" ? signReferenceAssetInputUrl(reference.url, publicOrigin, registeredOwnerUserId, Date.now(), options) : signGenerationAssetInputUrl(reference.url, publicOrigin, registeredOwnerUserId, Date.now(), options) };
 }
 
 export async function createUpstream(
@@ -353,6 +376,10 @@ export async function createUpstream(
     const lastFrameUrl = lastFrame?.url || "";
     const dimensions = videoDimensions(raw.size, raw.vquality);
     const generateAudio = raw.videoGenerateAudio !== false && raw.videoGenerateAudio !== "false";
+    const huifengVideo = channel.advancedConfig?.protocol === "huifeng";
+    const huifengPayload = huifengVideo ? huifengVideoRequest(channel.model, prompt, raw, references) : undefined;
+    const huifengBilling = huifengVideo ? { durationSeconds: Number(raw.videoSeconds), resolution: channel.model === "omni-1.1" ? resolution(raw.vquality) || "720p" : "720p" } : undefined;
+    const huifengPointsUnits = huifengBilling ? huifengVideoUnits(huifengBilling, multipliers) : undefined;
     if (isGeminiVideoChannel(channel)) {
         return createGeminiVideoUpstream({ userId, origin, cookie, channel, prompt, raw, references, generateAudio, multipliers, billingRequestId });
     }
@@ -406,10 +433,10 @@ export async function createUpstream(
         ...(lastFrameUrl ? { last_frame: lastFrameUrl, last_frame_url: lastFrameUrl } : {}),
     };
     const globalPreset = globalAiOpcVideoPreset(channel.advancedConfig, channel.model);
-    const multipart = channel.advancedConfig?.requestTemplate?.trim().toLowerCase().startsWith("multipart/form-data") === true;
+    const multipart = !huifengVideo && channel.advancedConfig?.requestTemplate?.trim().toLowerCase().startsWith("multipart/form-data") === true;
     const payload = multipart
         ? undefined
-        : channel.advancedConfig?.protocol === "vozeb-recommended"
+        : huifengPayload || (channel.advancedConfig?.protocol === "vozeb-recommended"
           ? buildVozebRecommendedVideoRequest({
                 model: channel.model,
                 prompt,
@@ -459,12 +486,12 @@ export async function createUpstream(
                       firstFrame: firstFrameUrl || undefined,
                       lastFrame: lastFrameUrl || undefined,
                   })
-                : buildVideoProviderRequest(channel.advancedConfig?.requestTemplate, defaults, values);
+                : buildVideoProviderRequest(channel.advancedConfig?.requestTemplate, defaults, values));
     const requestBody = multipart
         ? await buildOpenAiVideoFormData({ model: channel.model, prompt, seconds: values.seconds as number, width: dimensions.width, height: dimensions.height, imageUrls: firstFrameUrl ? [firstFrameUrl] : images, origin, cookie })
         : JSON.stringify(payload);
     const imageToVideoPath = images.length || firstFrameUrl ? channel.advancedConfig?.imageToVideoPath?.trim() : "";
-    const createPaths = globalPreset ? [globalPreset.createPath] : imageToVideoPath ? [imageToVideoPath] : resolvedProviderCreatePaths(channel.advancedConfig, "video", CREATE_PATHS);
+    const createPaths = huifengVideo ? [channel.advancedConfig?.createPath || HUIFENG_CREATE_PATH] : globalPreset ? [globalPreset.createPath] : imageToVideoPath ? [imageToVideoPath] : resolvedProviderCreatePaths(channel.advancedConfig, "video", CREATE_PATHS);
     for (const path of createPaths) {
         const response = await proxyFetch(origin, channel.baseUrl, path, cookie, {
             method: "POST",
@@ -472,7 +499,7 @@ export async function createUpstream(
                 ...(multipart ? {} : { "Content-Type": "application/json" }),
                 "Idempotency-Key": billingRequestId,
                 "X-Client-Request-Id": billingRequestId,
-                ...systemAiBillingHeaders(generationModelId(channel), `video-request:${billingRequestId}`, channel.model),
+                ...systemAiBillingHeaders(generationModelId(channel), `video-request:${billingRequestId}`, channel.model, huifengBilling),
             },
             body: requestBody,
             signal: AbortSignal.timeout(resolveModelRequestTimeoutMs(channel, "video")),
@@ -480,14 +507,36 @@ export async function createUpstream(
         const text = await response.text();
         if (!response.ok) {
             lastError = readVideoProviderHttpError(text, response.status);
-            if (!SAFE_CREATE_FAILURE_STATUSES.has(response.status)) throw new Error(lastError);
+            if (!SAFE_CREATE_FAILURE_STATUSES.has(response.status)) {
+                if (huifengVideo) throw new VideoSubmissionUncertainError(lastError, videoSubmissionBilling(response.headers, raw, multipliers, huifengPointsUnits));
+                throw new Error(lastError);
+            }
             continue;
         }
         let data: unknown;
         try {
             data = parseVideoProviderJson(text);
         } catch (error) {
-            throw new VideoSubmissionUncertainError(error instanceof Error ? error.message : "视频接口返回了无效 JSON", videoSubmissionBilling(response.headers, raw, multipliers));
+            throw new VideoSubmissionUncertainError(error instanceof Error ? error.message : "视频接口返回了无效 JSON", videoSubmissionBilling(response.headers, raw, multipliers, huifengPointsUnits));
+        }
+        if (huifengVideo) {
+            const created = parseHuifengVideoCreateResponse(data);
+            const billing = videoSubmissionBilling(response.headers, raw, multipliers, huifengPointsUnits);
+            if (created.error) {
+                if (billing?.pointsRecordId && billing.pointsCost !== undefined) await refundUserPoints(userId, generationModelId(channel), billing.pointsCost, "video", billing.pointsUnits, undefined, billing.pointsRecordId);
+                throw new SafeCandidateFailure(created.error);
+            }
+            if (!created.id) throw new VideoSubmissionUncertainError("汇风视频创建结果没有明确任务 ID，原请求已保留，请检查状态", billing);
+            return {
+                id: created.id,
+                provider: "generation" as const,
+                model: channel.model,
+                pollPath: path,
+                queryPath: providerTaskPath(channel.advancedConfig?.queryPath || HUIFENG_QUERY_PATH, created.id),
+                pointsCost: billedPointsCost(response.headers.get("x-vozeb-pro-points-cost")),
+                pointsUnits: huifengPointsUnits!,
+                pointsRecordId: response.headers.get("x-vozeb-pro-points-record-id") || undefined,
+            };
         }
         const providerError = readProviderError(data);
         if (isProviderBusinessError(data)) {
@@ -591,7 +640,11 @@ function globalAiOpcVideoPreset(config: NonNullable<ReturnType<typeof toSystemGe
 }
 
 function isGeminiVideoChannel(channel: NonNullable<ReturnType<typeof toSystemGenerationChannel>>) {
-    return channel.apiFormat === "gemini" && channel.advancedConfig?.protocol !== "globalaiopc";
+    return channel.apiFormat === "gemini" && !["globalaiopc", "huifeng"].includes(channel.advancedConfig?.protocol || "");
+}
+
+function huifengVideoRequest(model: string, prompt: string, raw: Record<string, unknown>, references: VideoGenerationReference[]) {
+    return buildHuifengVideoRequest({ model, prompt, duration: Number(raw.videoSeconds), aspectRatio: ratio(raw.size) || "", resolution: resolution(raw.vquality) || "", references });
 }
 
 function proxyFetch(origin: string, baseUrl: string, path: string, cookie: string, init: RequestInit) {
@@ -638,10 +691,17 @@ function billedPointsCost(value: unknown) {
     return Number.isFinite(number) && number >= 0 ? number : undefined;
 }
 
-function videoSubmissionBilling(headers: Headers, raw: Record<string, unknown>, multipliers: Awaited<ReturnType<typeof getAuthSettings>>["generationPointMultipliers"]) {
+function videoSubmissionBilling(headers: Headers, raw: Record<string, unknown>, multipliers: Awaited<ReturnType<typeof getAuthSettings>>["generationPointMultipliers"], units = videoUnits(raw, multipliers)) {
     const pointsCost = billedPointsCost(headers.get("x-vozeb-pro-points-cost"));
     const pointsRecordId = headers.get("x-vozeb-pro-points-record-id") || undefined;
-    return pointsCost !== undefined && pointsRecordId ? { pointsCost, pointsUnits: videoUnits(raw, multipliers), pointsRecordId, refunded: false } : undefined;
+    return pointsCost !== undefined && pointsRecordId ? { pointsCost, pointsUnits: units, pointsRecordId, refunded: false } : undefined;
+}
+
+function huifengVideoUnits(billing: { durationSeconds: number; resolution: string }, multipliers: Awaited<ReturnType<typeof getAuthSettings>>["generationPointMultipliers"]) {
+    const quality = billing.resolution.trim().toLowerCase().replace(/p$/, "");
+    const seconds = String(Math.max(-1, Math.floor(billing.durationSeconds)));
+    const multiplier = (value: unknown) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 1;
+    return multiplier(multipliers.videoQuality[quality]) * multiplier(multipliers.videoSeconds[seconds]);
 }
 
 class VideoSubmissionUncertainError extends Error {

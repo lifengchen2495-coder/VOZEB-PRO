@@ -1,6 +1,7 @@
-import type { DramaVisualAnalysis } from "@/lib/drama-project-contract";
+import type { DramaVisualAnalysis, DramaVideoPromptAnalysis } from "@/lib/drama-project-contract";
 import { normalizeDramaVisualAnalysis } from "@/lib/server/drama-analysis";
 import { selectDramaVisualInput, type NormalizedDramaVisualInput } from "@/lib/server/drama-analysis-input";
+import { normalizeDramaVideoPromptAnalysis } from "@/lib/server/drama-video-prompt-analysis";
 
 type VisualBatchResponse<TCall> = {
     value: unknown;
@@ -15,6 +16,14 @@ type VisualBatchRuntime<TCall> = {
 };
 
 export async function analyzeDramaVisualBatches<TCall>(runtime: VisualBatchRuntime<TCall>): Promise<{ data: DramaVisualAnalysis; calls: TCall[] }> {
+    return analyzeDramaShotBatches(runtime, normalizeDramaVisualAnalysis);
+}
+
+export async function analyzeDramaVideoPromptBatches<TCall>(runtime: VisualBatchRuntime<TCall>): Promise<{ data: DramaVideoPromptAnalysis; calls: TCall[] }> {
+    return analyzeDramaShotBatches(runtime, normalizeDramaVideoPromptAnalysis);
+}
+
+async function analyzeDramaShotBatches<TCall, TShot extends { shotId: string }>(runtime: VisualBatchRuntime<TCall>, normalize: (value: unknown, shotIds: string[]) => { shots: TShot[] }): Promise<{ data: { shots: TShot[] }; calls: TCall[] }> {
     const acceptedCalls: TCall[] = [];
     try {
         const shots = await analyzeBatch(runtime.input);
@@ -25,7 +34,7 @@ export async function analyzeDramaVisualBatches<TCall>(runtime: VisualBatchRunti
         throw error;
     }
 
-    async function analyzeBatch(input: NormalizedDramaVisualInput): Promise<DramaVisualAnalysis["shots"]> {
+    async function analyzeBatch(input: NormalizedDramaVisualInput): Promise<TShot[]> {
         let response: VisualBatchResponse<TCall>;
         try {
             response = await runtime.requestBatch(input);
@@ -34,7 +43,7 @@ export async function analyzeDramaVisualBatches<TCall>(runtime: VisualBatchRunti
             return analyzeHalves(input);
         }
 
-        const normalized = normalizeDramaVisualAnalysis(response.value, input.shotIds);
+        const normalized = normalize(response.value, input.shotIds);
         if (!normalized.shots.length) {
             await runtime.releaseCall(response.call);
             if (input.shotIds.length <= 1) throw new Error(`模型没有为镜头 ${input.shotIds[0]} 返回视觉结构`);

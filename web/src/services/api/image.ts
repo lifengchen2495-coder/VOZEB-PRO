@@ -66,6 +66,7 @@ export class ImageGenerationTaskTerminalError extends Error {
     constructor(
         message: string,
         readonly canRetry: boolean,
+        readonly terminalStatus?: "error" | "cancelled",
     ) {
         super(message);
         this.name = "ImageGenerationTaskTerminalError";
@@ -135,7 +136,7 @@ export async function recoverImageGenerationTask(taskId: string, options?: Pick<
     if (!payload.task) throw new Error(payload.error || "重新检查图片任务失败");
     if (payload.task.needsReview) throw new GenerationTaskNeedsReviewError(payload.task.reviewReason);
     if (payload.task.status === "error" || payload.task.status === "cancelled") {
-        throw new ImageGenerationTaskTerminalError(payload.task.error || (payload.task.status === "cancelled" ? "图片任务已取消" : "图片生成失败"), payload.task.canRetry === true);
+        throw new ImageGenerationTaskTerminalError(payload.task.error || (payload.task.status === "cancelled" ? "图片任务已取消" : "图片生成失败"), payload.task.canRetry === true, payload.task.status);
     }
     return payload.task;
 }
@@ -217,11 +218,11 @@ export async function waitForImageGenerationTask(config: AiConfig, task: ImageGe
         }
         if (current.status === "error") {
             await refreshUserPointsIfSystem(config.apiSource);
-            throw new ImageGenerationTaskTerminalError(current.error || "图片生成失败", current.canRetry === true);
+            throw new ImageGenerationTaskTerminalError(current.error || "图片生成失败", current.canRetry === true, "error");
         }
         if (current.status === "cancelled") {
             await refreshUserPointsIfSystem(config.apiSource);
-            throw new ImageGenerationTaskTerminalError(current.error || "图片任务已取消", false);
+            throw new ImageGenerationTaskTerminalError(current.error || "图片任务已取消", false, "cancelled");
         }
         await delay(IMAGE_TASK_POLL_INTERVAL_MS, options?.signal);
     }

@@ -167,6 +167,7 @@ export type RemakeRangeGroup = {
     sourceContactSheet?: RemakeMediaAsset;
     replacementGeneration: RemakeImageGeneration;
     imageGeneration: RemakeImageGeneration;
+    videoPromptInstructions?: string;
     videoPrompt: string;
     videoGeneration: RemakeVideoGeneration;
 };
@@ -493,6 +494,7 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
                 result: hasOwn(generationSource, "result") ? normalizeRemakeMediaAsset(generationSource.result) : previousGeneration.result,
                 error: hasOwn(generationSource, "error") ? cleanText(generationSource.error, 1_000) || undefined : previousGeneration.error,
             },
+            videoPromptInstructions: hasOwn(source, "videoPromptInstructions") ? cleanText(source.videoPromptInstructions, 50_000) : previous.videoPromptInstructions || "",
             videoPrompt: hasOwn(source, "videoPrompt") ? normalizeRemakeVideoPrompt(source.videoPrompt) : previous.videoPrompt,
             videoGeneration: {
                 status: normalizeWorkStatus(videoGenerationSource.status) || previousVideoGeneration.status,

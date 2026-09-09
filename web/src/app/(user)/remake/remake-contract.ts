@@ -131,6 +131,7 @@ export type RemakeRangeGroup = {
         result?: RemakeMediaAsset | null;
         error?: string | null;
     };
+    videoPromptInstructions?: string;
     videoPrompt: string;
     videoGeneration: {
         status: RemakeImageGenerationStatus;
@@ -441,6 +442,7 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
                 result: normalizeMediaAsset(firstDefined(generation.result, generation.output, group.generatedImage, group.generated_image)),
                 error: stringValue(firstDefined(generation.error, group.imageError, group.image_error)) || undefined,
             },
+            videoPromptInstructions: stringValue(group.videoPromptInstructions).trim(),
             videoPrompt: stringValue(firstDefined(group.videoPrompt, group.video_prompt, group.seedancePrompt, group.seedance_prompt)),
             videoGeneration: {
                 status: normalizeImageGenerationStatus(firstDefined(videoGeneration.status, group.videoStatus, group.video_status)),

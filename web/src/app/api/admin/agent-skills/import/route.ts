@@ -13,9 +13,10 @@ export async function POST(request: Request) {
     if (!hasAdminPermission(currentUser, "upstream.manage")) return apiCompatError(403, "需要管理员权限");
 
     try {
-        const body = await readJsonBody<{ url?: unknown; path?: unknown }>(request);
+        const body = await readJsonBody<{ url?: unknown; path?: unknown; githubToken?: unknown }>(request);
         if (typeof body.url !== "string" || !body.url.trim()) return apiCompatError(400, "请输入 GitHub 地址");
-        const imported = await importAgentSkillFromGithub({ url: body.url, path: typeof body.path === "string" ? body.path : undefined });
+        if (body.githubToken !== undefined && typeof body.githubToken !== "string") return apiCompatError(400, "GitHub Token 必须是字符串");
+        const imported = await importAgentSkillFromGithub({ url: body.url, path: typeof body.path === "string" ? body.path : undefined, githubToken: body.githubToken });
         const result = imported.skill ? { ...imported, skill: await refineImportedAgentSkill({ skill: imported.skill, requestUrl: request.url, cookie: request.headers.get("cookie") || "", userId: currentUser.id }) } : imported;
         return apiSuccess(result, result.skill ? "Skill 已由默认文本模型提取整理" : "请选择要提取的 Skill");
     } catch (error) {

@@ -45,6 +45,37 @@ describe("createAgentRun video frames", () => {
     });
 });
 
+describe("createAgentRun image roles", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mocks.createCreativeRunBundle.mockImplementation(async (_userId, input) => input.run);
+    });
+
+    const request = { clientRequestId: "image-role-request", surface: "chat" as const, prompt: "生成商品图", assetIds: ["product"], skillIds: [], modelIds: [], preferences: { image: { references: [{ assetId: "product", role: "product" as const }] } } };
+
+    it("按用户查询并保存真实素材用途", async () => {
+        mocks.getCreativeAssetsByIds.mockResolvedValue([{ id: "product", userId: "user", type: "image", status: "ready", serverUrl: "/api/reference-assets/product.png" }]);
+        await expect(createAgentRun("user", request)).resolves.toMatchObject({ generationPreferences: request.preferences });
+        expect(mocks.getCreativeAssetsByIds).toHaveBeenCalledWith(["product"], "user");
+    });
+
+    it.each([
+        [],
+        [{ id: "product", userId: "other-user", type: "image", status: "ready", serverUrl: "/other.png" }],
+        [{ id: "product", userId: "user", type: "image", status: "deleted", serverUrl: "/deleted.png" }],
+        [{ id: "product", userId: "user", type: "video", status: "ready", serverUrl: "/video.mp4" }],
+    ])("写入任务前拒绝非法角色素材：%j", async (...assets) => {
+        mocks.getCreativeAssetsByIds.mockResolvedValue(assets);
+        await expect(createAgentRun("user", request)).rejects.toThrow();
+        expect(mocks.createCreativeRunBundle).not.toHaveBeenCalled();
+    });
+
+    it("即使绕过请求归一化也拒绝绑定未选中的素材", async () => {
+        await expect(createAgentRun("user", { ...request, assetIds: [] })).rejects.toThrow("图片素材用途必须绑定本轮已选择的图片");
+        expect(mocks.createCreativeRunBundle).not.toHaveBeenCalled();
+    });
+});
+
 describe("createAgentRun Canvas snapshot", () => {
     beforeEach(() => {
         vi.clearAllMocks();

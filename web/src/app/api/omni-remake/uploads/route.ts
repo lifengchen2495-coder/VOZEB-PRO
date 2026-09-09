@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import { NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/lib/auth/session";
-import { getOmniProjectForUser, OmniProjectError } from "@/lib/server/omni-remake-project-service";
+import { assertOmniManualResultReady, getOmniProjectForUser, omniManualResultVersion, omniManualUploadId, OmniProjectError } from "@/lib/server/omni-remake-project-service";
 import { createSignedReferenceAssetUrl } from "@/lib/server/reference-asset-access";
 import { writeReferenceMediaFile } from "@/lib/server/reference-asset-store";
 import { resolvePublicRequestOrigin } from "@/lib/server/public-request-origin";
@@ -20,20 +20,26 @@ export async function POST(request: Request) {
     const user = await getCurrentUser(request);
     if (!user) return response(401, null, "请先登录");
 
-    const limit = await checkRateLimit(`omni-remake-upload:${user.id}`, UPLOAD_RATE_LIMIT);
+    const resultUpload = new URL(request.url).searchParams.get("purpose") === "result";
+    const limit = await checkRateLimit(`omni-remake-upload:${resultUpload ? "result:" : ""}${user.id}`, resultUpload ? { ...UPLOAD_RATE_LIMIT, maxRequests: 120 } : UPLOAD_RATE_LIMIT);
     if (!limit.allowed) return NextResponse.json({ code: 429, data: null, msg: "上传过于频繁，请稍后重试" }, { status: 429, headers: rateLimitHeaders(limit) });
 
     let temporary: Awaited<ReturnType<typeof streamRequestToTemporaryVideo>> | undefined;
     try {
         const projectId = readProjectId(request);
         if (!projectId) return response(400, null, "请先创建全品类复刻项目");
-        await getOmniProjectForUser(user.id, projectId);
+        const project = await getOmniProjectForUser(user.id, projectId);
+        const params = new URL(request.url).searchParams;
+        const segment = resultUpload ? assertOmniManualResultReady(project, params.get("segmentId") || "") : undefined;
+        if (resultUpload && (!params.has("revision") || Number(params.get("revision")) !== project.revision)) return response(409, null, "项目已更新，请刷新后再上传片段结果");
+        const inputVersion = segment ? omniManualResultVersion(project, segment) : undefined;
         const originalName = readOriginalName(request);
         const origin = resolvePublicRequestOrigin(request);
         temporary = await streamRequestToTemporaryVideo(request);
-        const asset = await writeReferenceMediaFile(temporary.filePath, "video", temporary.mimeType, true, {
+        const asset = await writeReferenceMediaFile(temporary.filePath, "video", temporary.mimeType, !resultUpload, {
             ownerUserId: user.id,
-            source: "omni-remake-source-upload",
+            source: resultUpload ? "omni-remake-result-upload" : "omni-remake-source-upload",
+            taskId: inputVersion,
             originalName,
             projectId,
             maxBytes: REMAKE_VIDEO_UPLOAD_MAX_BYTES,
@@ -52,6 +58,7 @@ export async function POST(request: Request) {
                 mimeType: asset.mimeType,
                 storage: asset.storage,
                 originalName,
+                ...(resultUpload ? { inputVersion, uploadId: omniManualUploadId(asset.token), expiresInSeconds: 24 * 60 * 60 } : {}),
             },
             "视频已上传",
         );

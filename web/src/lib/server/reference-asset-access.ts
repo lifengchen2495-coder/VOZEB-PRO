@@ -1,25 +1,27 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { REFERENCE_ASSET_SIGNATURE_PURPOSE } from "@/lib/reference-asset-url";
+import { isProviderReadSignaturePurpose, REFERENCE_ASSET_LONG_SIGNATURE_PURPOSE, REFERENCE_ASSET_SIGNATURE_PURPOSE, type ReferenceAssetSignaturePurpose } from "@/lib/reference-asset-url";
 
-const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
-const SIGNED_URL_TTL_SECONDS = SIGNED_URL_TTL_MS / 1000;
+const SIGNED_URL_TTL_SECONDS = 15 * 60;
+const LONG_SIGNED_URL_TTL_SECONDS = 90 * 60;
 const GENERATION_ASSET_SIGNATURE_SCOPE = "generation";
 
-export function createSignedReferenceAssetUrl(token: string, origin: string, ownerUserId: string, now = Date.now()) {
-    return createSignedAssetUrl("reference-assets", token, token, ownerUserId, origin, now);
+export type ReferenceAssetSigningOptions = { purpose?: ReferenceAssetSignaturePurpose };
+
+export function createSignedReferenceAssetUrl(token: string, origin: string, ownerUserId: string, now = Date.now(), options: ReferenceAssetSigningOptions = {}) {
+    return createSignedAssetUrl("reference-assets", token, token, ownerUserId, origin, now, options);
 }
 
-export function createSignedGenerationAssetUrl(token: string, origin: string, ownerUserId: string, now = Date.now()) {
-    return createSignedAssetUrl("generation-log-assets", token, scopedGenerationToken(token), ownerUserId, origin, now);
+export function createSignedGenerationAssetUrl(token: string, origin: string, ownerUserId: string, now = Date.now(), options: ReferenceAssetSigningOptions = {}) {
+    return createSignedAssetUrl("generation-log-assets", token, scopedGenerationToken(token), ownerUserId, origin, now, options);
 }
 
-export function signReferenceAssetInputUrl(value: string, origin: string, ownerUserId: string, now = Date.now()) {
-    return signAssetInputUrl(value, "/api/reference-assets/", origin, ownerUserId, (token) => createSignedReferenceAssetUrl(token, origin, ownerUserId, now));
+export function signReferenceAssetInputUrl(value: string, origin: string, ownerUserId: string, now = Date.now(), options: ReferenceAssetSigningOptions = {}) {
+    return signAssetInputUrl(value, "/api/reference-assets/", origin, ownerUserId, (token) => createSignedReferenceAssetUrl(token, origin, ownerUserId, now, options));
 }
 
-export function signGenerationAssetInputUrl(value: string, origin: string, ownerUserId: string, now = Date.now()) {
-    return signAssetInputUrl(value, "/api/generation-log-assets/", origin, ownerUserId, (token) => createSignedGenerationAssetUrl(token, origin, ownerUserId, now));
+export function signGenerationAssetInputUrl(value: string, origin: string, ownerUserId: string, now = Date.now(), options: ReferenceAssetSigningOptions = {}) {
+    return signAssetInputUrl(value, "/api/generation-log-assets/", origin, ownerUserId, (token) => createSignedGenerationAssetUrl(token, origin, ownerUserId, now, options));
 }
 
 function signAssetInputUrl(value: string, prefix: string, origin: string, ownerUserId: string, createSignedUrl: (token: string) => string) {
@@ -48,15 +50,16 @@ export function verifyGenerationAssetSignature(token: string, purpose: string | 
     return verifyAssetSignature(scopedGenerationToken(token), purpose, expiresValue, signature, ownerUserId, now);
 }
 
-function createSignedAssetUrl(route: "reference-assets" | "generation-log-assets", token: string, signedToken: string, ownerUserId: string, origin: string, now: number) {
+function createSignedAssetUrl(route: "reference-assets" | "generation-log-assets", token: string, signedToken: string, ownerUserId: string, origin: string, now: number, options: ReferenceAssetSigningOptions) {
     const secret = signingSecret();
     const normalizedOrigin = normalizeOrigin(origin);
     const owner = ownerUserId.trim();
-    if (!secret || !normalizedOrigin || !token || !owner) return "";
-    const expires = Math.floor((now + SIGNED_URL_TTL_MS) / 1000);
-    const signature = sign(signedToken, REFERENCE_ASSET_SIGNATURE_PURPOSE, expires, owner, secret);
+    const purpose = options.purpose ?? REFERENCE_ASSET_SIGNATURE_PURPOSE;
+    if (!secret || !normalizedOrigin || !token || !owner || !isProviderReadSignaturePurpose(purpose)) return "";
+    const expires = Math.floor(now / 1000) + signatureTtlSeconds(purpose);
+    const signature = sign(signedToken, purpose, expires, owner, secret);
     const path = token.split("/").map(encodeURIComponent).join("/");
-    return `${normalizedOrigin}/api/${route}/${path}?purpose=${REFERENCE_ASSET_SIGNATURE_PURPOSE}&expires=${expires}&signature=${signature}`;
+    return `${normalizedOrigin}/api/${route}/${path}?purpose=${purpose}&expires=${expires}&signature=${signature}`;
 }
 
 function verifyAssetSignature(token: string, purpose: string | null, expiresValue: string | null, signature: string | null, ownerUserId: string, now: number) {
@@ -64,10 +67,14 @@ function verifyAssetSignature(token: string, purpose: string | null, expiresValu
     const owner = ownerUserId.trim();
     const expires = Number(expiresValue);
     const nowSeconds = Math.floor(now / 1000);
-    if (!secret || !token || !owner || purpose !== REFERENCE_ASSET_SIGNATURE_PURPOSE || !signature || !Number.isInteger(expires) || expires <= nowSeconds || expires > nowSeconds + SIGNED_URL_TTL_SECONDS + 1) return false;
+    if (!secret || !token || !owner || !isProviderReadSignaturePurpose(purpose) || !signature || !Number.isInteger(expires) || expires <= nowSeconds || expires > nowSeconds + signatureTtlSeconds(purpose)) return false;
     const expected = Buffer.from(sign(token, purpose, expires, owner, secret));
     const actual = Buffer.from(signature);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function signatureTtlSeconds(purpose: ReferenceAssetSignaturePurpose) {
+    return purpose === REFERENCE_ASSET_LONG_SIGNATURE_PURPOSE ? LONG_SIGNED_URL_TTL_SECONDS : SIGNED_URL_TTL_SECONDS;
 }
 
 function scopedGenerationToken(token: string) {

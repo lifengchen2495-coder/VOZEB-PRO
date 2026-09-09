@@ -118,7 +118,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
     const completedCharges: Array<{ headers: Headers; idempotencyKey: string }> = [];
     try {
         for (const groupId of selectedGroups) {
-            const messages = remakeProductionMessages(promptInput, groupId);
+            const messages = remakeProductionMessages(promptInput, groupId, project.groups.find((group) => group.id === groupId)?.videoPromptInstructions);
             let latestError: unknown;
             let generated = false;
             for (const candidate of candidates) {

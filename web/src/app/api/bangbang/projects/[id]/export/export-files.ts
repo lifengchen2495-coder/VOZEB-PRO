@@ -1,5 +1,6 @@
 import { strToU8 } from "fflate";
 import { BANGBANG_STEP_LABELS, bangbangActiveSteps, bangbangCreationMode, type BangbangProject } from "@/lib/bangbang-contract";
+import { bangbangVideoPromptInstructions } from "@/lib/server/bangbang-prompts";
 
 export function bangbangProductionExportBlockReason(project: BangbangProject): string | undefined {
     if (!project.groups.length || project.groups.some((group) => group.image.status !== "approved" || !group.image.result || group.frames.length !== 9 || !group.optimizedPrompt.trim())) return "请先完成并逐张确认全部九宫格";
@@ -12,6 +13,7 @@ export function bangbangProductionExportBlockReason(project: BangbangProject): s
 export function bangbangTextExportFiles(project: BangbangProject) {
     const files: Record<string, Uint8Array> = {};
     files["project.json"] = strToU8(JSON.stringify(project, null, 2));
+    files["视频提示词生成指令.txt"] = strToU8(bangbangVideoPromptInstructions(project));
     const productMode = bangbangCreationMode(project) === "product";
     files["完整过程.md"] = strToU8(`# ${project.title}\n\n创作模式：${productMode ? "产品原创" : "对标裂变"}\n\n${bangbangActiveSteps(project).map((step, index) => {
         const output = project.outputs[step];

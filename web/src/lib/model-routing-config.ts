@@ -2,6 +2,7 @@ import type { LogicalModel, LogicalModelBinding, LogicalModelCapability, Logical
 import { resolveGlobalAiOpcPreset } from "@/lib/globalaiopc-catalog";
 import { inferModelCapability, isCreativeGenerationModel, normalizeModelId } from "@/lib/model-capability";
 import { channelConnectionReady, protocolCatalogCapability, resolveChannelModelConfig } from "@/lib/channel-protocol-registry";
+import { huifengVideoCapabilityProfile } from "@/lib/huifeng-media";
 
 const CAPABILITY_DEFAULT_KEYS = {
     text: "textModel",
@@ -182,6 +183,7 @@ export function resolveLogicalModelCapabilityProfile(binding: Pick<LogicalModelB
         concurrencyLimit: positiveInteger(stored.concurrencyLimit),
         unitCost: positiveNumber(stored.unitCost),
         unitCostCurrency: text(stored.unitCostCurrency, 12) || undefined,
+        ...((modelConfig?.protocol || advanced?.protocol) === "huifeng" && capability === "video" ? huifengVideoCapabilityProfile(upstreamModel) : {}),
     };
 }
 

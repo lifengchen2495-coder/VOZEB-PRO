@@ -1,3 +1,5 @@
+import { normalizeRemakeVideoPromptInstructions } from "@/lib/remake60-video-prompt-instructions";
+
 import { createHash } from "node:crypto";
 import { invalidateRemakeMergedVideo } from "./remake60-merge-contract";
 import { nanoid } from "nanoid";
@@ -144,6 +146,23 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     if (Buffer.byteLength(JSON.stringify(value || {})) > MAX_PROJECT_BYTES) throw new RemakeProjectServiceError("复刻项目数据过大", 413);
     const current = await getRemakeProjectForUser(userId, id);
     const input = object(value);
+    const instructionPatches = new Map<string, string>();
+    if (Array.isArray(input.groups)) {
+        for (const rawGroup of input.groups) {
+            const group = object(rawGroup);
+            if (!hasOwn(group, "videoPromptInstructions")) continue;
+            const targetById = current.groups.find((item) => item.id === group.id);
+            const targetByOrdinal = current.groups.find((item) => item.ordinal === Number(group.ordinal));
+            if (targetById && targetByOrdinal && targetById.id !== targetByOrdinal.id) throw new RemakeProjectServiceError("生成指令所属分镜组标识不一致", 400);
+            const target = targetByOrdinal || targetById;
+            if (!target) throw new RemakeProjectServiceError("生成指令所属分镜组不存在", 400);
+            try {
+                instructionPatches.set(target.id, normalizeRemakeVideoPromptInstructions(group.videoPromptInstructions));
+            } catch (error) {
+                throw new RemakeProjectServiceError(error instanceof Error ? error.message : "生成指令不正确", 400);
+            }
+        }
+    }
     const requestedRevision = optionalRevision(input.revision);
     if (requestedRevision !== undefined && requestedRevision !== current.revision) throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
 
@@ -207,6 +226,17 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     } else if (videoModelChanged) {
         groups = groups.map((group) => ({ ...group, videoGeneration: { status: "idle" as const } }));
     }
+    groups = groups.map((group) => {
+        const instructions = instructionPatches.get(group.id);
+        if (instructions === undefined) return group;
+        const previous = current.groups.find((item) => item.id === group.id);
+        const instructionsChanged = (previous?.videoPromptInstructions?.trim() || "") !== instructions;
+        return {
+            ...group,
+            videoPromptInstructions: instructions,
+            ...(instructionsChanged ? { videoPrompt: "", videoGeneration: { status: "idle" as const } } : {}),
+        };
+    });
     const voice = hasOwn(input, "voice") ? normalizeVoice(input.voice) : current.voice;
     const pipeline = deriveRemakePipeline({ sourceVideo, sourceCopy, analysis, references, groups, copy, copyBlocks });
     const next: RemakeProject = {
@@ -505,7 +535,8 @@ async function normalizeEditableRemakeGroups(input: {
             const previous = input.current[index] || emptyRemakeRangeGroups()[index];
             const sourceContactSheet = previous.sourceContactSheet;
             const expectedGroup = { ...group, sourceContactSheet };
-            const videoPrompt = group.videoPrompt ? previous.videoPrompt : "";
+            const instructionsChanged = (group.videoPromptInstructions?.trim() || "") !== (previous.videoPromptInstructions?.trim() || "");
+            const videoPrompt = !instructionsChanged && group.videoPrompt ? previous.videoPrompt : "";
             const replacementGeneration = await authoritativeRemakeImageGeneration({
                 userId: input.userId,
                 projectId: input.projectId,
