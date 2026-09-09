@@ -1,4 +1,5 @@
 export type DramaWorkflowStage = "story" | "characters" | "beats" | "script";
+export type DramaWorkflowIntent = "creation" | "analysis";
 
 export type DramaStoryData = {
     logline: string;
@@ -8,7 +9,7 @@ export type DramaStoryData = {
     coreConflict: string;
     adaptationMode: "original" | "faithful" | "free";
     lockedFacts: string;
-    targetDuration: number;
+    targetDuration: number | null;
     episodeCount: number;
 };
 
@@ -33,7 +34,7 @@ export type DramaBeatsData = {
     outline: string;
     hook: string;
     nextPreview: string;
-    beats: Array<{ id: string; title: string; duration: number; description: string; emotion: string; payoff: string }>;
+    beats: Array<{ id: string; title: string; duration: number | null; description: string; emotion: string; payoff: string }>;
 };
 
 export type DramaScriptData = {
@@ -58,6 +59,8 @@ export type DramaWorkflowArtifactFor<S extends DramaWorkflowStage> = S extends D
     ? {
           id: string;
           stage: S;
+          intent?: DramaWorkflowIntent;
+          sourceFingerprint?: string;
           episodeId?: string;
           version: number;
           createdAt: string;

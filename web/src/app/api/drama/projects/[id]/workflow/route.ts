@@ -19,15 +19,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!parsed.ok) return NextResponse.json({ code: parsed.status, data: null, msg: parsed.message }, { status: parsed.status });
     try {
         const input = parseDramaWorkflowRequest(parsed.data);
-        if (input.action === "generate" && !(await checkRateLimit(`drama-workflow:${user.id}`, { maxRequests: 10, windowMs: 60000 })).allowed) return NextResponse.json({ code: 429, data: null, msg: "创作请求过于频繁，请稍后重试" }, { status: 429 });
+        if ((input.action === "generate" || input.action === "analyze") && !(await checkRateLimit(`drama-workflow:${user.id}`, { maxRequests: 10, windowMs: 60000 })).allowed)
+            return NextResponse.json({ code: 429, data: null, msg: "创作请求过于频繁，请稍后重试" }, { status: 429 });
         const result = await runDramaWorkflowAction(user.id, (await context.params).id, input, (project, requestId) => {
-            if (input.action !== "generate") throw new DramaWorkflowError("创作操作无效");
-            return generateDramaWorkflowData({ request, userId: user.id, project, ...input, requestId });
+            if (input.action !== "generate" && input.action !== "analyze") throw new DramaWorkflowError("创作操作无效");
+            return generateDramaWorkflowData({ request, userId: user.id, project, ...input, intent: input.action === "analyze" ? "analysis" : input.intent, requestId });
         });
         const headers = new Headers();
         const points = result.headers?.get("x-vozeb-pro-points-remaining");
         if (points) headers.set("x-vozeb-pro-points-remaining", points);
-        return NextResponse.json({ code: 0, data: { project: result.project, artifact: result.artifact }, msg: input.action === "adopt" ? "已采用" : "候选稿已保存" }, { headers });
+        const msg = result.artifact.status === "adopted" ? (result.artifact.intent === "analysis" ? "分析结果已更新" : "已采用") : result.artifact.intent === "analysis" ? "原稿或分析结果已更新，本次结果已保留为待核对稿" : "候选稿已保存";
+        return NextResponse.json({ code: 0, data: { project: result.project, artifact: result.artifact }, msg }, { headers });
     } catch (error) {
         if (error instanceof DramaWorkflowError || error instanceof DramaProjectServiceError || error instanceof DramaProjectStoreError || error instanceof TextPlanningRequestError)
             return NextResponse.json({ code: error.status, data: null, msg: error.message }, { status: error.status });

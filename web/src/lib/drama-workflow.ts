@@ -1,9 +1,10 @@
 import { nanoid } from "nanoid";
 
 import type { DramaCharacter, DramaEpisode, DramaProject } from "@/lib/drama-project-contract";
-import type { DramaCharacterBiography, DramaCharactersData, DramaScriptData, DramaWorkflow, DramaWorkflowArtifact, DramaWorkflowArtifactFor, DramaWorkflowDataByStage, DramaWorkflowStage } from "@/lib/drama-workflow-contract";
+import type { DramaCharacterBiography, DramaCharactersData, DramaScriptData, DramaWorkflow, DramaWorkflowArtifact, DramaWorkflowArtifactFor, DramaWorkflowDataByStage, DramaWorkflowIntent, DramaWorkflowStage } from "@/lib/drama-workflow-contract";
 
 export const DRAMA_WORKFLOW_METHOD_VERSION = "drama-writing-v1";
+export const DRAMA_ANALYSIS_METHOD_VERSION = "drama-script-analysis-v1";
 export const DRAMA_WORKFLOW_STAGES: DramaWorkflowStage[] = ["story", "characters", "beats", "script"];
 
 export class DramaWorkflowError extends Error {
@@ -16,7 +17,8 @@ export class DramaWorkflowError extends Error {
     }
 }
 
-export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S, value: unknown): DramaWorkflowDataByStage[S] {
+export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S, value: unknown, intent: DramaWorkflowIntent = "creation"): DramaWorkflowDataByStage[S] {
+    assertIntent(stage, intent);
     const input = record(value, "创作内容必须是对象");
     let data: DramaWorkflowDataByStage[DramaWorkflowStage];
     switch (stage) {
@@ -28,14 +30,14 @@ export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S
                 audience: text(input.audience),
                 worldRules: text(input.worldRules),
                 coreConflict: text(input.coreConflict),
-                adaptationMode: input.adaptationMode as "original" | "faithful" | "free",
+                adaptationMode: intent === "analysis" ? "faithful" : (input.adaptationMode as "original" | "faithful" | "free"),
                 lockedFacts: text(input.lockedFacts),
-                targetDuration: positiveNumber(input.targetDuration, "单集目标时长必须大于 0"),
+                targetDuration: intent === "analysis" && input.targetDuration === null ? null : positiveNumber(input.targetDuration, "单集目标时长必须大于 0，原稿未交代时分析结果应为 null"),
                 episodeCount: positiveInteger(input.episodeCount, "计划集数必须为正整数"),
             };
             break;
         case "characters": {
-            const characters = requiredArray(input.characters, "请至少填写一个人物").map((value) => {
+            const characters = (intent === "analysis" && Array.isArray(input.characters) ? input.characters : requiredArray(input.characters, "请至少填写一个人物")).map((value) => {
                 const item = record(value, "人物格式无效");
                 const name = requiredText(item.name, "人物姓名不能为空");
                 if (item.aliases !== undefined && !Array.isArray(item.aliases)) throw new DramaWorkflowError("人物别名必须是数组");
@@ -65,7 +67,7 @@ export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S
                 return {
                     id: text(item.id) || `beat-${index + 1}`,
                     title: requiredText(item.title, `第 ${index + 1} 个节拍缺少标题`),
-                    duration: positiveNumber(item.duration, `第 ${index + 1} 个节拍的时长必须大于 0`),
+                    duration: intent === "analysis" && item.duration === null ? null : positiveNumber(item.duration, `第 ${index + 1} 个节拍的时长必须大于 0，原稿未交代时分析结果应为 null`),
                     description: requiredText(item.description, `第 ${index + 1} 个节拍缺少剧情描述`),
                     emotion: text(item.emotion),
                     payoff: text(item.payoff),
@@ -106,6 +108,23 @@ export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S
         default:
             throw new DramaWorkflowError("创作阶段无效");
     }
+    if (intent === "analysis") {
+        if (stage === "story") {
+            const story = data as DramaWorkflowDataByStage["story"];
+            for (const key of ["genre", "audience", "worldRules", "coreConflict", "lockedFacts"] as const) story[key] ||= "未交代";
+        } else if (stage === "characters") {
+            for (const character of (data as DramaCharactersData).characters) {
+                for (const key of ["role", "background", "motivation", "personality", "relationships", "arc", "visualIdentity", "voiceStyle", "signatureAction"] as const) character[key] ||= "未交代";
+            }
+        } else if (stage === "beats") {
+            const beats = data as DramaWorkflowDataByStage["beats"];
+            for (const key of ["outline", "hook", "nextPreview"] as const) beats[key] ||= "未交代";
+            for (const beat of beats.beats) {
+                beat.emotion ||= "未交代";
+                beat.payoff ||= "未交代";
+            }
+        }
+    }
     return data as DramaWorkflowDataByStage[S];
 }
 
@@ -116,6 +135,8 @@ export function normalizeDramaWorkflow(value: unknown): DramaWorkflow | undefine
     const artifacts = input.artifacts.map((value): DramaWorkflowArtifact => {
         const item = record(value, "创作产物格式无效");
         const stage = parseStage(item.stage);
+        const intent = parseIntent(item.intent);
+        assertIntent(stage, intent);
         const episodeId = text(item.episodeId) || undefined;
         assertScope(stage, episodeId);
         if (item.source !== "manual" && item.source !== "ai") throw new DramaWorkflowError("创作产物来源无效");
@@ -125,6 +146,8 @@ export function normalizeDramaWorkflow(value: unknown): DramaWorkflow | undefine
         return {
             id: requiredText(item.id, "创作产物 ID 不能为空"),
             stage,
+            ...(item.intent === undefined ? {} : { intent }),
+            ...(intent === "analysis" ? { sourceFingerprint: requiredText(item.sourceFingerprint, "分析产物缺少原稿快照") } : {}),
             episodeId,
             version: positiveInteger(item.version, "创作产物版本必须为正整数"),
             createdAt,
@@ -134,7 +157,7 @@ export function normalizeDramaWorkflow(value: unknown): DramaWorkflow | undefine
             inputFingerprint: requiredText(item.inputFingerprint, "创作产物缺少输入快照"),
             adoptedFingerprint: item.status === "adopted" ? requiredText(item.adoptedFingerprint, "采用稿缺少输入快照") : undefined,
             instructions: text(item.instructions) || undefined,
-            data: validateDramaWorkflowData(stage, item.data),
+            data: validateDramaWorkflowData(stage, item.data, intent),
         } as DramaWorkflowArtifact;
     });
     assertUniqueIds(artifacts, "创作产物 ID 重复");
@@ -147,15 +170,18 @@ export function normalizeDramaWorkflow(value: unknown): DramaWorkflow | undefine
     return { schemaVersion: 1, artifacts };
 }
 
-export function latestDramaWorkflowArtifact<S extends DramaWorkflowStage>(project: DramaProject, stage: S, episodeId?: string, status?: DramaWorkflowArtifact["status"]): DramaWorkflowArtifactFor<S> | undefined {
+export function latestDramaWorkflowArtifact<S extends DramaWorkflowStage>(project: DramaProject, stage: S, episodeId?: string, status?: DramaWorkflowArtifact["status"], intent?: DramaWorkflowIntent): DramaWorkflowArtifactFor<S> | undefined {
     return project.workflow?.artifacts
-        .filter((artifact) => artifact.stage === stage && artifact.episodeId === episodeId && (!status || artifact.status === status))
+        .filter((artifact) => artifact.stage === stage && artifact.episodeId === episodeId && (!status || artifact.status === status) && (!intent || (artifact.intent || "creation") === intent))
         .reduce<DramaWorkflowArtifactFor<S> | undefined>((latest, artifact) => (!latest || artifact.version > latest.version ? (artifact as DramaWorkflowArtifactFor<S>) : latest), undefined);
 }
 
-export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowStage, episodeId?: string): Record<string, unknown> {
+export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowStage, episodeId?: string, intent: DramaWorkflowIntent = "creation"): Record<string, unknown> {
     parseStage(stage);
+    assertIntent(stage, intent);
     const episode = resolveEpisode(project, stage, episodeId);
+    const current = latestDramaWorkflowArtifact(project, stage, episodeId, "adopted");
+    if (intent === "analysis") return { ...dramaWorkflowSourceInput(project, stage, episodeId), currentRevision: current ? { id: current.id, version: current.version } : null };
     const input: Record<string, unknown> = {
         project: { id: project.id, title: project.title, summary: project.summary, style: project.style },
         sourceAssets: (project.sourceAssets || []).map((asset) => ({
@@ -168,7 +194,6 @@ export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowSt
             serverUrl: asset.serverUrl || "",
         })),
     };
-    const current = latestDramaWorkflowArtifact(project, stage, episodeId, "adopted");
     input.currentRevision = current ? { id: current.id, version: current.version } : null;
     if (stage !== "story") {
         const story = latestDramaWorkflowArtifact(project, "story", undefined, "adopted");
@@ -203,26 +228,49 @@ export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowSt
     return input;
 }
 
-export function dramaWorkflowFingerprint(project: DramaProject, stage: DramaWorkflowStage, episodeId?: string): string {
-    return stableHash(JSON.stringify(dramaWorkflowInput(project, stage, episodeId)));
+export function dramaWorkflowSourceInput(project: DramaProject, stage: DramaWorkflowStage, episodeId?: string) {
+    const selected = resolveEpisode(project, stage, episodeId);
+    const episodes = selected ? [selected] : project.episodes;
+    return { projectId: project.id, episodes: episodes.map((episode) => ({ id: episode.id, title: episode.title, episodeNumber: episode.episodeNumber || project.episodes.indexOf(episode) + 1, script: episode.script })) };
 }
 
-export function createDramaWorkflowArtifact(project: DramaProject, input: { stage: DramaWorkflowStage; episodeId?: string; data: unknown; source: "manual" | "ai"; instructions?: string }): DramaWorkflowArtifact {
+export function dramaWorkflowSourceFingerprint(project: DramaProject, stage: DramaWorkflowStage, episodeId?: string): string {
+    return stableHash(JSON.stringify(dramaWorkflowSourceInput(project, stage, episodeId)));
+}
+
+export function dramaWorkflowFingerprint(project: DramaProject, stage: DramaWorkflowStage, episodeId?: string, intent: DramaWorkflowIntent = "creation"): string {
+    return stableHash(JSON.stringify(dramaWorkflowInput(project, stage, episodeId, intent)));
+}
+
+export function createDramaWorkflowArtifact(project: DramaProject, input: { stage: DramaWorkflowStage; intent?: DramaWorkflowIntent; episodeId?: string; data: unknown; source: "manual" | "ai"; instructions?: string }): DramaWorkflowArtifact {
     const stage = parseStage(input.stage);
+    const intent = parseIntent(input.intent);
+    assertIntent(stage, intent);
     resolveEpisode(project, stage, input.episodeId);
     if (input.source !== "manual" && input.source !== "ai") throw new DramaWorkflowError("创作产物来源无效");
-    let data = validateDramaWorkflowData(stage, input.data);
+    let data = validateDramaWorkflowData(stage, input.data, intent);
+    if (stage === "story" && intent === "analysis") data = { ...(data as DramaWorkflowDataByStage["story"]), adaptationMode: "faithful", episodeCount: project.episodes.length };
     if (stage === "characters") data = resolveCharacterIds(project, data as DramaCharactersData, input.data);
+    if (stage === "characters" && intent === "analysis") {
+        const source = dramaWorkflowSourceInput(project, stage)
+            .episodes.map((episode) => episode.script)
+            .join("\n");
+        for (const character of (data as DramaCharactersData).characters) {
+            for (const name of [character.name, ...character.aliases]) if (!source.includes(name)) throw new DramaWorkflowError(`人物姓名或别名“${name}”未出现在剧本原稿中，请使用原稿称呼`);
+        }
+    }
     return {
         id: `artifact-${nanoid()}`,
         stage,
+        ...(input.intent === undefined ? {} : { intent }),
+        ...(intent === "analysis" ? { sourceFingerprint: dramaWorkflowSourceFingerprint(project, stage, input.episodeId) } : {}),
         episodeId: input.episodeId,
         version: (latestDramaWorkflowArtifact(project, stage, input.episodeId)?.version || 0) + 1,
         createdAt: new Date().toISOString(),
         source: input.source,
-        methodVersion: DRAMA_WORKFLOW_METHOD_VERSION,
+        methodVersion: intent === "analysis" ? DRAMA_ANALYSIS_METHOD_VERSION : DRAMA_WORKFLOW_METHOD_VERSION,
         status: "candidate",
-        inputFingerprint: dramaWorkflowFingerprint(project, stage, input.episodeId),
+        inputFingerprint: dramaWorkflowFingerprint(project, stage, input.episodeId, intent),
         instructions: text(input.instructions) || undefined,
         data,
     } as DramaWorkflowArtifact;
@@ -241,18 +289,23 @@ export function appendDramaWorkflowArtifact(project: DramaProject, artifact: Dra
 }
 
 export function adoptDramaWorkflowArtifact(project: DramaProject, artifactId: string): DramaProject {
-    const artifact = project.workflow?.artifacts.find((item) => item.id === artifactId);
-    if (!artifact) throw new DramaWorkflowError("候选稿不存在", 409);
+    const storedArtifact = project.workflow?.artifacts.find((item) => item.id === artifactId);
+    if (!storedArtifact) throw new DramaWorkflowError("候选稿不存在", 409);
+    let artifact = storedArtifact;
     if (artifact.status === "adopted") {
         if (latestDramaWorkflowArtifact(project, artifact.stage, artifact.episodeId, "adopted")?.id === artifact.id && !dramaWorkflowArtifactIsStale(project, artifact)) return project;
         throw new DramaWorkflowError("历史采用稿不能直接覆盖当前内容，请以此创建新候选稿", 409);
     }
     if (dramaWorkflowArtifactIsStale(project, artifact)) throw new DramaWorkflowError("相关内容已改变，请基于最新内容重新生成或保存候选稿", 409);
     resolveEpisode(project, artifact.stage, artifact.episodeId);
-    validateDramaWorkflowData(artifact.stage, artifact.data);
+    validateDramaWorkflowData(artifact.stage, artifact.data, artifact.intent);
+    if (artifact.stage === "characters" && artifact.intent === "analysis") {
+        // 分镜提取可能已为同名角色补充资产，采用分析结果时按原稿称呼重新绑定最新 ID。
+        artifact = { ...artifact, data: resolveCharacterIds(project, artifact.data, { characters: artifact.data.characters.map((character) => ({ ...character, id: "" })) }) };
+    }
     const next: DramaProject = { ...project };
     if (artifact.stage === "story") next.summary = artifact.data.logline;
-    if (artifact.stage === "characters") next.characters = applyCharacters(project, resolveCharacterIds(project, artifact.data, artifact.data));
+    if (artifact.stage === "characters") next.characters = applyCharacters(project, resolveCharacterIds(project, artifact.data, artifact.data), artifact.intent);
     next.episodes = project.episodes.map((episode) => {
         if (artifact.episodeId && episode.id !== artifact.episodeId) return episode;
         const updated = markEpisodeForReview(episode);
@@ -260,8 +313,8 @@ export function adoptDramaWorkflowArtifact(project: DramaProject, artifactId: st
         if (artifact.stage === "script") return { ...updated, script: renderDramaWorkflowScript(artifact.data), scriptRichContent: undefined };
         return updated;
     });
-    next.workflow = { schemaVersion: 1, artifacts: project.workflow!.artifacts.map((item) => (item.id === artifact.id ? { ...item, status: "adopted" } : item)) };
-    const adoptedFingerprint = dramaWorkflowFingerprint(next, artifact.stage, artifact.episodeId);
+    next.workflow = { schemaVersion: 1, artifacts: project.workflow!.artifacts.map((item) => (item.id === artifact.id ? { ...artifact, status: "adopted" } : item)) };
+    const adoptedFingerprint = dramaWorkflowFingerprint(next, artifact.stage, artifact.episodeId, artifact.intent);
     next.workflow = { ...next.workflow, artifacts: next.workflow.artifacts.map((item) => (item.id === artifact.id ? { ...item, adoptedFingerprint } : item)) };
     return next;
 }
@@ -269,7 +322,8 @@ export function adoptDramaWorkflowArtifact(project: DramaProject, artifactId: st
 export function dramaWorkflowArtifactIsStale(project: DramaProject, artifact: DramaWorkflowArtifact): boolean {
     if (artifact.episodeId && !project.episodes.some((episode) => episode.id === artifact.episodeId)) return true;
     const expected = artifact.status === "adopted" ? artifact.adoptedFingerprint : artifact.inputFingerprint;
-    return expected !== dramaWorkflowFingerprint(project, artifact.stage, artifact.episodeId);
+    if (artifact.intent === "analysis" && artifact.sourceFingerprint !== dramaWorkflowSourceFingerprint(project, artifact.stage, artifact.episodeId)) return true;
+    return expected !== dramaWorkflowFingerprint(project, artifact.stage, artifact.episodeId, artifact.intent);
 }
 
 export function renderDramaWorkflowScript(data: DramaScriptData): string {
@@ -302,7 +356,7 @@ function resolveCharacterIds(project: DramaProject, data: DramaCharactersData, r
     return { characters };
 }
 
-function applyCharacters(project: DramaProject, data: DramaCharactersData): DramaCharacter[] {
+function applyCharacters(project: DramaProject, data: DramaCharactersData, intent: DramaWorkflowIntent = "creation"): DramaCharacter[] {
     const previous = new Map(project.characters.map((character) => [character.id, character]));
     const updates = data.characters.map((biography) => {
         const character = previous.get(biography.id);
@@ -311,7 +365,7 @@ function applyCharacters(project: DramaProject, data: DramaCharactersData): Dram
             id: biography.id,
             name: biography.name,
             description: renderBiography(biography),
-            profile: { styling: "", colorPalette: "", consistencyRules: "", ...character?.profile, visualIdentity: biography.visualIdentity },
+            profile: { styling: "", colorPalette: "", consistencyRules: "", ...character?.profile, visualIdentity: intent === "analysis" && biography.visualIdentity === "未交代" ? character?.profile?.visualIdentity || "" : biography.visualIdentity },
         };
     });
     const byId = new Map(updates.map((character) => [character.id, character]));
@@ -371,6 +425,17 @@ function assertUniqueIds(items: Array<{ id: string }>, message: string) {
 function parseStage(value: unknown): DramaWorkflowStage {
     if (!DRAMA_WORKFLOW_STAGES.includes(value as DramaWorkflowStage)) throw new DramaWorkflowError("创作阶段无效");
     return value as DramaWorkflowStage;
+}
+
+function parseIntent(value: unknown): DramaWorkflowIntent {
+    if (value === undefined || value === "creation") return "creation";
+    if (value === "analysis") return value;
+    throw new DramaWorkflowError("创作意图无效");
+}
+
+function assertIntent(stage: DramaWorkflowStage, intent: DramaWorkflowIntent) {
+    if (intent !== "creation" && intent !== "analysis") throw new DramaWorkflowError("创作意图无效");
+    if (intent === "analysis" && stage === "script") throw new DramaWorkflowError("原稿分析只支持故事、人物和节奏，不会改写剧本");
 }
 
 function record(value: unknown, message: string): Record<string, unknown> {

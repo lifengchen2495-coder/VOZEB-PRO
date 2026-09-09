@@ -59,7 +59,7 @@ export function DramaSceneStructure({
                         <p className="mt-1 text-[11px] leading-4 text-muted-foreground">完成剧本后整理为可定位场景</p>
                         {onAnalyze ? (
                             <Button className="!mt-2.5 !h-7 !px-2.5 !text-xs" size="small" icon={<Sparkles className="size-3" />} loading={analyzing} disabled={!episode.script.trim()} onClick={onAnalyze}>
-                                AI 整理
+                                AI 一键分析
                             </Button>
                         ) : null}
                     </div>

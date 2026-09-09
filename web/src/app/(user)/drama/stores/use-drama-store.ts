@@ -205,7 +205,7 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
                         ? project.episodes.map((episode) => ({
                               ...invalidateEpisodeShots(episode, () => true),
                               contentStale: episode.contentStale || contentChanged,
-                              reviewStatus: contentChanged ? "draft" : episode.reviewStatus,
+                              reviewStatus: contentChanged ? "draft" : visualChanged && episode.reviewStatus === "visual_ready" ? "content_review" : episode.reviewStatus,
                               renderStale: true,
                           }))
                         : project.episodes,

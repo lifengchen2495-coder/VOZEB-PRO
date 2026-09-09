@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Alert, App, Button, Empty } from "antd";
-import { ArrowRight, History } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useParams, useRouter } from "next/navigation";
 
@@ -12,7 +12,9 @@ import { syncUserPointsFromHeaders } from "@/services/api/points";
 import { compileDramaShotPrompts } from "@/lib/drama-prompt-compiler";
 import { dramaVideoPromptInput } from "@/lib/drama-video-prompt-instructions";
 import { clearDramaMediaTaskRef, dramaMediaTaskIsCurrent, type DramaMediaTaskKind } from "@/lib/drama-media-task-guard";
-import { dramaContentAnalysisFingerprint, dramaVisualAnalysisFingerprint } from "@/lib/drama-analysis-reconcile";
+import { dramaVisualAnalysisFingerprint } from "@/lib/drama-analysis-reconcile";
+import { analyzeDramaScriptFlow } from "@/lib/drama-script-analysis-flow";
+import { requestDramaWorkflow } from "@/services/api/drama-projects";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useDramaStore } from "../stores/use-drama-store";
@@ -64,11 +66,8 @@ export default function DramaProjectPage() {
 
 function DramaProjectEditor({ project }: { project: DramaProject }) {
     const { message } = App.useApp();
-    const router = useRouter();
     const updateProject = useDramaStore((state) => state.updateProject);
-    const updateEpisode = useDramaStore((state) => state.updateEpisode);
     const updateShot = useDramaStore((state) => state.updateShot);
-    const applyContentAnalysis = useDramaStore((state) => state.applyContentAnalysis);
     const applyVisualAnalysis = useDramaStore((state) => state.applyVisualAnalysis);
     const createVersion = useDramaStore((state) => state.createVersion);
     const listVersions = useDramaStore((state) => state.listVersions);
@@ -76,13 +75,16 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     const config = useEffectiveConfig();
     const startingShotRef = useRef("");
     const storyboardTaskRef = useRef("");
-    const [stage, setStage] = useState<DramaProjectStage>(() => (project.episodes.some((item) => item.script.trim() || item.shots.length) ? "script" : "story"));
+    const [stage, setStage] = useState<DramaProjectStage>("script");
     const [adoptingWorkflow, setAdoptingWorkflow] = useState(false);
     const [assetsOpen, setAssetsOpen] = useState(false);
     const [episodeNavigatorOpen, setEpisodeNavigatorOpen] = useState(false);
     const [agentOpen, setAgentOpen] = useState(false);
     const [selectedShotId, setSelectedShotId] = useState<string>();
     const [analyzing, setAnalyzing] = useState(false);
+    const analysisRunning = useRef(false);
+    const [analysisProgress, setAnalysisProgress] = useState("");
+    const [analysisError, setAnalysisError] = useState("");
     const [designing, setDesigning] = useState(false);
     const [editingVideoPrompts, setEditingVideoPrompts] = useState(false);
     const [versionsOpen, setVersionsOpen] = useState(false);
@@ -111,29 +113,66 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     }, [episode.id]);
     useDramaAudioQueue(project, episode, config, updateShot);
     const analyzeScript = async () => {
-        if (!episode.script.trim()) return message.warning("请先填写剧本内容");
+        if (analysisRunning.current || designing) return;
+        if (!episode.script.trim()) return message.warning("请先粘贴或导入本集剧本");
+        analysisRunning.current = true;
         setAnalyzing(true);
+        setAnalysisError("");
+        setAnalysisProgress("正在保存剧本…");
+        const expectedUserId = useUserStore.getState().user?.id;
+        const current = () => {
+            if (useUserStore.getState().user?.id !== expectedUserId) throw new Error("账号已改变，请重新打开项目");
+            const latest = useDramaStore.getState().projects.find((item) => item.id === project.id);
+            if (!latest) throw new Error("项目已关闭，请重新打开后继续分析");
+            return latest;
+        };
         try {
-            const snapshot = await useDramaStore.getState().flushProject(project.id);
-            const currentEpisode = snapshot.episodes.find((item) => item.id === episode.id);
-            if (!currentEpisode?.script.trim()) throw new Error("请先填写剧本内容");
-            const expectedInput = dramaContentAnalysisFingerprint(snapshot, episode.id);
-            const response = await fetch("/api/drama/analyze", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ requestId: `drama-content:${project.id}:${episode.id}:${nanoid()}`, phase: "content", script: currentEpisode.script, summary: snapshot.summary, style: snapshot.style, videoModel: config.videoModel || config.model }),
+            await analyzeDramaScriptFlow({
+                episodeId: episode.id,
+                current,
+                flush: () => {
+                    current();
+                    return useDramaStore.getState().flushProject(project.id);
+                },
+                mutate: (update) => {
+                    current();
+                    useDramaStore.getState().mutateWorkflowProject(project.id, update);
+                },
+                workflow: (input) => requestDramaWorkflow(project.id, input),
+                content: (snapshot, episodeId) =>
+                    requestScriptAnalysis<DramaContentAnalysis>({
+                        requestId: `drama-content:${project.id}:${episodeId}:${nanoid()}`,
+                        phase: "content",
+                        script: snapshot.episodes.find((item) => item.id === episodeId)!.script,
+                        summary: snapshot.summary,
+                        style: snapshot.style,
+                        videoModel: config.videoModel || config.model,
+                    }),
+                visual: (snapshot, episodeId) =>
+                    requestScriptAnalysis<DramaVisualAnalysis>({
+                        ...dramaVideoPromptInput(
+                            snapshot,
+                            snapshot.episodes.find((item) => item.id === episodeId)!,
+                        ),
+                        requestId: `drama-visual:${project.id}:${episodeId}:${nanoid()}`,
+                        phase: "visual",
+                    }),
+                saveVersion: (snapshot) => createVersion(snapshot, "AI 一键分析前"),
+                progress: setAnalysisProgress,
             });
-            syncUserPointsFromHeaders(response.headers, "system");
-            const payload = (await response.json().catch(() => ({}))) as { data?: DramaContentAnalysis; msg?: string };
-            if (!response.ok || !payload.data) throw new Error(payload.msg || "AI 剧本解析失败");
-            await createVersion(snapshot, "AI 内容解析前");
-            applyContentAnalysis(project.id, episode.id, payload.data, expectedInput);
-            setStage("review");
-            message.success(`已提取 ${payload.data.characters.length} 个角色、${payload.data.scenes.length} 个场景和 ${payload.data.shots.length} 个待审核镜头`);
+            if ((current().activeEpisodeId || current().episodes[0]?.id) === episode.id) {
+                setStage("storyboard");
+                setAssetsOpen(false);
+            }
+            message.success(`${episode.title}已完成故事、人物、节奏分析及分镜方案，可查看结果或进入制作`);
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "AI 剧本解析失败");
+            const detail = error instanceof Error ? error.message : "AI 剧本分析失败";
+            setAnalysisError(detail);
+            message.error(detail);
         } finally {
+            analysisRunning.current = false;
             setAnalyzing(false);
+            setAnalysisProgress("");
         }
     };
     const designVisuals = async () => {
@@ -449,12 +488,18 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                         >
                             {assetsOpen ? <DramaAssetsPanel project={project} episode={episode} /> : null}
 
-                            {!assetsOpen && (stage === "story" || stage === "characters" || stage === "beats" || stage === "script") ? (
+                            {analyzing ? <Alert className="mb-3" type="info" showIcon title={analysisProgress} description="AI 正在读取已导入的剧本，自动整理故事、人物、本集节奏和分镜。完成的结果会逐步保存。" /> : null}
+                            {analysisError && !analyzing ? (
+                                <Alert className="mb-3" type="warning" showIcon title="分析尚未完成" description={`${analysisError}。已完成的分析已保留，返回剧本输入后可继续。`} action={<Button onClick={() => changeStage("script")}>返回剧本</Button>} />
+                            ) : null}
+
+                            {!assetsOpen && (stage === "story" || stage === "characters" || stage === "beats") ? (
                                 <DramaWorkflowPanel
                                     key={`${project.id}:${stage}:${stage === "story" || stage === "characters" ? "project" : episode.id}`}
                                     project={project}
                                     episode={episode}
                                     stage={stage}
+                                    busy={analyzing}
                                     onStageChange={changeStage}
                                     onAdoptingChange={setAdoptingWorkflow}
                                 />
@@ -465,11 +510,11 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                     className="mb-4"
                                     type="warning"
                                     showIcon
-                                    title="上游内容已更新，现有分镜需要重新解析"
+                                    title="剧本或分析结果已更新，分镜需要重新分析"
                                     description="已生成的媒体仍然保留。重新提取后会按镜头匹配可复用成果。"
                                     action={
                                         <Button loading={analyzing} onClick={() => void analyzeScript()}>
-                                            重新提取
+                                            AI 继续分析
                                         </Button>
                                     }
                                 />
@@ -483,7 +528,9 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                 <DramaVideoPromptInstructions key={project.id} project={project} episode={episode} disabled={designing || analyzing || episode.contentStale} onBusyChange={setEditingVideoPrompts} />
                             ) : null}
 
-                            {!assetsOpen && stage === "review" ? <DramaReviewPanel project={project} episode={episode} designing={designing || editingVideoPrompts} onDesignVisuals={() => void designVisuals()} onStageChange={changeStage} /> : null}
+                            {!assetsOpen && stage === "review" ? (
+                                <DramaReviewPanel project={project} episode={episode} designing={designing || editingVideoPrompts || analyzing} onDesignVisuals={() => void designVisuals()} onStageChange={changeStage} />
+                            ) : null}
 
                             {!assetsOpen && stage === "storyboard" ? (
                                 <div>
@@ -507,15 +554,20 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                                 : []
                                         }
                                         action={
-                                            <Button
-                                                type="primary"
-                                                className="!h-9 !w-full sm:!w-auto"
-                                                icon={<ArrowRight className="size-4" />}
-                                                disabled={!episode.shots.length || episode.contentStale || episode.reviewStatus !== "visual_ready"}
-                                                onClick={() => setStage("generate")}
-                                            >
-                                                进入镜头生成
-                                            </Button>
+                                            <div className="flex flex-wrap gap-2">
+                                                <Button disabled={!episode.shots.length || analyzing} onClick={() => setStage("review")}>
+                                                    核对镜头内容
+                                                </Button>
+                                                <Button
+                                                    type="primary"
+                                                    className="!h-9 !w-full sm:!w-auto"
+                                                    icon={<ArrowRight className="size-4" />}
+                                                    disabled={analyzing || !episode.shots.length || episode.contentStale || episode.reviewStatus !== "visual_ready"}
+                                                    onClick={() => setStage("generate")}
+                                                >
+                                                    进入镜头生成
+                                                </Button>
+                                            </div>
                                         }
                                     />
                                     {episode.shots.length ? (
@@ -535,7 +587,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                         <div className="mt-2.5 flex min-h-14 items-center rounded-lg border border-dashed border-border bg-card/25 px-3 py-2.5">
                                             <div className="min-w-0">
                                                 <h3 className="text-sm font-medium">还没有可编辑的分镜</h3>
-                                                <p className="mt-0.5 truncate text-xs text-muted-foreground">先从剧本提取内容结构，并在内容审核阶段确认镜头事实与视觉方案。</p>
+                                                <p className="mt-0.5 text-xs text-muted-foreground">在剧本输入页提供原文，点击 AI 一键分析即可生成分镜方案。</p>
                                             </div>
                                         </div>
                                     )}
@@ -557,18 +609,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                 />
             </div>
             {stage === "script" ? (
-                <DramaScriptGlobalBar
-                    project={project}
-                    episode={episode}
-                    onSave={() => createVersion(project, "手动保存版本")}
-                    onContinue={() => {
-                        if (!episode.shots.length || episode.contentStale) return void analyzeScript();
-                        if (episode.reviewStatus === "draft") updateEpisode(project.id, episode.id, { reviewStatus: "content_review" });
-                        setStage("review");
-                    }}
-                    analyzing={analyzing}
-                    episodeNavigatorOpen={episodeNavigatorOpen}
-                />
+                <DramaScriptGlobalBar project={project} episode={episode} onSave={() => createVersion(project, "手动保存版本")} onContinue={() => void analyzeScript()} analyzing={analyzing} episodeNavigatorOpen={episodeNavigatorOpen} />
             ) : null}
             <DramaVersionModal
                 open={versionsOpen}
@@ -639,10 +680,17 @@ function DramaScriptGlobalBar({
                     loading={analyzing}
                     onClick={onContinue}
                 >
-                    <span className="sm:hidden">进入内容审核</span>
-                    <span className="hidden sm:inline">完成剧本，进入内容审核</span>
+                    <span>AI 一键分析剧本</span>
                 </Button>
             </div>
         </footer>
     );
+}
+
+async function requestScriptAnalysis<T>(input: Record<string, unknown>): Promise<T> {
+    const response = await fetch("/api/drama/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+    syncUserPointsFromHeaders(response.headers, "system");
+    const payload = (await response.json().catch(() => ({}))) as { data?: T; msg?: string };
+    if (!response.ok || !payload.data) throw new Error(payload.msg || "AI 剧本分析失败");
+    return payload.data;
 }

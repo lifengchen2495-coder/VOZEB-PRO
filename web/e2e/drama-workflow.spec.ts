@@ -1,59 +1,100 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page, type Route } from "@playwright/test";
+
+const originalScript = "内景 · 修钟铺。林夏拆下钟壳，一张车票飘落在柜台。林夏说：“这是父亲失踪那天的车票。”她翻过车票，背面写着一个陌生地址。";
+const revisedScript = `${originalScript}林夏把车票收进口袋，决定先去寻找母亲。`;
+const workflowFixtures = {
+    story: {
+        logline: "修钟师林夏从旧钟找到父亲失踪当日的车票。",
+        genre: "悬疑",
+        audience: "",
+        worldRules: "现代都市",
+        coreConflict: "父亲失踪的真相藏在旧物之中。",
+        adaptationMode: "faithful",
+        lockedFacts: "林夏找到车票，车票背面有陌生地址。",
+        targetDuration: null,
+        episodeCount: 1,
+    },
+    characters: {
+        characters: [
+            {
+                id: "character-linxia",
+                name: "林夏",
+                aliases: [],
+                role: "主角",
+                background: "修钟师",
+                motivation: "查明父亲失踪的真相",
+                personality: "细心",
+                relationships: "失踪者的女儿",
+                arc: "从发现线索到决定追查",
+                visualIdentity: "原稿未明确",
+                voiceStyle: "原稿未明确",
+                signatureAction: "拆开钟壳",
+            },
+        ],
+    },
+    beats: {
+        outline: "林夏修钟时找到车票和陌生地址。",
+        hook: "地址指向父亲失踪的真相。",
+        nextPreview: "",
+        beats: [{ id: "beat-ticket", title: "旧钟里的车票", duration: null, description: "林夏拆下钟壳，找到失踪当日的车票。", emotion: "惊讶", payoff: "车票背面的地址" }],
+    },
+} as const;
+
+type AnalysisStage = keyof typeof workflowFixtures;
+type ModelMocks = { calls: string[]; beforeWorkflow?: (stage: AnalysisStage, route: Route) => Promise<boolean>; beforeContent?: () => Promise<void> };
 
 function check(condition: boolean, message: string): asserts condition {
     if (!condition) throw new Error(message);
 }
 
-test("短剧创作稿逐阶段采用并持久保存，异步候选不覆盖编辑", async ({ page, context }) => {
+function deferred() {
+    let resolve = () => {};
+    const promise = new Promise<void>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
+async function readProject(context: BrowserContext, projectId: string) {
+    const response = await context.request.get(`/api/drama/projects/${projectId}`);
+    check(response.ok(), `读取测试项目失败：${response.status()} ${await response.text()}`);
+    return (await response.json()).data.project;
+}
+
+async function withProject(page: Page, context: BrowserContext, title: string, run: (projectId: string) => Promise<void>) {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    const created = await context.request.post("/api/drama/projects", { data: { title: "六阶段流程浏览器回归", summary: "", style: "现代都市", ratio: "9:16" } });
-    check(created.ok(), `测试项目创建失败 ${created.status()} ${await created.text()}`);
-    const project = (await created.json()).data.project;
-    const projectId = project.id;
-    await page.goto(`/drama/${projectId}`, { waitUntil: "domcontentloaded", timeout: 120000 });
-    await expect(page.locator('[data-drama-workflow="story"]')).toBeVisible({ timeout: 120000 });
-    const adopt = async (stage: string) => {
-        const panel = page.locator(`[data-drama-workflow="${stage}"]`);
-        const saved = page.waitForResponse((response) => response.url().endsWith("/workflow") && response.request().postDataJSON().action === "save");
-        await panel.getByRole("button", { name: "保存为新候选", exact: true }).click();
-        const saveResponse = await saved;
-        check(saveResponse.ok(), `保存 ${stage} 失败：${await saveResponse.text()}`);
-        await expect(panel.getByRole("button", { name: "采用此稿", exact: true })).toBeEnabled();
-        const adopted = page.waitForResponse((response) => response.url().endsWith("/workflow") && response.request().postDataJSON().action === "adopt");
-        await panel.getByRole("button", { name: "采用此稿", exact: true }).click();
-        const adoptResponse = await adopted;
-        check(adoptResponse.ok(), `采用 ${stage} 失败：${await adoptResponse.text()}`);
-        await expect(panel.getByText("已采用 v1", { exact: true })).toBeVisible();
-        await expect(page.locator("[data-drama-workspace]")).not.toHaveAttribute("inert", "");
-    };
-    await page.getByRole("textbox", { name: "故事梗概", exact: true }).fill("修钟师发现旧钟记录了父亲失踪那天的真相。");
-    await page.getByRole("textbox", { name: "核心冲突", exact: true }).fill("寻找真相与保护家人发生冲突。");
-    await page.getByRole("textbox", { name: "锁定事实（改编时必须遵守）", exact: true }).fill("父亲没有死亡，旧钟不能穿越时间。");
-    await adopt("story");
-    await page.getByRole("button", { name: "继续：人物小传", exact: true }).click();
-    await page.getByRole("textbox", { name: "姓名", exact: true }).fill("林夏");
-    await page.getByRole("textbox", { name: "动机与目标", exact: true }).fill("找到父亲，证明自己的判断。");
-    await adopt("characters");
-    await page.getByRole("button", { name: "继续：分集节奏", exact: true }).click();
-    await page.getByRole("textbox", { name: "本集大纲", exact: true }).fill("林夏修好旧钟，从夹层找到车票。");
-    await page.getByRole("textbox", { name: "节拍标题", exact: true }).fill("旧钟里的车票");
-    await page.getByRole("textbox", { name: "剧情事件", exact: true }).fill("林夏拆开钟壳，看见一张当天的车票。");
-    await adopt("beats");
-    await page.getByRole("button", { name: "继续：剧本创作", exact: true }).click();
-    await page.getByRole("textbox", { name: "地点 / 内外景", exact: true }).fill("内景 · 修钟铺");
-    await page.getByRole("textbox", { name: "第 1 段内容", exact: true }).fill("林夏拆下钟壳，一张车票飘落在柜台。");
-    await adopt("script");
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(page.locator('[data-drama-workflow="script"]')).toBeVisible({ timeout: 60000 });
-    const persisted = (await (await context.request.get(`/api/drama/projects/${projectId}`)).json()).data.project;
-    check(persisted.workflow.artifacts.filter((item) => item.status === "adopted").length === 4, "四阶段采用稿未持久保存");
-    check(persisted.episodes[0].script.includes("车票飘落在柜台"), "采用剧本未同步正文");
-    check(persisted.characters[0].name === "林夏", "人物未同步资产");
-    // 文本模型结果使用固定数据，实际走页面与项目保存接口。
+    const created = await context.request.post("/api/drama/projects", { data: { title, summary: "", style: "现代都市", ratio: "9:16" } });
+    check(created.ok(), `测试项目创建失败：${created.status()} ${await created.text()}`);
+    const projectId = (await created.json()).data.project.id;
+    try {
+        await page.goto(`/drama/${projectId}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+        await expect(page.locator('[aria-label="本集剧本编辑器"][contenteditable="true"]')).toBeVisible({ timeout: 120000 });
+        await expect(page.locator('[data-drama-workflow="script"]')).toHaveCount(0);
+        await run(projectId);
+        expect(errors).toEqual([]);
+    } finally {
+        await page.unrouteAll({ behavior: "wait" });
+        await context.request.delete(`/api/drama/projects/${projectId}`);
+    }
+}
+
+async function mockModels(page: Page, context: BrowserContext, mocks: ModelMocks) {
+    await page.route("**/api/drama/projects/*/workflow", async (route) => {
+        const input = route.request().postDataJSON();
+        if (input.action !== "analyze") return route.continue();
+        const stage = input.stage as AnalysisStage;
+        check(stage in workflowFixtures, `意外的分析阶段：${stage}`);
+        mocks.calls.push(stage);
+        if (await mocks.beforeWorkflow?.(stage, route)) return;
+        // 只替代模型产物，保留请求指纹并走真实的校验、保存和自动采用接口。
+        const response = await context.request.post(route.request().url(), { data: { ...input, action: "save", intent: "analysis", data: workflowFixtures[stage] } });
+        await route.fulfill({ response });
+    });
     await page.route("**/api/drama/analyze", async (route) => {
         const input = route.request().postDataJSON();
+        mocks.calls.push(input.phase);
+        if (input.phase === "content") await mocks.beforeContent?.();
         const data =
             input.phase === "content"
                 ? {
@@ -68,9 +109,9 @@ test("短剧创作稿逐阶段采用并持久保存，异步候选不覆盖编�
                               description: "林夏拆下钟壳，一张车票飘落在柜台。",
                               sourceText: input.script,
                               shotBoundary: "车票落定",
-                              dialogue: "",
+                              dialogue: "这是父亲失踪那天的车票。",
                               narration: "",
-                              utterances: [],
+                              utterances: [{ id: "utterance-one", order: 1, type: "dialogue", speaker: "林夏", text: "这是父亲失踪那天的车票。" }],
                               duration: 5,
                               characterNames: ["林夏"],
                               sceneName: "",
@@ -104,62 +145,137 @@ test("短剧创作稿逐阶段采用并持久保存，异步候选不覆盖编�
                   };
         await route.fulfill({ json: { code: 0, data, msg: "OK" } });
     });
-    await page
-        .locator("[data-drama-script-global-bar]")
-        .getByRole("button", { name: /进入内容审核/ })
-        .click();
-    await expect(page.getByRole("heading", { name: "分镜设计 · 内容审核", exact: true })).toBeVisible({ timeout: 30000 });
-    await page.getByRole("button", { name: "确认内容并生成视觉方案", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "分镜编辑", exact: true })).toBeVisible({ timeout: 30000 });
-    await page.getByRole("button", { name: "进入镜头生成", exact: true }).click();
-    await expect(page.locator('[data-drama-stage="generate"]')).toBeVisible();
-    await page
-        .getByRole("button", { name: /剧本创作/ })
-        .first()
-        .click();
-    // 未保存编辑在阶段切换后仍保留。
-    const scriptPanel = page.locator('[data-drama-workflow="script"]');
-    await scriptPanel.getByRole("textbox", { name: "第 1 段内容", exact: true }).fill("林夏摊开车票，背面写着一个地址。");
-    await page
-        .getByRole("button", { name: /故事设定/ })
-        .first()
-        .click();
-    await page
-        .getByRole("button", { name: /剧本创作/ })
-        .first()
-        .click();
-    await expect(page.getByRole("textbox", { name: "第 1 段内容", exact: true })).toHaveValue("林夏摊开车票，背面写着一个地址。");
-    await expect(page.getByRole("button", { name: "采用此稿", exact: true })).toBeDisabled();
-    let releaseGeneration = () => {};
-    let generationStarted = () => {};
-    const started = new Promise<void>((resolve) => {
-        generationStarted = resolve;
+}
+
+async function fillScript(page: Page, script = originalScript) {
+    await page.locator('[aria-label="本集剧本编辑器"][contenteditable="true"]').fill(script);
+}
+
+async function analyze(page: Page) {
+    await page.locator("[data-drama-script-global-bar]").getByRole("button", { name: "AI 一键分析剧本", exact: true }).click();
+}
+
+async function openStage(page: Page, label: string) {
+    await page.getByRole("button", { name: `切换到${label}`, exact: true }).click();
+}
+
+test("只提供剧本即可一键分析，结果自动采用且原稿保持不变", async ({ page, context }) => {
+    const mocks: ModelMocks = { calls: [] };
+    await mockModels(page, context, mocks);
+    await withProject(page, context, "原稿一键分析浏览器回归", async (projectId) => {
+        await openStage(page, "故事分析");
+        const emptyReport = page.locator('[data-drama-workflow="story"]');
+        await expect(emptyReport.locator("[data-drama-analysis-empty]")).toBeVisible();
+        await expect(emptyReport.getByRole("textbox", { name: "故事梗概", exact: true })).toHaveCount(0);
+        await expect(emptyReport.getByRole("button", { name: "编辑分析结果", exact: true })).toHaveCount(0);
+        await openStage(page, "剧本输入");
+        await fillScript(page);
+        await analyze(page);
+        await expect(page.getByRole("heading", { name: "分镜编辑", exact: true })).toBeVisible({ timeout: 60000 });
+        expect(mocks.calls).toEqual(["story", "characters", "beats", "content", "visual"]);
+        const persisted = await readProject(context, projectId);
+        expect(persisted.episodes[0].script).toBe(originalScript);
+        expect(persisted.episodes[0].reviewStatus).toBe("visual_ready");
+        expect(persisted.workflow.artifacts.map((item: { stage: string; status: string; intent: string }) => [item.stage, item.status, item.intent])).toEqual([
+            ["story", "adopted", "analysis"],
+            ["characters", "adopted", "analysis"],
+            ["beats", "adopted", "analysis"],
+        ]);
+        expect(persisted.characters[0].name).toBe("林夏");
+        expect(persisted.episodes[0].outline).toBe(workflowFixtures.beats.outline);
+
+        for (const [stage, label, field] of [
+            ["story", "故事分析", "故事梗概"],
+            ["characters", "人物分析", "姓名"],
+            ["beats", "节奏分析", "本集大纲"],
+        ]) {
+            await openStage(page, label);
+            const panel = page.locator(`[data-drama-workflow="${stage}"]`);
+            await expect(panel.getByText("已应用 v1", { exact: true })).toBeVisible();
+            await expect(panel.getByRole("textbox", { name: field, exact: true })).toHaveCount(0);
+            for (const width of [390, 1024, 1440]) {
+                await page.setViewportSize({ width, height: 1000 });
+                await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), { message: `${stage} 报告在 ${width} 宽度横向溢出` }).toBe(true);
+            }
+            await panel.getByRole("button", { name: "编辑分析结果", exact: true }).click();
+            await expect(panel.getByRole("textbox", { name: field, exact: true })).toBeVisible();
+            await panel.getByRole("button", { name: "取消编辑", exact: true }).click();
+            await expect(panel.getByRole("textbox", { name: field, exact: true })).toHaveCount(0);
+        }
+        await openStage(page, "分镜设计");
+        await page.getByRole("button", { name: "进入镜头生成", exact: true }).click();
+        await expect(page.locator('[data-drama-stage="generate"]')).toBeVisible();
+        for (const width of [390, 1024, 1440]) {
+            await page.setViewportSize({ width, height: 1000 });
+            await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), { message: `视频制作在 ${width} 宽度横向溢出` }).toBe(true);
+        }
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await expect(page.locator('[aria-label="本集剧本编辑器"][contenteditable="true"]')).toHaveText(originalScript, { timeout: 60000 });
+        const reloaded = await readProject(context, projectId);
+        expect(reloaded.workflow.artifacts.map((item: { id: string }) => item.id)).toEqual(persisted.workflow.artifacts.map((item: { id: string }) => item.id));
+        expect(reloaded.episodes[0].script).toBe(originalScript);
     });
-    const gate = new Promise<void>((resolve) => {
-        releaseGeneration = resolve;
+});
+
+test("分析失败后重试会复用已完成的故事结果", async ({ page, context }) => {
+    let failed = false;
+    const mocks: ModelMocks = {
+        calls: [],
+        beforeWorkflow: async (stage, route) => {
+            if (stage !== "characters" || failed) return false;
+            failed = true;
+            await route.fulfill({ status: 503, json: { code: 503, data: null, msg: "测试人物分析暂时失败" } });
+            return true;
+        },
+    };
+    await mockModels(page, context, mocks);
+    await withProject(page, context, "分析失败重试浏览器回归", async (projectId) => {
+        await fillScript(page);
+        await analyze(page);
+        await expect(page.getByText("测试人物分析暂时失败", { exact: true }).first()).toBeVisible({ timeout: 60000 });
+        const partial = await readProject(context, projectId);
+        expect(partial.workflow.artifacts).toHaveLength(1);
+        expect(partial.workflow.artifacts[0]).toMatchObject({ stage: "story", status: "adopted", intent: "analysis" });
+        expect(partial.episodes[0].script).toBe(originalScript);
+        await analyze(page);
+        await expect(page.getByRole("heading", { name: "分镜编辑", exact: true })).toBeVisible({ timeout: 60000 });
+        const completed = await readProject(context, projectId);
+        expect(completed.workflow.artifacts).toHaveLength(3);
+        expect(completed.workflow.artifacts[0].id).toBe(partial.workflow.artifacts[0].id);
+        expect(mocks.calls).toEqual(["story", "characters", "characters", "beats", "content", "visual"]);
+        expect(completed.episodes[0].script).toBe(originalScript);
     });
-    await page.route("**/api/drama/projects/*/workflow", async (route) => {
-        const input = route.request().postDataJSON();
-        if (input.action !== "generate") return route.continue();
-        generationStarted();
-        await gate;
-        const result = await context.request.post(route.request().url(), {
-            data: { ...input, action: "save", data: { scenes: [{ id: "scene-ai", title: "新候选", location: "修钟铺", time: "", lighting: "", blocks: [{ id: "block-ai", type: "action", speaker: "", text: "AI 生成的新候选。" }] }] } },
-        });
-        await route.fulfill({ response: result });
+});
+
+test("长请求期间修改原稿会停止旧分析，保留原稿和已完成结果", async ({ page, context }) => {
+    const started = deferred();
+    const release = deferred();
+    const mocks: ModelMocks = {
+        calls: [],
+        beforeContent: async () => {
+            started.resolve();
+            await release.promise;
+        },
+    };
+    await mockModels(page, context, mocks);
+    await withProject(page, context, "分析期间编辑浏览器回归", async (projectId) => {
+        try {
+            await fillScript(page);
+            await analyze(page);
+            await started.promise;
+            await fillScript(page, revisedScript);
+        } finally {
+            release.resolve();
+        }
+        await expect(page.getByText("分析期间剧本已修改，已完成的结果已保留，请重新点击 AI 一键分析", { exact: true }).first()).toBeVisible({ timeout: 30000 });
+        await expect(page.locator('[aria-label="本集剧本编辑器"][contenteditable="true"]')).toHaveText(revisedScript);
+        await expect.poll(async () => (await readProject(context, projectId)).episodes[0].script).toBe(revisedScript);
+        const persisted = await readProject(context, projectId);
+        expect(persisted.workflow.artifacts).toHaveLength(3);
+        expect(persisted.workflow.artifacts.every((item: { intent: string }) => item.intent === "analysis")).toBe(true);
+        expect(persisted.episodes[0].shots).toHaveLength(0);
+        expect(mocks.calls).toEqual(["story", "characters", "beats", "content"]);
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await expect(page.locator('[aria-label="本集剧本编辑器"][contenteditable="true"]')).toHaveText(revisedScript, { timeout: 60000 });
     });
-    await page.getByRole("button", { name: "AI 生成候选稿", exact: true }).click();
-    await started;
-    await page.getByRole("textbox", { name: "第 1 段内容", exact: true }).fill("生成期间继续编辑，不能被候选覆盖。");
-    releaseGeneration();
-    await expect(page.getByRole("button", { name: "AI 生成候选稿", exact: true })).toBeEnabled({ timeout: 30000 });
-    await expect(page.getByRole("textbox", { name: "第 1 段内容", exact: true })).toHaveValue("生成期间继续编辑，不能被候选覆盖。");
-    const afterGenerate = (await (await context.request.get(`/api/drama/projects/${projectId}`)).json()).data.project;
-    check(afterGenerate.workflow.artifacts.length === 5, "异步候选未保留");
-    for (const width of [1024, 390]) {
-        await page.setViewportSize({ width, height: 1000 });
-        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), { timeout: 5000, message: `${width} 宽度横向溢出` }).toBe(true);
-    }
-    expect(errors).toEqual([]);
-    await context.request.delete(`/api/drama/projects/${projectId}`);
 });

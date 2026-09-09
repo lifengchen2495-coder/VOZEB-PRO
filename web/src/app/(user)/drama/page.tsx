@@ -25,7 +25,7 @@ export default function DramaPage() {
     const userId = useUserStore((state) => state.user?.id || "");
     const [open, setOpen] = useState(false);
     const [title, setTitle] = useState("");
-    const [summary, setSummary] = useState("");
+    const [initialScript, setInitialScript] = useState("");
     const [style, setStyle] = useState("电影感国漫");
     const [ratio, setRatio] = useState("9:16");
     const [customWidth, setCustomWidth] = useState(1080);
@@ -42,10 +42,10 @@ export default function DramaPage() {
         if (!normalizedSize) return message.warning("请输入有效的短剧尺寸");
         setCreating(true);
         try {
-            const id = await createProject({ title: title.trim(), summary: summary.trim(), style: style.trim(), ratio: normalizedSize });
+            const id = await createProject({ title: title.trim(), summary: "", initialScript, style: style.trim(), ratio: normalizedSize });
             setOpen(false);
             setTitle("");
-            setSummary("");
+            setInitialScript("");
             router.push(`/drama/${id}`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "短剧项目创建失败");
@@ -92,7 +92,7 @@ export default function DramaPage() {
                 ) : (
                     <CompactEmptyState
                         title="还没有短剧项目"
-                        description="从剧本结构开始创建第一条短剧生产线。"
+                        description="提供剧本，AI 自动分析故事、人物、节奏并生成分镜。"
                         icon={<Clapperboard className="size-4" />}
                         className="mt-3 min-h-24 sm:mt-6 sm:min-h-40"
                         action={
@@ -126,10 +126,16 @@ export default function DramaPage() {
                         <Input id="drama-project-title" className="!h-9" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：月影长安" />
                     </div>
                     <div className="grid gap-1.5">
-                        <label htmlFor="drama-project-summary" className="text-sm font-medium leading-5">
-                            故事简介
+                        <label htmlFor="drama-project-script" className="text-sm font-medium leading-5">
+                            剧本原文（也可进入后导入文件）
                         </label>
-                        <Input.TextArea id="drama-project-summary" value={summary} onChange={(event) => setSummary(event.target.value)} autoSize={{ minRows: 2, maxRows: 3 }} placeholder="一句话说明人物、冲突和目标" />
+                        <Input.TextArea
+                            id="drama-project-script"
+                            value={initialScript}
+                            onChange={(event) => setInitialScript(event.target.value)}
+                            autoSize={{ minRows: 4, maxRows: 8 }}
+                            placeholder="直接粘贴剧本，无需手填故事设定或人物小传。创建后点击 AI 一键分析。"
+                        />
                     </div>
                     <div className="grid gap-1.5">
                         <label htmlFor="drama-project-style" className="text-sm font-medium leading-5">
