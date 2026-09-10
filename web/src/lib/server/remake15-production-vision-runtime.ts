@@ -216,7 +216,7 @@ export async function requestRemakeProductionVisionPrompt(input: {
     });
     if (!response.ok) {
         const detail = await readResponseText(response, 64 * 1024).catch(() => "");
-        throw new RemakeProductionVisionError(toSafeGenerationErrorMessage(detail, `生产视觉规划模型调用失败（HTTP ${response.status}）`), response.status, response.headers);
+        throw new RemakeProductionVisionError(toSafeGenerationErrorMessage(detail, `生产视觉规划模型调用失败（HTTP ${response.status}）`, response.status), response.status, response.headers);
     }
     const payload = await readResponseJson(response).catch(() => null);
     if (!payload) throw new RemakeProductionVisionError("生产视觉规划模型返回了无效 JSON", 502, response.headers);

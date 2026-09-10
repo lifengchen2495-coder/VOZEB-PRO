@@ -216,8 +216,11 @@ export async function runBangbangOperation(input: { project: BangbangProject; us
         await transaction.accept();
     } catch (error) {
         if (saved) { console.error("棒棒运行临时文件清理失败", error); return; }
+        const message = toSafeGenerationErrorMessage(error, "当前环节处理失败，请重试");
+        const status = error && typeof error === "object" && "status" in error && typeof error.status === "number" ? error.status : undefined;
+        console.error("棒棒环节执行失败", { projectId: input.project.id, operationId, step: input.project.operation?.step, status, message });
         await transaction?.rollback().catch((rollbackError: unknown) => console.error("棒棒运行回滚失败", rollbackError));
-        await finishBangbangOperation(input.userId, input.project.id, operationId, { error: toSafeGenerationErrorMessage(error, "当前环节处理失败，请重试") }).catch((saveError) => console.error("棒棒失败状态保存失败", saveError));
+        await finishBangbangOperation(input.userId, input.project.id, operationId, { error: message }).catch((saveError) => console.error("棒棒失败状态保存失败", saveError));
     }
 }
 

@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 
 import { consumeUserPoints, getAuthSettings, isAuthInputError, isQuotaExceededError, refundUserPoints, type ApiCallFormat, type GenerationPointMultipliers, type PointUsageKind } from "@/lib/auth/store";
 import { getCurrentUser } from "@/lib/auth/session";
-import { DEFAULT_CHANNEL_CONNECT_ERROR } from "@/lib/server/generation-errors";
+import { DEFAULT_CHANNEL_CONNECT_ERROR, toSafeGenerationTransportError } from "@/lib/server/generation-errors";
 import { UnsupportedMediaContentError } from "@/lib/server/media-content-validation";
 import { acquireMediaConcurrency, withMediaConcurrency } from "@/lib/server/media-concurrency";
 import { MediaProxyResponseError, fetchSafeUpstreamMedia } from "@/lib/server/media-proxy-service";
@@ -249,6 +249,7 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
         return NextResponse.json({ error: "请求已取消" }, { status: 499 });
     }
 
+    const upstreamStartedAt = Date.now();
     let upstream: Response;
     try {
         upstream = await fetchSafeOutbound(target, {
@@ -260,9 +261,10 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
             signal: request.signal,
         });
     } catch (error) {
+        const failure = toSafeGenerationTransportError(error, "request");
+        console.error("System API proxy request failed", { channelId: channel.id, businessRequestId, elapsedMs: Date.now() - upstreamStartedAt, ...failure });
         await refundConsumedPoints();
-        console.error("System API proxy request failed", error instanceof Error ? error.message : error);
-        return NextResponse.json({ error: DEFAULT_CHANNEL_CONNECT_ERROR }, { status: 502, headers: responseHeaders(new Headers(), null, refundedPointsRemaining) });
+        return NextResponse.json({ error: failure.message }, { status: failure.status, headers: responseHeaders(new Headers(), null, refundedPointsRemaining) });
     }
 
     if (!upstream.ok && pointsResult) {
@@ -301,10 +303,11 @@ async function proxySystemRequest(request: Request, context: RouteContext) {
                 headers: responseHeaders(upstream.headers, pointsResult, refundedPointsRemaining, target),
             });
         } catch (error) {
+            const failure = toSafeGenerationTransportError(error, "response");
+            console.error("System API proxy response body failed", { channelId: channel.id, businessRequestId, upstreamStatus: upstream.status, elapsedMs: Date.now() - upstreamStartedAt, ...failure });
             await refundConsumedPoints();
             pointsResult = null;
-            console.error("System API proxy response body failed", error instanceof Error ? error.message : error);
-            return NextResponse.json({ error: DEFAULT_CHANNEL_CONNECT_ERROR }, { status: 502, headers: responseHeaders(new Headers(), null, refundedPointsRemaining) });
+            return NextResponse.json({ error: failure.message }, { status: failure.status, headers: responseHeaders(new Headers(), null, refundedPointsRemaining) });
         }
     }
     if (upstream.ok && pointsResult?.tokenBilling && upstream.body) {
