@@ -26,8 +26,8 @@ export function normalizeDramaContentAnalysis(value: unknown, durationPolicy: nu
             ];
         });
         const characterNames = texts(shot.characterNames);
-        const mergedUtterances = mergeUtterances(extractDramaUtterances(sourceText, characterNames), modelUtterances, sourceText);
-        const dialogue = normalizeDialogue(extractQuotedDialogue(sourceText) || shot.dialogue, mergedUtterances);
+        const mergedUtterances = mergeUtterances(extractDramaUtterances(sourceText, characterNames, modelUtterances), modelUtterances, sourceText);
+        const dialogue = normalizeDialogue(shot.dialogue, mergedUtterances);
         const narration =
             text(shot.narration) ||
             mergedUtterances
@@ -76,6 +76,13 @@ function dramaDefaultDuration(policy: number | DramaShotDurationPolicy) {
 function restoreSourceTextCoverage(shots: DramaContentAnalysis["shots"], sourceScript: string) {
     const script = sourceScript.trim();
     if (!script || !shots.length) return shots;
+    if (
+        shots
+            .map((shot) => shot.sourceText)
+            .join("")
+            .replace(/\s/gu, "") === script.replace(/\s/gu, "")
+    )
+        return shots;
     if (shots.length === 1) return [{ ...shots[0], sourceText: script }];
     if (script.length < shots.length) return shots;
 
@@ -312,36 +319,59 @@ export function normalizeDramaToolArguments(value: string, toolName: string) {
 
 export function hasCompleteDramaDialogueAttribution(value: string, sourceScript: string) {
     try {
-        const source = object(JSON.parse(value));
-        const shots = array(source.shots).map(object);
-        const knownSpeakers = [...array(source.characters).map((item) => text(object(item).name)), ...shots.flatMap((shot) => texts(shot.characterNames))].filter(Boolean);
-        const sourceDialogue = extractDialogueSpans(sourceScript, knownSpeakers);
-        const modelDialogue = shots.flatMap((shot) =>
-            array(shot.utterances)
-                .map(object)
-                .filter((utterance) => utterance.type === "dialogue"),
-        );
-        if (modelDialogue.some((utterance) => !isSpecificDramaSpeaker(text(utterance.speaker)) || !text(utterance.text))) return false;
-        if (modelDialogue.some((utterance) => !sourceDialogue.some((span) => sameDialogue(span.text, text(utterance.text))))) return false;
-        const remaining = [...modelDialogue];
-        return sourceDialogue.every((span) => {
-            const index = remaining.findIndex((utterance) => sameDialogue(span.text, text(utterance.text)));
-            if (index < 0) return false;
-            remaining.splice(index, 1);
-            return true;
-        });
+        return !getDramaDialogueIssue(object(JSON.parse(value)), sourceScript);
     } catch {
         return false;
     }
 }
 
-export function hasCompleteDramaContentAnalysis(value: DramaContentAnalysis, sourceScript: string) {
+export type DramaContentAnalysisIssue = {
+    code: "source-coverage" | "unattributed-dialogue" | "missing-dialogue" | "unexpected-dialogue";
+    count?: number;
+};
+
+export function getDramaContentAnalysisIssue(value: DramaContentAnalysis, sourceScript: string): DramaContentAnalysisIssue | null {
     const source = sourceScript.trim().replace(/\s/gu, "");
     const covered = value.shots
         .map((shot) => shot.sourceText)
         .join("")
         .replace(/\s/gu, "");
-    return Boolean(source && value.shots.length && covered === source && hasCompleteDramaDialogueAttribution(JSON.stringify(value), sourceScript));
+    if (!source || !value.shots.length || covered !== source) return { code: "source-coverage" };
+    return getDramaDialogueIssue(object(value), sourceScript);
+}
+
+export function hasCompleteDramaContentAnalysis(value: DramaContentAnalysis, sourceScript: string) {
+    return getDramaContentAnalysisIssue(value, sourceScript) === null;
+}
+
+function getDramaDialogueIssue(source: Record<string, unknown>, sourceScript: string): DramaContentAnalysisIssue | null {
+    const shots = array(source.shots).map(object);
+    const namedSpeakers = array(source.characters)
+        .map((item) => text(object(item).name))
+        .filter(Boolean);
+    const knownSpeakers = [...namedSpeakers, ...shots.flatMap((shot) => texts(shot.characterNames))].filter(Boolean);
+    const sourceSpans = extractDialogueSpans(sourceScript, knownSpeakers);
+    const modelDialogue = shots.flatMap((shot) =>
+        array(shot.utterances)
+            .map(object)
+            .filter((utterance) => utterance.type === "dialogue"),
+    );
+    const unattributed = modelDialogue.filter((utterance) => !isSpecificDramaSpeaker(text(utterance.speaker)) || !text(utterance.text));
+    if (unattributed.length) return { code: "unattributed-dialogue", count: unattributed.length };
+    const consumed = new Set<number>();
+    let cursor = -1;
+    for (let utteranceIndex = 0; utteranceIndex < modelDialogue.length;) {
+        const index = sourceSpans.findIndex((span, index) => index > cursor && span.kind !== "non-dialogue" && completeUtteranceRunLength(modelDialogue, utteranceIndex, span.text) > 0);
+        if (index < 0) return { code: "unexpected-dialogue", count: 1 };
+        const span = sourceSpans[index];
+        // 人物表中的姓名可用于核对主体，镜头里的别名或称呼不能仅因字面不同被拒绝。
+        if (span.kind === "dialogue" && namedSpeakers.includes(span.speaker) && span.speaker !== text(modelDialogue[utteranceIndex].speaker)) return { code: "unexpected-dialogue", count: 1 };
+        consumed.add(index);
+        cursor = index;
+        utteranceIndex += completeUtteranceRunLength(modelDialogue, utteranceIndex, span.text);
+    }
+    const missing = sourceSpans.filter((span, index) => span.kind === "dialogue" && !consumed.has(index));
+    return missing.length ? { code: "missing-dialogue", count: missing.length } : null;
 }
 
 function isSpecificDramaSpeaker(value: string) {
@@ -489,19 +519,18 @@ type DialogueSpan = {
     end: number;
     speaker: string;
     text: string;
+    kind: "dialogue" | "non-dialogue" | "ambiguous";
+    spokenPunctuation: boolean;
 };
 
 const narrativeDialoguePattern = /^[^。！？!?]{0,24}(?:说明|表示|告知|询问|讲述|描述|解释|透露|提到|认为|发现|来到|进入|看见|感到|回忆|想起|请求|劝说)(?:自己|对方|她|他|其|，|,)/u;
 const speechVerbPattern = /(?:说|说道|问|问道|回答|答道|开口|喊|叫|低声道|轻声道|呢喃|嘀咕|回应|回道|回了?一句|应道|接话|追问|反问|提醒|安慰|解释道|补充道|笑道|哭道|吼道|骂道|想说)\s*$/u;
 
-function extractQuotedDialogue(value: string) {
-    return extractDialogueSpans(value)
-        .map((item) => item.text)
-        .join("\n");
-}
-
 function normalizeDialogue(value: unknown, utterances: DramaUtterance[]) {
-    const direct = text(value);
+    const direct = text(value)
+        .split("\n")
+        .filter((line) => !utterances.some((item) => item.type === "voiceover" && sameDialogue(item.text, line)))
+        .join("\n");
     const utteranceText = utterances
         .filter((item) => item.type === "dialogue" && !narrativeDialoguePattern.test(item.text))
         .map((item) => item.text)
@@ -509,35 +538,40 @@ function normalizeDialogue(value: unknown, utterances: DramaUtterance[]) {
     return utteranceText || (direct && !narrativeDialoguePattern.test(direct) ? direct : "");
 }
 
-function extractDramaUtterances(value: string, knownSpeakers: string[]): DramaUtterance[] {
-    return extractDialogueSpans(value, knownSpeakers).map((item, index) => ({
-        id: `utterance-${nanoid()}`,
-        order: index + 1,
-        type: "dialogue",
-        speaker: item.speaker,
-        text: item.text,
-    }));
+function extractDramaUtterances(value: string, knownSpeakers: string[], modelUtterances: DramaUtterance[]): DramaUtterance[] {
+    const remaining = [...modelUtterances];
+    return extractDialogueSpans(value, knownSpeakers)
+        .flatMap((item) => {
+            const model = consumeCompleteUtteranceRun(remaining, item.text);
+            if (item.kind === "non-dialogue") return model?.type === "voiceover" ? [{ ...model, text: item.text }] : [];
+            if (item.kind === "ambiguous" && model?.type === "voiceover") return [{ ...model, text: item.text }];
+            if (item.kind === "ambiguous" && !item.spokenPunctuation && model?.type !== "dialogue") return [];
+            return [{ id: `utterance-${nanoid()}`, order: 0, type: "dialogue" as const, speaker: item.speaker, text: item.text }];
+        })
+        .map((item, index) => ({ ...item, order: index + 1 }));
 }
 
 function extractDialogueSpans(value: string, knownSpeakers: string[] = []): DialogueSpan[] {
     const spans: DialogueSpan[] = [];
     const seen = new Set<string>();
-    const quotePattern = /“([^”]+)”|「([^」]+)」|『([^』]+)』|"([^"\r\n]+)"/g;
+    const quotePattern = /“([^“”]+)”|「([^「」]+)」|『([^『』]+)』|"([^"\r\n]+)"/g;
     for (const match of value.matchAll(quotePattern)) {
         const dialogue = [match[1], match[2], match[3], match[4]].find(Boolean)?.trim() || "";
         if (!dialogue) continue;
         const start = match.index || 0;
         const end = start + match[0].length;
         const before = value.slice(Math.max(0, start - 80), start);
-        const after = value.slice(end, Math.min(value.length, end + 80));
-        const speaker = inferDialogueSpeaker(before, after, knownSpeakers);
-        if (!speaker && !looksLikeSpokenQuote(dialogue, before)) continue;
-        addDialogueSpan(spans, seen, { start, end, speaker, text: dialogue });
+        const after = value.slice(end, Math.min(value.length, end + 240));
+        const speaker = inferDialogueSpeaker(before, after.slice(0, 80), knownSpeakers);
+        const nonDialogue = isNonSpokenQuote(before, after);
+        const kind = nonDialogue ? "non-dialogue" : speaker || /[：:]\s*$/u.test(before) ? "dialogue" : "ambiguous";
+        addDialogueSpan(spans, seen, { start, end, speaker, text: dialogue, kind, spokenPunctuation: looksLikeSpokenQuote(dialogue, before) });
     }
     let lineStart = 0;
     for (const line of value.split("\n")) {
         for (const match of line.matchAll(/[：:]/g)) {
             const colonIndex = match.index || 0;
+            if (spans.some((span) => lineStart + colonIndex >= span.start && lineStart + colonIndex < span.end)) continue;
             const before = line.slice(0, colonIndex).trimEnd().slice(-60);
             const after = line.slice(colonIndex + 1).trim();
             if (!speechVerbPattern.test(before) || !after || /^[“"「『]/.test(after)) continue;
@@ -546,11 +580,21 @@ function extractDialogueSpans(value: string, knownSpeakers: string[] = []): Dial
                 end: lineStart + line.length,
                 speaker: inferSpeaker(before, knownSpeakers),
                 text: after,
+                kind: isNonSpokenQuote(before, "") ? "non-dialogue" : "dialogue",
+                spokenPunctuation: true,
             });
         }
         lineStart += line.length + 1;
     }
     return spans.sort((left, right) => left.start - right.start);
+}
+
+function isNonSpokenQuote(before: string, after: string) {
+    const precedingClause = before.split(/[。！？!?；;\n]/u).pop() || "";
+    if (/(?:心想|暗想|心中想|心里想|心中暗道|心里暗道|心道|暗道|腹诽|默念|想到|想道|内心独白|写道|写着|写下|写了|输入|打字|消息(?:是|写着)?|通知(?:是|写着)?)\s*[：:]?\s*$/u.test(precedingClause)) return true;
+    // 连续引号可能共同组成一条文字消息，以整组引号之后的动作判断。
+    const followingAction = after.replace(/^(?:[\s，,。.…]*[“「『"](?:[^”」』"]+)[”」』"])+/u, "").replace(/^[\s，,。.…]+/u, "");
+    return /^(?:发完|发送完|发出|发送|写完|写下|输入完|打完)(?:了)?(?:这|那|上述)?(?:一)?(?:条|段|则|些)?(?:消息|文字|通知|信息|公告)/u.test(followingAction);
 }
 
 function addDialogueSpan(spans: DialogueSpan[], seen: Set<string>, span: DialogueSpan) {
@@ -578,7 +622,8 @@ function inferSpeaker(value: string, knownSpeakers: string[] = []) {
         .replace(/(?:又|再|再次|缓缓|轻轻|低声|轻声|小声|忍不住|刚想|终于|随即|立即|赶紧|回了?一句)+$/u, "")
         .trim();
     const compactSubject = subject.split(/[，,]/).pop()?.trim().replace(/^.*的/u, "") || "";
-    const knownSpeaker = nearestKnownSpeaker(compactSubject, knownSpeakers);
+    if (/(?:没有|并未|未曾|不曾|不再|不肯|并不|并没有|没|未|不)\s*$/u.test(compactSubject)) return "";
+    const knownSpeaker = leadingKnownSpeaker(compactSubject, knownSpeakers) || nearestKnownSpeaker(compactSubject.split(/(?:对|向|朝)/u)[0], knownSpeakers);
     if (knownSpeaker) return knownSpeaker;
     const leadingSpeaker = compactSubject.match(/^(他|她|男人|女人|老人|女孩|男孩|医生|护士|[\p{Script=Han}]{2,4})(?=闭|睁|抬|低|看|走|站|坐|转|笑|哭|皱|摇|点|伸|捂|扶|推|拉|拿|压|咬|忍|哼|喘|叹|惊|快|刚|又|再|缓|轻|小|随|立|赶)/u)?.[1];
     if (leadingSpeaker) return leadingSpeaker;
@@ -591,10 +636,17 @@ function inferFollowingSpeaker(value: string, knownSpeakers: string[]) {
             .split(/[。！？!?；;\n]/)[0]
             ?.trim()
             .replace(/^[，,]/u, "") || "";
-    if (!speechVerbPattern.test(sentence) && !/(?:说|道|问|答|喊|叫|回应|回道|应道|笑道|哭道|吼道|骂道|闷哼|呻吟|惊呼)/u.test(sentence)) return "";
-    const knownSpeaker = nearestKnownSpeaker(sentence, knownSpeakers);
+    const speech = sentence.match(/(?:说道|问道|答道|说|问|回答|喊|叫|回应|回道|应道|笑道|哭道|吼道|骂道|闷哼|呻吟|惊呼)/u);
+    if (speech?.index === undefined) return "";
+    const subject = sentence.slice(0, speech.index);
+    if (/(?:没有|并未|未曾|不曾|不再|不肯|并不|并没有|没|未|不)/u.test(subject)) return "";
+    const knownSpeaker = leadingKnownSpeaker(subject, knownSpeakers);
     if (knownSpeaker) return knownSpeaker;
-    return sentence.match(/^(他|她|男人|女人|老人|女孩|男孩|医生|护士|[\p{Script=Han}A-Za-z0-9·]{2,12}?)(?=\s*(?:低声|轻声|小声|淡淡|缓缓|冷冷|笑着|哭着|闷哼|呻吟|惊呼|说|道|问|答|喊|叫))/u)?.[1] || "";
+    return sentence.match(/^(他|她|男人|女人|老人|女孩|男孩|医生|护士|[\p{Script=Han}A-Za-z0-9·]{2,12}?)(?=\s*(?:对|向|朝|低声|轻声|小声|淡淡|缓缓|冷冷|笑着|哭着|闷哼|呻吟|惊呼|说|道|问|答|喊|叫))/u)?.[1] || "";
+}
+
+function leadingKnownSpeaker(value: string, knownSpeakers: string[]) {
+    return [...knownSpeakers].sort((left, right) => right.length - left.length).find((name) => value.startsWith(name));
 }
 
 function nearestKnownSpeaker(value: string, knownSpeakers: string[]) {
@@ -609,13 +661,13 @@ function looksLikeSpokenQuote(value: string, before: string) {
 }
 
 function mergeUtterances(sourceUtterances: DramaUtterance[], modelUtterances: DramaUtterance[], sourceText: string) {
+    const remaining = [...modelUtterances];
     const merged = sourceUtterances.map((item) => {
-        const model = modelUtterances.find((candidate) => sameDialogue(candidate.text, item.text));
-        return model && isSpecificDramaSpeaker(model.speaker) ? { ...item, speaker: model.speaker } : item;
+        const model = consumeCompleteUtteranceRun(remaining, item.text);
+        return model?.type === item.type && isSpecificDramaSpeaker(model.speaker) ? { ...item, speaker: model.speaker } : item;
     });
-    for (const item of modelUtterances) {
+    for (const item of remaining) {
         if (item.type === "dialogue" && (narrativeDialoguePattern.test(item.text) || !isSpecificDramaSpeaker(item.speaker) || !dialogueKey(sourceText).includes(dialogueKey(item.text)))) continue;
-        if (merged.some((candidate) => sameDialogue(candidate.text, item.text))) continue;
         merged.push(item);
     }
     return merged.map((item, index) => ({ ...item, order: index + 1 }));
@@ -637,6 +689,8 @@ function restoreMissingDialogueCoverage(shots: DramaContentAnalysis["shots"], so
     const result = shots.map((shot) => ({ ...shot, utterances: [...shot.utterances] }));
     const knownSpeakers = shots.flatMap((shot) => shot.characterNames);
     for (const span of extractDialogueSpans(script, knownSpeakers)) {
+        if (span.kind === "non-dialogue") continue;
+        if (span.kind === "ambiguous" && (!span.spokenPunctuation || result.some((shot) => shot.utterances.some((item) => item.type === "voiceover" && sameDialogue(item.text, span.text))))) continue;
         const key = dialogueKey(span.text);
         if (!key) continue;
         const matchedCount = matched.get(key) || 0;
@@ -707,7 +761,29 @@ function nearestShotIndex(position: number, shotPositions: number[], shotCount: 
 function sameDialogue(left: string, right: string) {
     const leftKey = dialogueKey(left);
     const rightKey = dialogueKey(right);
-    return Boolean(leftKey && rightKey && (leftKey === rightKey || (Math.min(leftKey.length, rightKey.length) >= 4 && (leftKey.includes(rightKey) || rightKey.includes(leftKey)))));
+    return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
+function completeUtteranceRunLength(utterances: { type?: unknown; speaker?: unknown; text?: unknown }[], start: number, sourceText: string) {
+    const target = dialogueKey(sourceText);
+    const first = utterances[start];
+    if (!target || !first) return 0;
+    let joined = "";
+    for (let index = start; index < utterances.length; index += 1) {
+        const item = utterances[index];
+        const key = dialogueKey(text(item.text));
+        if (!key || item.type !== first.type || text(item.speaker) !== text(first.speaker)) return 0;
+        joined += key;
+        if (joined === target) return index - start + 1;
+        if (!target.startsWith(joined)) return 0;
+    }
+    return 0;
+}
+
+function consumeCompleteUtteranceRun(utterances: DramaUtterance[], sourceText: string) {
+    const index = utterances.findIndex((_, start) => completeUtteranceRunLength(utterances, start, sourceText) > 0);
+    if (index < 0) return undefined;
+    return utterances.splice(index, completeUtteranceRunLength(utterances, index, sourceText))[0];
 }
 
 function dialogueKey(value: string) {
@@ -789,7 +865,7 @@ export const dramaContentTool = {
                     properties: {
                         title: { type: "string" },
                         description: { type: "string", description: "只写画面中发生的动作、人物状态和可观察事实，不写角色台词摘要" },
-                        sourceText: { type: "string", description: "对应原文的连续片段，尽量保留原文标点和引号" },
+                        sourceText: { type: "string", description: "对应原文的连续片段，逐字保留文字、标点和引号；所有镜头按顺序拼接必须完整覆盖原文，不得遗漏、重复或改写" },
                         shotBoundary: { type: "string", description: "说明为何在此切镜；说话人转换、明显动作反应或场景变化应形成新镜头" },
                         dialogue: { type: "string", description: "只填写角色实际说出口的原话，不要写‘某人说明/表示/询问’等转述；没有明确台词就留空" },
                         narration: { type: "string", description: "只填写原文明确存在的画外音或旁白，不要把镜头事实改写成旁白" },
@@ -800,8 +876,8 @@ export const dramaContentTool = {
                                 additionalProperties: false,
                                 required: ["type", "speaker", "text"],
                                 properties: {
-                                    type: { type: "string", enum: ["dialogue", "voiceover"] },
-                                    speaker: { type: "string", description: "dialogue 必须填写原文语境中的明确说话人姓名或身份，不得留空、填写‘说话人/未知’或只用无法定位的代词" },
+                                    type: { type: "string", enum: ["dialogue", "voiceover"], description: "dialogue 为实际说出口的原话；内心独白或明确画外音用 voiceover；文字消息保留在 sourceText，不因有引号就转成对白" },
+                                    speaker: { type: "string", description: "dialogue 必须填写原文语境中的明确说话人姓名或身份，不得留空、填写‘说话人/未知’或只用无法定位的代词；voiceover 无明确归属时可留空" },
                                     text: { type: "string", description: "逐句保留原话，不得改写、概括或合并遗漏" },
                                 },
                             },

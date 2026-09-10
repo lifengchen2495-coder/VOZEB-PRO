@@ -8,6 +8,7 @@ import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy"
 import { remakeContactSheetDimensionError } from "@/lib/server/remake-contact-sheet-validation";
 import { fetchRemakeProductionImage } from "@/lib/server/remake-production-image-fetch";
 import { maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
+import { buildProviderRequest } from "@/lib/server/provider-task-config";
 import { resolveTextProtocol } from "@/lib/server/text-protocol-resolver";
 
 // 源图需先读取后缩放拼板，大小上限独立于压缩后的模型输入限制。
@@ -72,6 +73,7 @@ type LoadedImage = {
 type ResolvedVisionProtocol = {
     kind: RemakeProductionVisionProtocol;
     path: string;
+    requestTemplate?: string;
 };
 
 export class RemakeProductionVisionError extends Error {
@@ -98,6 +100,13 @@ export function resolveRemakeProductionVisionProtocol(candidate: ResolvedLogical
         if (protocol.providerKind === "gemini") return { kind: "gemini", path: protocol.providerPath };
         if (protocol.kind === "responses" && protocol.providerKind === "responses") return { kind: "responses", path: protocol.path };
         if (protocol.kind === "chat" && protocol.providerKind === "chat") return { kind: "chat", path: protocol.path };
+        if (protocol.kind === "custom" && /^\/(?:v1\/)?chat\/completions\/?$/.test(protocol.path) && /^choices(?:\[0\]|\.0)\.message\.content$/.test(protocol.resultField || "")) {
+            const template = record(JSON.parse(protocol.requestTemplate || ""));
+            // 仅接入完整透传多模态消息的 Chat 模板，保留模型专属参数，避免参考图被文本占位符丢弃。
+            if (template.model === "{{model}}" && template.messages === "{{messages}}" && (template.stream === undefined || template.stream === false || template.stream === "{{stream}}")) {
+                return { kind: "chat", path: protocol.path, requestTemplate: protocol.requestTemplate };
+            }
+        }
         return null;
     } catch {
         return null;
@@ -196,10 +205,12 @@ export async function requestRemakeProductionVisionPrompt(input: {
     else if (input.cookie) headers.set("cookie", input.cookie);
     const timeoutSignal = AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text"));
     const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
+    const defaults = buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.maxOutputTokens);
+    const body = protocol.requestTemplate ? { ...defaults, ...buildProviderRequest(protocol.requestTemplate, defaults, { ...defaults, stream: false }), stream: false } : defaults;
     const response = await fetchInternalApi(modelProxyUrl(input.origin, input.candidate.channelId, protocol.path), {
         method: "POST",
         headers,
-        body: JSON.stringify(buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.maxOutputTokens)),
+        body: JSON.stringify(body),
         cache: "no-store",
         signal,
     });
