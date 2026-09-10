@@ -151,7 +151,7 @@ async function createCustomTextTaskStep(task: TextTask, origin: string, cookie: 
         .map((message) => readMessageText(message.content))
         .filter(Boolean)
         .join("\n\n");
-    const values = { model: config.model, prompt, input: prompt, text: prompt, messages };
+    const values = { model: config.model, prompt, input: prompt, text: prompt, messages, stream: false };
     let payload: Record<string, unknown>;
     try {
         payload = buildProviderRequest(protocol.requestTemplate!, values, values);

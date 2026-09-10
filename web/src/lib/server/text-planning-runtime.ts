@@ -132,7 +132,7 @@ function planningProtocolRequests(input: StructuredTextRequest, messages: Array<
     if (input.allowRepair === false) {
         return input.preferNativeTools && promptRequest.protocol !== "custom" ? [planningProtocolRequest(input.candidate, messages, "tool", input.tool), promptRequest] : [promptRequest];
     }
-    const recoveryRequest = planningProtocolRequest(input.candidate, planningMessages(input, true), "repair");
+    const recoveryRequest = planningProtocolRequest(input.candidate, planningMessages(input, true), "repair", undefined, input.stream === true);
     if (!input.preferNativeTools || promptRequest.protocol === "custom") return [promptRequest, recoveryRequest];
     return [planningProtocolRequest(input.candidate, messages, "tool", input.tool), promptRequest, recoveryRequest];
 }
@@ -148,7 +148,7 @@ function planningProtocolRequest(candidate: TextPlanningCandidate, messages: Arr
     const streaming = modelStreaming || candidate.channel.advancedConfig?.streaming;
     const hasExplicitStreamPath = Boolean(streaming?.path?.trim());
     const streamEnabled = streaming?.enabled === true || (streaming?.enabled !== false && resolved.kind !== "custom" && resolved.kind !== "gemini");
-    const stream = requestedStream && variant === "json" && streamEnabled && (resolved.kind === "chat" || resolved.kind === "responses" || hasExplicitStreamPath);
+    const stream = requestedStream && (variant === "json" || variant === "repair") && streamEnabled && (resolved.kind === "chat" || resolved.kind === "responses" || hasExplicitStreamPath);
     const streamPath = resolved.kind === "gemini" ? interpolateModelPath(streaming?.path || resolved.path, candidate.upstreamModel) : streaming?.path || resolved.path;
     const streamFormat = streaming?.format || (resolved.kind === "gemini" ? "ndjson" : "sse");
     if (resolved.kind === "responses") return responsesRequest(candidate.upstreamModel, messages, stream ? streamPath : resolved.path, variant === "tool" ? tool : undefined, variant, stream);
@@ -397,9 +397,9 @@ function createStreamAccumulator(protocol: TextPlanningProtocol, toolName: strin
                 content += textContent(delta?.content);
             } else if (protocol === "responses") {
                 const eventType = typeof payload.type === "string" ? payload.type : "";
-                if (eventType.endsWith(".delta") && typeof payload.delta === "string") {
-                    if (eventType.includes("function_call") && eventType.includes("arguments")) argumentsText += payload.delta;
-                    else content += payload.delta;
+                if (typeof payload.delta === "string") {
+                    if (eventType === "response.function_call_arguments.delta") argumentsText += payload.delta;
+                    else if (eventType === "response.output_text.delta") content += payload.delta;
                 }
                 const output = records(payload.output);
                 const call = output.find((item) => item.type === "function_call" && (!item.name || item.name === toolName));
@@ -412,6 +412,20 @@ function createStreamAccumulator(protocol: TextPlanningProtocol, toolName: strin
                 content += parts.map((part) => (typeof part.text === "string" ? part.text : "")).join("");
             } else {
                 const configured = readProviderValue(payload, resultField);
+                const chat = firstRecord(payload.choices);
+                const delta = record(chat?.delta) || record(chat?.message);
+                if (delta && (configured === undefined || /^choices(?:\[0\]|\.0)\.(?:message|delta)\.content$/.test(resultField || ""))) {
+                    const call = records(delta.tool_calls).find((item) => !toolName || record(item.function)?.name === toolName || !record(item.function)?.name);
+                    argumentsText += typeof record(call?.function)?.arguments === "string" ? String(record(call?.function)?.arguments) : "";
+                    // 流式片段中的空白可能属于 JSON 字符串；推理字段不能作为最终正文。
+                    content +=
+                        typeof delta.content === "string"
+                            ? delta.content
+                            : records(delta.content)
+                                  .map((part) => (typeof part.text === "string" ? part.text : ""))
+                                  .join("");
+                    return;
+                }
                 argumentsText += jsonObjectArguments(configured) || "";
                 content += readProviderString(payload, resultField, TEXT_RESULT_KEYS);
             }
