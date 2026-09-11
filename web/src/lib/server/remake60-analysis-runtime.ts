@@ -8,13 +8,12 @@ import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { runFfmpeg, runFfprobe } from "@/lib/server/ffmpeg";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { writeAssetBytes } from "@/lib/server/generation-log-repository";
-import { fetchInternalApi } from "@/lib/server/internal-origin";
 import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_COPY_PROMPT } from "@/lib/remake60-feishu-prompts";
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "@/lib/server/logical-model-router";
 import { maintenanceWorkerContext, maintenanceWorkerContextHeaders } from "@/lib/server/maintenance-auth";
 import { downloadMediaToFile } from "@/lib/server/media-download";
 import { buildDoubaoFileUploadBody, fetchDoubaoFileApi, readDoubaoJsonResponse } from "@/lib/server/doubao-file-api";
-import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
+import { requestDoubaoVideoResponse } from "@/lib/server/doubao-video-response";
 import { writeReferenceMediaFile } from "@/lib/server/reference-asset-store";
 import { completeRemakeAnalysisTask, failRemakeAnalysisTask, markRemakeAnalysisTaskRunning, updateRemakeAnalysisTaskProgress, type RemakeAnalysisTask } from "@/lib/server/remake60-analysis-task-store";
 import {
@@ -33,8 +32,8 @@ import {
 } from "@/lib/server/remake60-project-contract";
 import { completeRemakeProjectAnalysis, failRemakeProjectAnalysis, markRemakeProjectAnalysisRunning, RemakeAnalysisSupersededError } from "@/lib/server/remake60-project-service";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
-import { rankTextPlanningCandidates, requestStructuredText } from "@/lib/server/text-planning-runtime";
-import { strictJsonObjectText } from "@/lib/server/structured-model-output";
+import { rankTextPlanningCandidates } from "@/lib/server/text-planning-runtime";
+import { requestRemakeCopyPlanning } from "@/lib/server/remake-copy-planning-runtime";
 import { deleteUserMediaAssetsCascade } from "@/lib/server/user-media-deletion-service";
 
 type ProbeResult = { durationMs: number; width: number; height: number; ratio: string };
@@ -394,7 +393,7 @@ async function understandVideo(input: {
             latestError = error;
         }
     }
-    throw new Error(toSafeGenerationErrorMessage(latestError, "视频理解模型未返回完整的 48 条镜头分析"));
+    throw new Error(`来源视频理解失败：${toSafeGenerationErrorMessage(latestError, "视频理解模型未返回完整的 48 条镜头分析")}`);
 }
 
 async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string }) {
@@ -417,34 +416,15 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
             store: false,
             max_output_tokens: 24_000,
         };
-        const headers = new Headers({
-            "Content-Type": "application/json",
-            "Idempotency-Key": input.idempotencyKey,
-            "X-Client-Request-Id": input.idempotencyKey,
-            ...systemAiBillingHeaders(input.model, input.idempotencyKey, input.candidate.upstreamModel),
+        return await requestDoubaoVideoResponse({
+            candidate: input.candidate,
+            model: input.model,
+            origin: input.origin,
+            credential: input.credential,
+            idempotencyKey: input.idempotencyKey,
+            body,
+            onInvalidResponse: (headers) => refundInvalidResponse(input.task.userId, input.model, headers),
         });
-        const workerHeaders = maintenanceWorkerContextHeaders(input.credential);
-        if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
-        else if (input.credential) headers.set("cookie", input.credential);
-        const response = await fetchInternalApi(`${input.origin}/api/ai/system/${encodeURIComponent(input.candidate.channelId)}/responses`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            cache: "no-store",
-            signal: AbortSignal.timeout(Math.max(10 * 60_000, resolveModelRequestTimeoutMs(input.candidate, "text"))),
-        });
-        if (!response.ok) throw new Error(toSafeGenerationErrorMessage(await response.text().catch(() => ""), `Doubao 视频理解调用失败（HTTP ${response.status}）`));
-        const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-        if (!payload) {
-            await refundInvalidResponse(input.task.userId, input.model, response.headers);
-            throw new Error("Doubao 视频理解返回了无效 JSON");
-        }
-        const argumentsText = strictJsonObjectText(readDoubaoOutputText(payload));
-        if (!argumentsText) {
-            await refundInvalidResponse(input.task.userId, input.model, response.headers);
-            throw new Error("Doubao 视频理解没有返回完整的结构化分析");
-        }
-        return { arguments: argumentsText, headers: response.headers };
     } finally {
         await deleteDoubaoFile(input.candidate, fileId).catch(() => undefined);
     }
@@ -507,17 +487,6 @@ async function deleteDoubaoFile(candidate: ResolvedLogicalModel, fileId: string)
         signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) throw new Error(`Doubao 临时视频清理失败（HTTP ${response.status}）`);
-}
-
-function readDoubaoOutputText(payload: Record<string, unknown>) {
-    const direct = typeof payload.output_text === "string" ? payload.output_text.trim() : "";
-    if (direct) return direct;
-    return records(payload.output)
-        .flatMap((item) => records(item.content))
-        .filter((item) => item.type === "output_text" || item.type === "text")
-        .map((item) => (typeof item.text === "string" ? item.text : ""))
-        .filter(Boolean)
-        .join("\n");
 }
 
 function doubaoFilesBaseUrl(candidate: ResolvedLogicalModel) {
@@ -698,7 +667,7 @@ async function planSemanticCopy(input: {
         const baseKey = systemAiIdempotencyKey("remake60-copy-planning", input.task.userId, input.task.id, candidate.channelId, candidate.upstreamModel);
         const workerHeaders = maintenanceWorkerContextHeaders(input.credential) || {};
         try {
-            const call = await requestStructuredText({
+            const call = await requestRemakeCopyPlanning({
                 origin: input.origin,
                 cookie: Object.keys(workerHeaders).length ? "" : input.credential,
                 candidate,
@@ -733,7 +702,7 @@ async function planSemanticCopy(input: {
             latestError = error;
         }
     }
-    throw new Error(toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的 16 段语义切分"));
+    throw new Error(`原文案切分失败：${toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的 16 段语义切分")}`);
 }
 
 function copyPlanningInput(sourceCopy: string, frames: ExtractedFrame[]) {

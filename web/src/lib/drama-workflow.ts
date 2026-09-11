@@ -1,9 +1,10 @@
 import { nanoid } from "nanoid";
+import { normalizeDramaSkillReport } from "@/lib/drama-skill-contract";
 
 import type { DramaCharacter, DramaEpisode, DramaProject } from "@/lib/drama-project-contract";
 import type { DramaCharacterBiography, DramaCharactersData, DramaScriptData, DramaWorkflow, DramaWorkflowArtifact, DramaWorkflowArtifactFor, DramaWorkflowDataByStage, DramaWorkflowIntent, DramaWorkflowStage } from "@/lib/drama-workflow-contract";
 
-export const DRAMA_WORKFLOW_METHOD_VERSION = "drama-writing-v1";
+export const DRAMA_WORKFLOW_METHOD_VERSION = "drama-full-skills-v2";
 export const DRAMA_ANALYSIS_METHOD_VERSION = "drama-script-analysis-v1";
 export const DRAMA_WORKFLOW_STAGES: DramaWorkflowStage[] = ["story", "characters", "beats", "script"];
 
@@ -102,7 +103,7 @@ export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S
                 };
             });
             assertUniqueIds(scenes, "场次 ID 重复");
-            data = { scenes };
+            data = { scenes, ...(text(input.screenplay) ? { screenplay: text(input.screenplay) } : {}) };
             break;
         }
         default:
@@ -124,6 +125,11 @@ export function validateDramaWorkflowData<S extends DramaWorkflowStage>(stage: S
                 beat.payoff ||= "未交代";
             }
         }
+    }
+    if (stage !== "story" && input.skill !== undefined) {
+        const skill = normalizeDramaSkillReport(input.skill);
+        if (!skill) throw new DramaWorkflowError("Skill 产物格式不完整，无法保存全文与检查记录");
+        data = { ...data, skill };
     }
     return data as DramaWorkflowDataByStage[S];
 }
@@ -183,7 +189,9 @@ export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowSt
     const current = latestDramaWorkflowArtifact(project, stage, episodeId, "adopted");
     if (intent === "analysis") return { ...dramaWorkflowSourceInput(project, stage, episodeId), currentRevision: current ? { id: current.id, version: current.version } : null };
     const input: Record<string, unknown> = {
-        project: { id: project.id, title: project.title, summary: project.summary, style: project.style },
+        project: { id: project.id, title: project.title, summary: project.summary, style: project.style, ratio: project.ratio },
+        source: dramaWorkflowSourceInput(project, stage, episodeId),
+        adaptationMode: "free",
         sourceAssets: (project.sourceAssets || []).map((asset) => ({
             id: asset.id,
             type: asset.type,
@@ -199,7 +207,7 @@ export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowSt
         const story = latestDramaWorkflowArtifact(project, "story", undefined, "adopted");
         input.story = story?.data || null;
         input.storyState = upstreamState(project, story);
-        input.characters = project.characters.map((character) => ({ id: character.id, name: character.name, description: character.description, visualIdentity: character.profile?.visualIdentity || "" }));
+        // 创作依赖小传产物，后续拆镜新增资产不会反向使小传和剧本过期。
         if (stage !== "characters") {
             const biographies = latestDramaWorkflowArtifact(project, "characters", undefined, "adopted");
             input.characterBiographies = biographies?.data || null;
@@ -211,10 +219,7 @@ export function dramaWorkflowInput(project: DramaProject, stage: DramaWorkflowSt
             id: episode.id,
             title: episode.title,
             episodeNumber: episode.episodeNumber || project.episodes.indexOf(episode) + 1,
-            outline: episode.outline,
-            hook: episode.hook,
-            nextPreview: episode.nextPreview,
-            sourceRange: episode.sourceRange,
+            script: episode.script,
         };
         if (stage !== "beats") {
             const beats = latestDramaWorkflowArtifact(project, "beats", episode.id, "adopted");
@@ -310,7 +315,7 @@ export function adoptDramaWorkflowArtifact(project: DramaProject, artifactId: st
         if (artifact.episodeId && episode.id !== artifact.episodeId) return episode;
         const updated = markEpisodeForReview(episode);
         if (artifact.stage === "beats") return { ...updated, outline: artifact.data.outline, hook: artifact.data.hook, nextPreview: artifact.data.nextPreview };
-        if (artifact.stage === "script") return { ...updated, script: renderDramaWorkflowScript(artifact.data), scriptRichContent: undefined };
+        // 改编稿独立存于产物，原稿及其富文本始终保留。
         return updated;
     });
     next.workflow = { schemaVersion: 1, artifacts: project.workflow!.artifacts.map((item) => (item.id === artifact.id ? { ...artifact, status: "adopted" } : item)) };
@@ -327,6 +332,7 @@ export function dramaWorkflowArtifactIsStale(project: DramaProject, artifact: Dr
 }
 
 export function renderDramaWorkflowScript(data: DramaScriptData): string {
+    if (data.screenplay?.trim()) return data.screenplay;
     return data.scenes
         .map((scene, index) => {
             const heading = [`第 ${index + 1} 场：${scene.title}`, `地点：${scene.location}`, scene.time && `时间：${scene.time}`, scene.lighting && `光线：${scene.lighting}`].filter(Boolean).join("\n");
@@ -334,6 +340,13 @@ export function renderDramaWorkflowScript(data: DramaScriptData): string {
             return `${heading}\n${body}`;
         })
         .join("\n\n");
+}
+
+export function getDramaProductionScript(project: DramaProject, episodeId: string): string {
+    const episode = project.episodes.find((item) => item.id === episodeId);
+    if (!episode) throw new DramaWorkflowError("短剧分集不存在", 409);
+    const artifact = latestDramaWorkflowArtifact(project, "script", episodeId, "adopted", "creation");
+    return artifact && !dramaWorkflowArtifactIsStale(project, artifact) ? renderDramaWorkflowScript(artifact.data) : episode.script;
 }
 
 function upstreamState(project: DramaProject, artifact: DramaWorkflowArtifact | undefined) {
@@ -353,7 +366,7 @@ function resolveCharacterIds(project: DramaProject, data: DramaCharactersData, r
     assertUniqueIds(characters, "多个人物指向同一个角色 ID");
     const all = [...known.filter((item) => !characters.some((character) => character.id === item.id)), ...characters];
     assertCharacterNames(all);
-    return { characters };
+    return { ...data, characters };
 }
 
 function applyCharacters(project: DramaProject, data: DramaCharactersData, intent: DramaWorkflowIntent = "creation"): DramaCharacter[] {

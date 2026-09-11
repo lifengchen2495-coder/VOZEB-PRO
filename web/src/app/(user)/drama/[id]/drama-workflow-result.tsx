@@ -1,7 +1,13 @@
 import type { DramaWorkflowArtifact } from "@/lib/drama-workflow-contract";
 import { renderDramaWorkflowScript } from "@/lib/drama-workflow";
+import { DramaSkillReportView } from "./drama-skill-report";
 
 export function DramaWorkflowResult({ artifact }: { artifact: DramaWorkflowArtifact }) {
+    if ("skill" in artifact.data && artifact.data.skill) return <div className="space-y-4" data-drama-analysis-result={artifact.stage}><DramaSkillReportView report={artifact.data.skill} /><details className="border-t border-border pt-3"><summary className="cursor-pointer text-xs text-muted-foreground">查看结构化摘要</summary><div className="mt-3"><StructuredResult artifact={artifact} /></div></details></div>;
+    return <StructuredResult artifact={artifact} />;
+}
+
+function StructuredResult({ artifact }: { artifact: DramaWorkflowArtifact }) {
     if (artifact.stage === "story") {
         const story = artifact.data;
         return (
@@ -48,7 +54,7 @@ export function DramaWorkflowResult({ artifact }: { artifact: DramaWorkflowArtif
             </div>
         );
     }
-    return <p className="whitespace-pre-wrap text-sm leading-7" data-drama-analysis-result="script">{renderDramaWorkflowScript(artifact.data)}</p>;
+    return <p className="whitespace-pre-wrap text-sm leading-7" data-drama-analysis-result="script">{artifact.data.screenplay || renderDramaWorkflowScript(artifact.data)}</p>;
 }
 
 function ResultFields({ values }: { values: Array<[string, string]> }) {

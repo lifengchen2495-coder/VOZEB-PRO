@@ -1,3 +1,4 @@
+import { streamLongOperation } from "@/lib/server/long-operation-response";
 import { NextResponse } from "next/server";
 
 import { readJsonBodyResult } from "@/lib/auth/request";
@@ -31,21 +32,23 @@ export async function POST(request: Request, context: Context) {
     if (inputVersion !== undefined && (typeof inputVersion !== "string" || !/^[a-f0-9]{64}$/i.test(inputVersion))) {
         return NextResponse.json({ code: 400, data: null, msg: "生成素材版本无效" }, { status: 400 });
     }
-    try {
-        const project = await buildRemakeProductionForUser({
-            userId: user.id,
-            projectId: (await context.params).id,
-            origin: resolveInternalOrigin(new URL(request.url).origin),
-            cookie: request.headers.get("cookie") || "",
-            expectedRevision: revision,
-            groupId,
-            inputVersion: inputVersion?.toLowerCase(),
-        });
-        return NextResponse.json({ code: 0, data: { project }, msg: groupId ? `分镜 ${groupId} Prompt 已生成` : "四组 Seedance 生产包已生成" });
-    } catch (error) {
-        if (error instanceof RemakeProjectServiceError || error instanceof RemakeProductionError) return NextResponse.json({ code: error.status, data: null, msg: error.message }, { status: error.status });
-        throw error;
-    }
+    return streamLongOperation(request, async () => {
+        try {
+            const project = await buildRemakeProductionForUser({
+                userId: user.id,
+                projectId: (await context.params).id,
+                origin: resolveInternalOrigin(new URL(request.url).origin),
+                cookie: request.headers.get("cookie") || "",
+                expectedRevision: revision,
+                groupId,
+                inputVersion: inputVersion?.toLowerCase(),
+            });
+            return NextResponse.json({ code: 0, data: { project }, msg: groupId ? `分镜 ${groupId} Prompt 已生成` : "四组 Seedance 生产包已生成" });
+        } catch (error) {
+            if (error instanceof RemakeProjectServiceError || error instanceof RemakeProductionError) return NextResponse.json({ code: error.status, data: null, msg: error.message }, { status: error.status });
+            throw error;
+        }
+    });
 }
 
 function optionalRevision(value: unknown) {

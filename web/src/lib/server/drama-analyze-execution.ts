@@ -15,17 +15,22 @@ import { dramaShotDurationInstruction, resolveDramaVideoDurationPolicy } from "@
 import { analyzeDramaVideoPromptBatches, analyzeDramaVisualBatches } from "@/lib/server/drama-visual-analysis-runtime";
 import { dramaVideoPromptTool } from "@/lib/server/drama-video-prompt-analysis";
 import { dramaVideoPromptInstructions } from "@/lib/drama-video-prompt-instructions";
+import { dramaSeedanceDurationPolicy, dramaSkillAnalysisInstructions, dramaSkillAnalysisTool, validateDramaSkillAnalysisArguments } from "@/lib/server/drama-skill-analysis";
+import { normalizeAndValidateDramaSkillReport } from "@/lib/server/drama-skills";
 
 export async function executeDramaAnalyze(request: Request, userId: string, body: DramaAnalyzeBody): Promise<Response> {
     const requestId = dramaAnalysisText(body.requestId);
     if (!requestId || requestId.length > 200) return NextResponse.json({ code: 400, data: null, msg: "剧本分析请求标识无效" }, { status: 400 });
     const phase = body.phase === "visual" || body.phase === "video-prompts" ? body.phase : "content";
+    const fullSkill = body.creativeContext !== undefined;
+    if (fullSkill && (!body.creativeContext || typeof body.creativeContext !== "object" || Array.isArray(body.creativeContext))) return NextResponse.json({ code: 400, data: null, msg: "完整创作上下文格式无效" }, { status: 400 });
     if (body.videoPromptInstructions !== undefined && (typeof body.videoPromptInstructions !== "string" || body.videoPromptInstructions.length > 50_000))
         return NextResponse.json({ code: 400, data: null, msg: "视频提示词生成指令必须是 50,000 字以内的文本" }, { status: 400 });
     const script = dramaAnalysisText(body.script);
     if (phase === "content" && !script) return NextResponse.json({ code: 400, data: null, msg: "请先填写剧本" }, { status: 400 });
 
     const visualInput = phase !== "content" ? normalizeDramaVisualInput(body) : null;
+    if (fullSkill && visualInput?.payload.shots.some((shot) => shot.duration < 4 || shot.duration > 15)) return NextResponse.json({ code: 400, data: null, msg: "当前镜头时长超出 Seedance 的 4 至 15 秒范围，请先重新生成标准分镜" }, { status: 400 });
     if (phase !== "content" && !visualInput?.shotIds.length) return NextResponse.json({ code: 400, data: null, msg: "请先完成内容审核" }, { status: 400 });
     const credential = requestRuntimeCredential(request, userId);
 
@@ -42,22 +47,31 @@ export async function executeDramaAnalyze(request: Request, userId: string, body
     const defaultVideoModel = settings.defaultModels.videoModel;
     const requestedVideoCandidates = phase === "content" && (requestedVideoModel || defaultVideoModel) ? resolveLogicalModelCandidates(settings, "video", requestedVideoModel || defaultVideoModel) : [];
     const videoCandidates = requestedVideoCandidates.length || !defaultVideoModel || requestedVideoModel === defaultVideoModel ? requestedVideoCandidates : resolveLogicalModelCandidates(settings, "video", defaultVideoModel);
-    const durationPolicy = resolveDramaVideoDurationPolicy(videoCandidates, settings.generationDefaults.videoSeconds, settings.generationPointMultipliers?.videoSeconds);
+    let durationPolicy = resolveDramaVideoDurationPolicy(videoCandidates, settings.generationDefaults.videoSeconds, settings.generationPointMultipliers?.videoSeconds);
+    if (fullSkill && phase === "content") {
+        try {
+            durationPolicy = dramaSeedanceDurationPolicy(durationPolicy);
+        } catch (error) {
+            return NextResponse.json({ code: 400, data: null, msg: error instanceof Error ? error.message : "视频模型时长不兼容" }, { status: 400 });
+        }
+    }
     const durationInstruction = phase === "content" ? dramaShotDurationInstruction(durationPolicy) : "";
 
     let refundedPointsRemaining: number | undefined;
     try {
-        const tool = phase === "video-prompts" ? dramaVideoPromptTool : phase === "visual" ? dramaVisualTool : dramaContentTool;
+        const baseTool = phase === "video-prompts" ? dramaVideoPromptTool : phase === "visual" ? dramaVisualTool : dramaContentTool;
+        const tool = fullSkill ? dramaSkillAnalysisTool(phase, baseTool) : baseTool;
         const schemaInstruction = `即使渠道没有传递工具定义，也必须只返回符合以下 JSON Schema 的对象，不能返回输入对象，不能把 script 或 summary 作为顶层字段：${JSON.stringify(tool.parameters)}`;
         const messagesFor = (batchInput: unknown) => [
             {
                 role: "system",
-                content:
-                    phase === "video-prompts"
-                        ? `${dramaVideoPromptInstructions(body.videoPromptInstructions)}\n逐一返回全部镜头的 shotId 和 videoPrompt，严格保留原始镜头数量与顺序；不得返回或修改图片提示词、首尾帧及其他结构字段。必须调用 design_drama_video_prompts。不要使用 Markdown。${schemaInstruction}`
-                        : phase === "visual"
-                          ? `你是影视视觉导演。输入内容已经由用户审核，必须严格保留每个 shotId、镜头数量、顺序、人物、场景、对白、旁白、原文和时长。为每个镜头补充图片提示词、视频提示词、起始/结束帧提示词、镜头运动和连续性数据；连续性必须明确景别、机位、构图、人物站位、视线、动作起止、屏幕运动方向和轴线规则。镜头之间要保持人物服装、道具、空间和视线关系连续。\n仅 videoPrompt 字段采用以下生成指令：\n${dramaVideoPromptInstructions(body.videoPromptInstructions)}\n必须调用 design_drama_visuals。不要使用 Markdown。${schemaInstruction}`
-                          : `你是影视剧本编辑。只提取剧本明确存在的内容事实和镜头边界，不生成 imagePrompt、videoPrompt、镜头运动或画面风格，不添加无依据的主要情节。必须逐句保留所有角色直接说出的原话和原文明示的旁白，utterances 按原文顺序列出每一句；每条 dialogue 必须根据前后文填写明确说话人姓名或身份，禁止留空、填写“说话人/未知”或只写无法定位的代词。结合语境区分引号内容：短信、通知、作者留言、屏幕文字和物品名称保留在 sourceText 与可观察描述中，不强行改成口头对白；原文明示的内心独白或旁白使用 voiceover，不因为有引号就改成 dialogue。口头对白即使没有句末标点，也必须完整提取。禁止把多句台词压缩成“某人说明/表示/询问”的剧情摘要；说话人转换、明确动作反应或场景变化都应成为可审核的镜头边界，sourceText 必须保留对应连续原文，所有镜头的 sourceText 按顺序拼接必须覆盖整个输入，不得省略通知、叙述或其他非对白文字。${durationInstruction}必须调用 analyze_drama_content。不要使用 Markdown。${schemaInstruction}`,
+                content: fullSkill
+                    ? `${dramaSkillAnalysisInstructions(phase)}\n${durationInstruction}\n${phase === "content" ? "" : dramaVideoPromptInstructions(body.videoPromptInstructions)}\n${schemaInstruction}`
+                    : phase === "video-prompts"
+                      ? `${dramaVideoPromptInstructions(body.videoPromptInstructions)}\n逐一返回全部镜头的 shotId 和 videoPrompt，严格保留原始镜头数量与顺序；不得返回或修改图片提示词、首尾帧及其他结构字段。必须调用 design_drama_video_prompts。不要使用 Markdown。${schemaInstruction}`
+                      : phase === "visual"
+                        ? `你是影视视觉导演。输入内容已经由用户审核，必须严格保留每个 shotId、镜头数量、顺序、人物、场景、对白、旁白、原文和时长。为每个镜头补充图片提示词、视频提示词、起始/结束帧提示词、镜头运动和连续性数据；连续性必须明确景别、机位、构图、人物站位、视线、动作起止、屏幕运动方向和轴线规则。镜头之间要保持人物服装、道具、空间和视线关系连续。\n仅 videoPrompt 字段采用以下生成指令：\n${dramaVideoPromptInstructions(body.videoPromptInstructions)}\n必须调用 design_drama_visuals。不要使用 Markdown。${schemaInstruction}`
+                        : `你是影视剧本编辑。只提取剧本明确存在的内容事实和镜头边界，不生成 imagePrompt、videoPrompt、镜头运动或画面风格，不添加无依据的主要情节。必须逐句保留所有角色直接说出的原话和原文明示的旁白，utterances 按原文顺序列出每一句；每条 dialogue 必须根据前后文填写明确说话人姓名或身份，禁止留空、填写“说话人/未知”或只写无法定位的代词。结合语境区分引号内容：短信、通知、作者留言、屏幕文字和物品名称保留在 sourceText 与可观察描述中，不强行改成口头对白；原文明示的内心独白或旁白使用 voiceover，不因为有引号就改成 dialogue。口头对白即使没有句末标点，也必须完整提取。禁止把多句台词压缩成“某人说明/表示/询问”的剧情摘要；说话人转换、明确动作反应或场景变化都应成为可审核的镜头边界，sourceText 必须保留对应连续原文，所有镜头的 sourceText 按顺序拼接必须覆盖整个输入，不得省略通知、叙述或其他非对白文字。${durationInstruction}必须调用 analyze_drama_content。不要使用 Markdown。${schemaInstruction}`,
             },
             { role: "user", content: JSON.stringify(batchInput) },
         ];
@@ -78,16 +92,17 @@ export async function executeDramaAnalyze(request: Request, userId: string, body
                                 userId,
                                 tool,
                                 visualBatchIdempotencyKey(userId, requestId, candidate, batch, phase),
-                                undefined,
-                                false,
+                                fullSkill ? (value) => validateDramaSkillAnalysisArguments(value, phase, tool.name, batch.payload.shots) : undefined,
+                                fullSkill,
                                 request.signal,
                             );
-                            return { value: JSON.parse(call.args), call };
+                            const value = JSON.parse(call.args);
+                            return { value: fullSkill ? { ...value, skill: normalizeAndValidateDramaSkillReport(phase, value.skill) } : value, call };
                         },
                         releaseCall: async (call) => {
                             if (hasSystemAiCharge(call)) refundedPointsRemaining = (await refund(userId, model, call))?.pointsBalance;
                         },
-                        shouldSplitError: isAdaptiveVisualBatchError,
+                        shouldSplitError: (error) => !(fullSkill && errorStatus(error) === 413) && isAdaptiveVisualBatchError(error),
                     });
                     if (result.data.shots.length !== visualInput!.shotIds.length) throw new Error("模型没有为全部镜头生成视觉结构");
                     const response = NextResponse.json({ code: 0, data: result.data, msg: phase === "video-prompts" ? "视频提示词已生成" : "视觉结构已生成" });
@@ -107,6 +122,10 @@ export async function executeDramaAnalyze(request: Request, userId: string, body
                     requestId,
                     script,
                     summary: dramaAnalysisText(body.summary),
+                    fullSkill,
+                    creativeContext: body.creativeContext,
+                    style: dramaAnalysisText(body.style),
+                    ratio: dramaAnalysisText(body.ratio),
                     userId: userId,
                     durationPolicy,
                     messagesFor,
@@ -129,7 +148,8 @@ export async function executeDramaAnalyze(request: Request, userId: string, body
         }
         throw latestError instanceof Error ? latestError : new Error("没有可用的文本模型渠道");
     } catch (error) {
-        const response = NextResponse.json({ code: 502, data: null, msg: error instanceof Error ? error.message : "剧本分析失败" }, { status: 502 });
+        const msg = fullSkill && errorStatus(error) === 413 ? "完整 Skill 与创作上下文超过当前模型的请求容量，请选择支持更长上下文的文本模型，或拆分项目后继续" : error instanceof Error ? error.message : "剧本分析失败";
+        const response = NextResponse.json({ code: 502, data: null, msg }, { status: 502 });
         if (typeof refundedPointsRemaining === "number") response.headers.set("x-vozeb-pro-points-remaining", String(refundedPointsRemaining));
         return response;
     }
@@ -143,6 +163,10 @@ function isAdaptiveVisualBatchError(error: unknown) {
     const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
     const message = error instanceof Error ? error.message : "";
     return status === 413 || isStructuredTextFailure(error) || message === "模型没有返回所需的结构化结果" || message === "模型没有返回结构化剧本结果";
+}
+
+function errorStatus(error: unknown) {
+    return error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
 }
 
 function shouldTryAnotherTextCandidate(error: unknown) {
@@ -207,6 +231,10 @@ async function analyzeDramaContentCandidate(input: {
     requestId: string;
     script: string;
     summary: string;
+    fullSkill: boolean;
+    creativeContext?: Record<string, unknown>;
+    style: string;
+    ratio: string;
     userId: string;
     durationPolicy: ReturnType<typeof resolveDramaVideoDurationPolicy>;
     messagesFor: (batchInput: unknown) => Array<{ role: string; content: string }>;
@@ -229,24 +257,33 @@ async function analyzeDramaContentCandidate(input: {
 }
 
 async function analyzeDramaScriptSegment(input: Parameters<typeof analyzeDramaContentCandidate>[0], script: string, segmentKey: string, calls: DramaContentCall[]): Promise<ReturnType<typeof normalizeDramaContentAnalysis>> {
+    const validCompleteSkill = (argumentsText: string) => {
+        if (!validateDramaSkillAnalysisArguments(argumentsText, "content", input.tool.name)) return false;
+        const parsed = JSON.parse(argumentsText);
+        if (!hasCompleteDramaSourceCoverage(parsed, script)) return false;
+        const normalized = normalizeDramaContentAnalysis(parsed, input.durationPolicy, script);
+        return !getDramaContentAnalysisIssue(normalized, script) && contentMappingUnchanged(parsed, normalized);
+    };
     try {
         const call = await requestFunctionCall(
             input.origin,
             input.credential,
             input.candidate,
             input.model,
-            input.messagesFor({ script, summary: input.summary }),
+            input.messagesFor({ script, summary: input.summary, ...(input.fullSkill ? { creativeContext: input.creativeContext, style: input.style, ratio: input.ratio, segment: segmentKey } : {}) }),
             input.userId,
             input.tool,
             systemAiIdempotencyKey("drama-analyze", input.userId, "content", input.requestId, segmentKey, script, input.candidate.channel.id, input.candidate.upstreamModel),
-            (argumentsText) => hasUsableDramaToolArguments(argumentsText, input.tool.name),
-            false,
+            (argumentsText) => (input.fullSkill ? validCompleteSkill(argumentsText) : hasUsableDramaToolArguments(argumentsText, input.tool.name)),
+            input.fullSkill,
             input.signal,
         );
         try {
             const parsed = JSON.parse(call.args);
+            if (input.fullSkill) parsed.skill = normalizeAndValidateDramaSkillReport("content", parsed.skill);
             if (!hasCompleteDramaSourceCoverage(parsed, script)) throw new Error("模型返回的剧本原文不完整");
             const data = normalizeDramaContentAnalysis(parsed, input.durationPolicy, script);
+            if (input.fullSkill && !contentMappingUnchanged(parsed, data)) throw new Error("标准分镜与制作镜头不一致，请按模型支持的时长重新拆镜");
             const issue = getDramaContentAnalysisIssue(data, script);
             if (issue) {
                 // 只记录校验类型与数量，不将用户原稿或模型正文写入日志。
@@ -263,12 +300,19 @@ async function analyzeDramaScriptSegment(input: Parameters<typeof analyzeDramaCo
             throw error;
         }
     } catch (error) {
+        if (input.fullSkill && errorStatus(error) === 413) throw error;
         const split = splitDramaScriptAtBoundary(script);
         if (!split || !isAdaptiveContentError(error)) throw error;
         const left = await analyzeDramaScriptSegment(input, split[0], `${segmentKey}.0`, calls);
         const right = await analyzeDramaScriptSegment(input, split[1], `${segmentKey}.1`, calls);
         return mergeDramaContentAnalyses([left, right]);
     }
+}
+
+function contentMappingUnchanged(parsed: { shots: Array<{ duration: number }>; skill?: { document?: string } }, normalized: ReturnType<typeof normalizeDramaContentAnalysis>) {
+    // 完整 Skill 模式不能静默拆镜或改变时长，否则报告与实际制作会变成两份稿。
+    const reportedShots = parsed.skill?.document?.match(/【分镜\s*\d+】/gu)?.length;
+    return reportedShots === parsed.shots.length && parsed.shots.length === normalized.shots.length && parsed.shots.every((shot, index) => shot.duration === normalized.shots[index].duration);
 }
 
 function isAdaptiveContentError(error: unknown) {

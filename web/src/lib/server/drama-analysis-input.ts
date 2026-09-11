@@ -1,6 +1,9 @@
 import { resolveDramaShotDuration } from "@/lib/server/drama-shot-config";
+import { normalizeDramaSkillReport } from "@/lib/drama-skill-contract";
 
 export type DramaAnalyzeBody = {
+    creativeContext?: Record<string, unknown>;
+    ratio?: string;
     requestId?: string;
     projectId?: string;
     phase?: "content" | "visual" | "video-prompts";
@@ -57,7 +60,8 @@ export function normalizeDramaVisualInput(body: DramaAnalyzeBody) {
     return {
         shotIds: shots.map((shot) => shot.id),
         payload: {
-            project: { summary: dramaAnalysisText(body.summary), style: dramaAnalysisText(body.style) },
+            project: { summary: dramaAnalysisText(body.summary), style: dramaAnalysisText(body.style), ...(body.ratio ? { ratio: dramaAnalysisText(body.ratio) } : {}) },
+            ...(body.creativeContext ? { creativeContext: body.creativeContext } : {}),
             episode: normalizeEpisode(body.episode),
             assets: {
                 characters: normalizeVisualAssets(body.characters, referenced.characters),
@@ -110,6 +114,12 @@ function normalizeVisualAssets(value: unknown, referencedIds: Set<string>) {
                     consistencyRules: dramaAnalysisText(profile.consistencyRules),
                 },
                 payoff: dramaAnalysisText(asset.payoff),
+                availableReferences: array(asset.references).flatMap((item) => {
+                    const reference = object(item);
+                    const url = dramaAnalysisText(reference.url);
+                    return url ? [{ id: dramaAnalysisText(reference.id), label: dramaAnalysisText(reference.label), url, state: "available-in-project" }] : [];
+                }),
+                referenceImageUrl: dramaAnalysisText(asset.referenceImageUrl),
             },
         ];
     });
@@ -124,6 +134,7 @@ function normalizeEpisode(value: unknown) {
         hook: dramaAnalysisText(episode.hook),
         nextPreview: dramaAnalysisText(episode.nextPreview),
         sourceRange: dramaAnalysisText(episode.sourceRange),
+        ...(normalizeDramaSkillReport(episode.storyboardSkill) ? { storyboardSkill: normalizeDramaSkillReport(episode.storyboardSkill) } : {}),
     };
 }
 

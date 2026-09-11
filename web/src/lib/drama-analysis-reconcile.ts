@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 
 import type { DramaContentAnalysis, DramaEpisode, DramaProject, DramaShot, DramaVisualAnalysis } from "@/lib/drama-project-contract";
 import { archiveDramaShots } from "@/lib/drama-shot-archive";
+import { getDramaProductionScript } from "@/lib/drama-workflow";
 
 const contentKeys = ["title", "description", "sourceText", "shotBoundary", "dialogue", "narration", "subtitle", "duration", "characterIds", "sceneId", "propIds", "clueIds"] as const;
 const visualKeys = ["imagePrompt", "videoPrompt", "cameraMotion", "startFramePrompt", "endFramePrompt", "negativePrompt", "continuity"] as const;
@@ -56,6 +57,8 @@ function analysisInput(project: DramaProject, episodeId: string) {
         props: project.props,
         clues: project.clues,
         adoptedWorkflow: project.workflow?.artifacts.filter((item) => item.status === "adopted" && (!item.episodeId || item.episodeId === episodeId)),
+        productionScript: getDramaProductionScript(project, episodeId),
+        storyboardSkill: episode.storyboardSkill,
         episode: { id: episode.id, title: episode.title, script: episode.script, outline: episode.outline, hook: episode.hook, nextPreview: episode.nextPreview, sourceRange: episode.sourceRange, contentStale: episode.contentStale },
         shots: episode.shots.map((shot) => ({ id: shot.id, order: shot.order, input: dramaShotProductionFingerprint(shot) })),
     };
@@ -204,7 +207,9 @@ export function reconcileDramaContentAnalysis(project: DramaProject, episodeId: 
         scenes,
         props,
         clues,
-        episodes: project.episodes.map((item) => (item.id === episodeId ? { ...archive, ...analysis.episode, reviewStatus: "content_review", contentStale: false, renderStale: item.renderStale || changed, shots } : item)),
+        episodes: project.episodes.map((item) =>
+            item.id === episodeId ? { ...archive, ...analysis.episode, storyboardSkill: analysis.skill, seedanceSkill: undefined, reviewStatus: "content_review", contentStale: false, renderStale: item.renderStale || changed, shots } : item,
+        ),
     };
 }
 
@@ -235,7 +240,7 @@ export function reconcileDramaVisualAnalysis(project: DramaProject, episodeId: s
         episode.shots.filter((shot, index) => !shot.productionStale && shots[index].productionStale),
         "视觉方案更新前",
     );
-    return { ...project, episodes: project.episodes.map((item) => (item.id === episodeId ? { ...archive, reviewStatus: "visual_ready", renderStale: item.renderStale || changed, shots } : item)) };
+    return { ...project, episodes: project.episodes.map((item) => (item.id === episodeId ? { ...archive, seedanceSkill: analysis.skill, reviewStatus: "visual_ready", renderStale: item.renderStale || changed, shots } : item)) };
 }
 
 function assertRenderCanChange(episode: DramaEpisode, changed: boolean) {

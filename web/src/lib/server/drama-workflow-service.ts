@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DRAMA_MAX_PROJECT_BYTES, DRAMA_PROJECT_SIZE_ERROR } from "@/lib/drama-project-limits";
 
 import type { DramaProject } from "@/lib/drama-project-contract";
 import { adoptDramaWorkflowArtifact, appendDramaWorkflowArtifact, createDramaWorkflowArtifact, DRAMA_WORKFLOW_STAGES, DramaWorkflowError, dramaWorkflowArtifactIsStale, dramaWorkflowFingerprint, dramaWorkflowSourceInput } from "@/lib/drama-workflow";
@@ -104,7 +105,7 @@ async function executeDramaWorkflowAction(userId: string, projectId: string, inp
 }
 
 function save(userId: string, project: DramaProject, expectedUpdatedAt: string) {
-    if (Buffer.byteLength(JSON.stringify(project), "utf8") > 2 * 1024 * 1024) throw new DramaWorkflowError("项目内容超过 2 MB，请精简后重试");
+    if (Buffer.byteLength(JSON.stringify(project), "utf8") > DRAMA_MAX_PROJECT_BYTES) throw new DramaWorkflowError(DRAMA_PROJECT_SIZE_ERROR);
     const updatedAt = new Date(Math.max(Date.now(), Date.parse(expectedUpdatedAt) + 1)).toISOString();
     return updateDramaProject(userId, { ...project, updatedAt }, expectedUpdatedAt);
 }

@@ -9,6 +9,7 @@ import type { DramaEpisode, DramaProject, DramaVideoPromptAnalysis } from "@/lib
 import { DRAMA_DEFAULT_VIDEO_PROMPT_INSTRUCTIONS, dramaEpisodeHasActiveMedia, dramaVideoPromptInput } from "@/lib/drama-video-prompt-instructions";
 import { requestDramaAnalysis } from "@/services/api/drama-analysis";
 import { useDramaStore } from "../stores/use-drama-store";
+import { dramaCreationContext } from "./drama-creation-context";
 
 export function DramaVideoPromptInstructions({
     project,
@@ -48,7 +49,7 @@ export function DramaVideoPromptInstructions({
     };
 
     const run = async (generate: boolean) => {
-        if (busyRef.current) return;
+        if (busyRef.current || disabled) return;
         if (generate && !textModelReady) throw new Error("请先选择可用的文本模型");
         busyRef.current = true;
         setBusy(true);
@@ -68,7 +69,7 @@ export function DramaVideoPromptInstructions({
             requestRef.current = controller;
             const data = await requestDramaAnalysis<DramaVideoPromptAnalysis>(
                 "/api/drama/analyze",
-                { ...input, textModel, projectId: project.id, phase: "video-prompts", requestId: `drama-video-prompts:${project.id}:${episode.id}:${nanoid()}` },
+                { ...input, creativeContext: dramaCreationContext(saved, episode.id), ratio: saved.ratio, textModel, projectId: project.id, phase: "video-prompts", requestId: `drama-video-prompts:${project.id}:${episode.id}:${nanoid()}` },
                 { signal: controller.signal },
             );
             const store = useDramaStore.getState();

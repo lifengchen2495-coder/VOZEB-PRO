@@ -14,6 +14,7 @@ import { dramaVideoPromptInput } from "@/lib/drama-video-prompt-instructions";
 import { clearDramaMediaTaskRef, dramaMediaTaskIsCurrent, type DramaMediaTaskKind } from "@/lib/drama-media-task-guard";
 import { dramaVisualAnalysisFingerprint } from "@/lib/drama-analysis-reconcile";
 import { analyzeDramaScriptFlow } from "@/lib/drama-script-analysis-flow";
+import { getDramaProductionScript } from "@/lib/drama-workflow";
 import { requestDramaWorkflow } from "@/services/api/drama-projects";
 import { requestDramaAnalysis } from "@/services/api/drama-analysis";
 import { selectableModelsByCapability, useEffectiveConfig } from "@/stores/use-config-store";
@@ -23,6 +24,8 @@ import type { DramaContentAnalysis, DramaProject, DramaProjectVersion, DramaShot
 import { useDramaAudioQueue } from "./use-drama-audio-queue";
 import { DramaAgentPanel } from "./drama-agent-panel";
 import { DramaWorkflowPanel } from "./drama-workflow-panel";
+import { DramaSkillReportView } from "./drama-skill-report";
+import { dramaCreationContext } from "./drama-creation-context";
 import { DramaTextModelControl } from "./drama-text-model-control";
 import { DramaAssetsPanel } from "./drama-assets-panel";
 import { DramaStageHeader, stableTaskUrl } from "./drama-editor-elements";
@@ -92,6 +95,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     const [analysisError, setAnalysisError] = useState("");
     const [designing, setDesigning] = useState(false);
     const [editingVideoPrompts, setEditingVideoPrompts] = useState(false);
+    const textWorkBusy = analyzing || workflowAnalyzing || designing || editingVideoPrompts || adoptingWorkflow;
     const [versionsOpen, setVersionsOpen] = useState(false);
     const [versions, setVersions] = useState<DramaProjectVersion[]>([]);
     const [versionsLoading, setVersionsLoading] = useState(false);
@@ -118,7 +122,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
     }, [episode.id]);
     useDramaAudioQueue(project, episode, config, updateShot);
     const analyzeScript = async () => {
-        if (analysisRunning.current || designing || workflowAnalyzing || editingVideoPrompts) return;
+        if (analysisRunning.current || textWorkBusy) return;
         if (!textModelReady) return message.warning("请先选择可用的文本模型");
         if (!episode.script.trim()) return message.warning("请先粘贴或导入本集剧本");
         analysisRunning.current = true;
@@ -151,9 +155,11 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                         phase: "content",
                         textModel,
                         projectId: snapshot.id,
-                        script: snapshot.episodes.find((item) => item.id === episodeId)!.script,
+                        script: getDramaProductionScript(snapshot, episodeId),
+                        creativeContext: dramaCreationContext(snapshot, episodeId),
                         summary: snapshot.summary,
                         style: snapshot.style,
+                        ratio: snapshot.ratio,
                         videoModel: config.videoModel || config.model,
                     }),
                 visual: (snapshot, episodeId) =>
@@ -164,17 +170,19 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                         ),
                         requestId: `drama-visual:${project.id}:${episodeId}:${nanoid()}`,
                         phase: "visual",
+                        creativeContext: dramaCreationContext(snapshot, episodeId),
+                        ratio: snapshot.ratio,
                         textModel,
                         projectId: snapshot.id,
                     }),
-                saveVersion: (snapshot) => createVersion(snapshot, "AI 一键分析前"),
+                saveVersion: (snapshot) => createVersion(snapshot, "完整 Skill 创作前"),
                 progress: setAnalysisProgress,
             });
             if ((current().activeEpisodeId || current().episodes[0]?.id) === episode.id) {
                 setStage("storyboard");
                 setAssetsOpen(false);
             }
-            message.success(`${episode.title}已完成故事、人物、节奏分析及分镜方案，可查看结果或进入制作`);
+            message.success(`${episode.title}已完成人物小传、节奏设计、详细改编剧本、分镜表和 Seedance 提示词，可逐步审阅`);
         } catch (error) {
             const detail = error instanceof Error ? error.message : "AI 剧本分析失败";
             setAnalysisError(detail);
@@ -186,6 +194,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
         }
     };
     const designVisuals = async () => {
+        if (analysisRunning.current || textWorkBusy) return;
         if (!textModelReady) return message.warning("请先选择可用的文本模型");
         if (!episode.shots.length) return message.warning("请先完成内容解析");
         if (episode.contentStale) return message.warning("剧本或上游设定已改变，请先重新提取内容结构");
@@ -200,6 +209,8 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                 projectId: project.id,
                 requestId: `drama-visual:${project.id}:${episode.id}:${nanoid()}`,
                 phase: "visual",
+                creativeContext: dramaCreationContext(snapshot, episode.id),
+                ratio: snapshot.ratio,
                 textModel,
             });
             await createVersion(snapshot, "视觉方案生成前");
@@ -494,25 +505,26 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                         >
                             {assetsOpen ? <DramaAssetsPanel project={project} episode={episode} /> : null}
 
-                            {!assetsOpen ? <DramaTextModelControl config={config} value={textModel} disabled={analyzing || workflowAnalyzing || designing || editingVideoPrompts} onChange={(textModel) => updateProject(project.id, { textModel })} /> : null}
+                            {!assetsOpen ? <DramaTextModelControl config={config} value={textModel} disabled={textWorkBusy} onChange={(textModel) => updateProject(project.id, { textModel })} /> : null}
 
-                            {analyzing ? <Alert className="mb-3" type="info" showIcon title={analysisProgress} description="AI 正在读取已导入的剧本，自动整理故事、人物、本集节奏和分镜。完成的结果会逐步保存。" /> : null}
+                            {analyzing ? <Alert className="mb-3" type="info" showIcon title={analysisProgress} description="AI 正在按完整 Skill 依次创作人物小传、节奏方案、详细剧本、分镜表和 Seedance 提示词。完成的结果逐步保存，原稿独立保留。" /> : null}
                             {analysisError && !analyzing ? (
-                                <Alert className="mb-3" type="warning" showIcon title="分析尚未完成" description={`${analysisError}。已完成的分析已保留，返回剧本输入后可继续。`} action={<Button onClick={() => changeStage("script")}>返回剧本</Button>} />
+                                <Alert className="mb-3" type="warning" showIcon title="Skill 创作尚未完成" description={`${analysisError}。已完成的结果已保留，返回原稿页可继续。`} action={<Button onClick={() => changeStage("script")}>返回原稿</Button>} />
                             ) : null}
 
-                            {!assetsOpen && (stage === "story" || stage === "characters" || stage === "beats") ? (
+                            {!assetsOpen && (stage === "story" || stage === "characters" || stage === "beats" || stage === "adapted-script") ? (
                                 <DramaWorkflowPanel
                                     key={`${project.id}:${stage}:${stage === "story" || stage === "characters" ? "project" : episode.id}`}
                                     project={project}
                                     episode={episode}
-                                    stage={stage}
-                                    busy={analyzing || workflowAnalyzing}
+                                    stage={stage === "adapted-script" ? "script" : stage}
+                                    busy={textWorkBusy}
                                     textModel={textModel}
                                     textModelReady={textModelReady}
                                     onAnalysisBusyChange={setWorkflowAnalyzing}
                                     onStageChange={changeStage}
                                     onAdoptingChange={setAdoptingWorkflow}
+                                    onContinue={() => void analyzeScript()}
                                 />
                             ) : null}
 
@@ -524,15 +536,15 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                     title="剧本或分析结果已更新，分镜需要重新分析"
                                     description="已生成的媒体仍然保留。重新提取后会按镜头匹配可复用成果。"
                                     action={
-                                        <Button loading={analyzing} onClick={() => void analyzeScript()}>
-                                            AI 继续分析
+                                        <Button loading={analyzing} disabled={textWorkBusy} onClick={() => void analyzeScript()}>
+                                            继续 Skill 创作
                                         </Button>
                                     }
                                 />
                             ) : null}
 
                             {!assetsOpen && stage === "script" ? (
-                                <DramaScriptPanel project={project} episode={episode} analyzing={analyzing} onAnalyze={() => void analyzeScript()} onStageChange={changeStage} selectedShotId={selectedShotId} onSelectedShotChange={setSelectedShotId} />
+                                <DramaScriptPanel project={project} episode={episode} analyzing={analyzing} busy={textWorkBusy} onAnalyze={() => void analyzeScript()} onStageChange={changeStage} selectedShotId={selectedShotId} onSelectedShotChange={setSelectedShotId} />
                             ) : null}
 
                             {!assetsOpen && (stage === "review" || stage === "storyboard" || stage === "generate") ? (
@@ -542,20 +554,20 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                     episode={episode}
                                     textModel={textModel}
                                     textModelReady={textModelReady}
-                                    disabled={designing || analyzing || workflowAnalyzing || episode.contentStale}
+                                    disabled={textWorkBusy || episode.contentStale}
                                     onBusyChange={setEditingVideoPrompts}
                                 />
                             ) : null}
 
                             {!assetsOpen && stage === "review" ? (
-                                <DramaReviewPanel project={project} episode={episode} designing={designing || editingVideoPrompts || analyzing} onDesignVisuals={() => void designVisuals()} onStageChange={changeStage} />
+                                <DramaReviewPanel project={project} episode={episode} designing={textWorkBusy} onDesignVisuals={() => void designVisuals()} onStageChange={changeStage} />
                             ) : null}
 
                             {!assetsOpen && stage === "storyboard" ? (
                                 <div>
                                     <DramaStageHeader
                                         step="05"
-                                        title="分镜编辑"
+                                        title="分镜表与 Seedance 提示词"
                                         description="精调画面、镜头运动、生成方式和配音策略；完成后进入统一镜头生产队列。"
                                         status={
                                             !episode.shots.length ? "等待镜头" : episode.shots.every((shot) => shot.videoPrompt.trim() && ((shot.videoMode || project.defaultVideoMode) !== "storyboard" || shot.imagePrompt.trim())) ? "配置就绪" : "需要补充"
@@ -574,14 +586,14 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                         }
                                         action={
                                             <div className="flex flex-wrap gap-2">
-                                                <Button disabled={!episode.shots.length || analyzing} onClick={() => setStage("review")}>
+                                                <Button disabled={!episode.shots.length || textWorkBusy} onClick={() => setStage("review")}>
                                                     核对镜头内容
                                                 </Button>
                                                 <Button
                                                     type="primary"
                                                     className="!h-9 !w-full sm:!w-auto"
                                                     icon={<ArrowRight className="size-4" />}
-                                                    disabled={analyzing || !episode.shots.length || episode.contentStale || episode.reviewStatus !== "visual_ready"}
+                                                    disabled={textWorkBusy || !episode.shots.length || episode.contentStale || episode.reviewStatus !== "visual_ready"}
                                                     onClick={() => setStage("generate")}
                                                 >
                                                     进入镜头生成
@@ -589,6 +601,8 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                             </div>
                                         }
                                     />
+                                    {episode.storyboardSkill ? <section className="my-4 rounded-lg border border-border bg-card p-4"><DramaSkillReportView title="完整分镜表" report={episode.storyboardSkill} /></section> : null}
+                                    {episode.seedanceSkill ? <section className="my-4 rounded-lg border border-border bg-card p-4"><DramaSkillReportView title="Seedance 完整提示词方案" report={episode.seedanceSkill} /></section> : null}
                                     {episode.shots.length ? (
                                         <div className="mt-3 grid min-w-0 items-start gap-3 xl:grid-cols-2">
                                             {episode.shots.map((shot) => (
@@ -606,7 +620,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                                         <div className="mt-2.5 flex min-h-14 items-center rounded-lg border border-dashed border-border bg-card/25 px-3 py-2.5">
                                             <div className="min-w-0">
                                                 <h3 className="text-sm font-medium">还没有可编辑的分镜</h3>
-                                                <p className="mt-0.5 text-xs text-muted-foreground">在剧本输入页提供原文，点击 AI 一键分析即可生成分镜方案。</p>
+                                                <p className="mt-0.5 text-xs text-muted-foreground">在原稿页点击 AI 完整 Skill 创作，依次生成改编剧本、分镜表与提示词。</p>
                                             </div>
                                         </div>
                                     )}
@@ -628,7 +642,7 @@ function DramaProjectEditor({ project }: { project: DramaProject }) {
                 />
             </div>
             {stage === "script" ? (
-                <DramaScriptGlobalBar project={project} episode={episode} onSave={() => createVersion(project, "手动保存版本")} onContinue={() => void analyzeScript()} analyzing={analyzing} episodeNavigatorOpen={episodeNavigatorOpen} />
+                <DramaScriptGlobalBar project={project} episode={episode} onSave={() => createVersion(project, "手动保存版本")} onContinue={() => void analyzeScript()} analyzing={analyzing} busy={textWorkBusy} episodeNavigatorOpen={episodeNavigatorOpen} />
             ) : null}
             <DramaVersionModal
                 open={versionsOpen}
@@ -648,6 +662,7 @@ function DramaScriptGlobalBar({
     onSave,
     onContinue,
     analyzing,
+    busy,
     episodeNavigatorOpen,
 }: {
     project: DramaProject;
@@ -655,6 +670,7 @@ function DramaScriptGlobalBar({
     onSave: () => Promise<void>;
     onContinue: () => void;
     analyzing: boolean;
+    busy: boolean;
     episodeNavigatorOpen: boolean;
 }) {
     const { message } = App.useApp();
@@ -695,11 +711,11 @@ function DramaScriptGlobalBar({
                     type="primary"
                     className="!h-10 !px-3 enabled:!border-violet-600 enabled:!bg-violet-600 enabled:!text-white enabled:hover:!border-violet-500 enabled:hover:!bg-violet-500 dark:enabled:!border-violet-400 dark:enabled:!bg-violet-400 dark:enabled:!text-violet-950 sm:!px-6"
                     icon={<ArrowRight className="size-4" />}
-                    disabled={!episode.script.trim()}
+                    disabled={busy || !episode.script.trim()}
                     loading={analyzing}
                     onClick={onContinue}
                 >
-                    <span>AI 一键分析剧本</span>
+                    <span>AI 完整 Skill 创作</span>
                 </Button>
             </div>
         </footer>

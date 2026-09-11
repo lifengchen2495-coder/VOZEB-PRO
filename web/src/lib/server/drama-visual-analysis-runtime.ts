@@ -2,6 +2,8 @@ import type { DramaVisualAnalysis, DramaVideoPromptAnalysis } from "@/lib/drama-
 import { normalizeDramaVisualAnalysis } from "@/lib/server/drama-analysis";
 import { selectDramaVisualInput, type NormalizedDramaVisualInput } from "@/lib/server/drama-analysis-input";
 import { normalizeDramaVideoPromptAnalysis } from "@/lib/server/drama-video-prompt-analysis";
+import type { DramaSkillReport } from "@/lib/drama-skill-contract";
+import { mergeDramaSkillReports } from "@/lib/server/drama-skill-analysis";
 
 type VisualBatchResponse<TCall> = {
     value: unknown;
@@ -23,12 +25,14 @@ export async function analyzeDramaVideoPromptBatches<TCall>(runtime: VisualBatch
     return analyzeDramaShotBatches(runtime, normalizeDramaVideoPromptAnalysis);
 }
 
-async function analyzeDramaShotBatches<TCall, TShot extends { shotId: string }>(runtime: VisualBatchRuntime<TCall>, normalize: (value: unknown, shotIds: string[]) => { shots: TShot[] }): Promise<{ data: { shots: TShot[] }; calls: TCall[] }> {
+async function analyzeDramaShotBatches<TCall, TShot extends { shotId: string }>(runtime: VisualBatchRuntime<TCall>, normalize: (value: unknown, shotIds: string[]) => { shots: TShot[]; skill?: DramaSkillReport }): Promise<{ data: { shots: TShot[]; skill?: DramaSkillReport }; calls: TCall[] }> {
     const acceptedCalls: TCall[] = [];
+    const reports: DramaSkillReport[] = [];
     try {
         const shots = await analyzeBatch(runtime.input);
         const byId = new Map(shots.map((shot) => [shot.shotId, shot]));
-        return { data: { shots: runtime.input.shotIds.flatMap((shotId) => (byId.has(shotId) ? [byId.get(shotId)!] : [])) }, calls: acceptedCalls };
+        const skill = mergeDramaSkillReports(reports);
+        return { data: { shots: runtime.input.shotIds.flatMap((shotId) => (byId.has(shotId) ? [byId.get(shotId)!] : [])), ...(skill ? { skill } : {}) }, calls: acceptedCalls };
     } catch (error) {
         for (const call of acceptedCalls) await runtime.releaseCall(call);
         throw error;
@@ -51,6 +55,7 @@ async function analyzeDramaShotBatches<TCall, TShot extends { shotId: string }>(
         }
 
         acceptedCalls.push(response.call);
+        if (normalized.skill) reports.push(normalized.skill);
         const returnedIds = new Set(normalized.shots.map((shot) => shot.shotId));
         const missingIds = input.shotIds.filter((shotId) => !returnedIds.has(shotId));
         if (!missingIds.length) return normalized.shots;

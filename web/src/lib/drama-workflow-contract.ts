@@ -1,3 +1,5 @@
+import type { DramaSkillReport } from "@/lib/drama-skill-contract";
+
 export type DramaWorkflowStage = "story" | "characters" | "beats" | "script";
 export type DramaWorkflowIntent = "creation" | "analysis";
 
@@ -28,9 +30,10 @@ export type DramaCharacterBiography = {
     signatureAction: string;
 };
 
-export type DramaCharactersData = { characters: DramaCharacterBiography[] };
+export type DramaCharactersData = { characters: DramaCharacterBiography[]; skill?: DramaSkillReport };
 
 export type DramaBeatsData = {
+    skill?: DramaSkillReport;
     outline: string;
     hook: string;
     nextPreview: string;
@@ -38,6 +41,8 @@ export type DramaBeatsData = {
 };
 
 export type DramaScriptData = {
+    skill?: DramaSkillReport;
+    screenplay?: string;
     scenes: Array<{
         id: string;
         title: string;

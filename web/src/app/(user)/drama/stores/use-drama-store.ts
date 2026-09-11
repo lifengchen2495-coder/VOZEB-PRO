@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { create } from "zustand";
+import { DRAMA_MAX_PROJECT_BYTES, DRAMA_PROJECT_SIZE_ERROR } from "@/lib/drama-project-limits";
 
 import { archiveDramaShots, dramaShotMediaChanged } from "@/lib/drama-shot-archive";
 import { dramaShotFrameInputFingerprint, dramaShotProductionFingerprint, reconcileDramaContentAnalysis, reconcileDramaVisualAnalysis } from "@/lib/drama-analysis-reconcile";
@@ -481,6 +482,7 @@ export const useDramaStore = create<DramaStore>((set, get) => ({
                               ),
                               shots,
                               renderStale: item.renderStale || shots.some((shot, index) => shot !== episode.shots[index]),
+                              seedanceSkill: analyzed.seedanceSkill,
                           }
                         : item,
                 ),
@@ -533,8 +535,8 @@ function mutateProject(projectId: string, updater: (project: DramaProject) => Dr
             if (project.id !== projectId) return project;
             const updated = updater(project);
             if (updated === project) return project;
-            if (updated.episodes.some((episode) => episode.shotArchives !== project.episodes.find((item) => item.id === episode.id)?.shotArchives) && new TextEncoder().encode(JSON.stringify(updated)).byteLength > 2 * 1024 * 1024)
-                throw new Error("镜头归档后项目超过 2 MB，请先拆分项目，历史素材尚未移除");
+            if (new TextEncoder().encode(JSON.stringify(updated)).byteLength > DRAMA_MAX_PROJECT_BYTES)
+                throw new Error(DRAMA_PROJECT_SIZE_ERROR);
             nextProject = { ...updated, updatedAt: nextUpdatedAt(session, project) };
             return nextProject;
         });

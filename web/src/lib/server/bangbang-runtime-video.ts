@@ -5,7 +5,7 @@ import { runFfmpeg } from "./ffmpeg";
 import { buildDoubaoFileUploadBody, fetchDoubaoFileApi, readDoubaoJsonResponse } from "./doubao-file-api";
 import { fetchInternalApi } from "./internal-origin";
 import type { ResolvedLogicalModel } from "./logical-model-router";
-import { toSafeGenerationErrorMessage } from "./generation-errors";
+import { readResponsesBody } from "./responses-stream";
 
 export const BANGBANG_VIDEO_MODEL = "doubao-seed-2-0-pro-260215";
 
@@ -16,7 +16,7 @@ export function supportsBangbangFullVideo(candidate: ResolvedLogicalModel) {
 export function buildBangbangVideoRequest(candidate: ResolvedLogicalModel, fileId: string, messages: Array<{ role: string; content: string }>) {
     if (!supportsBangbangFullVideo(candidate) || !fileId) throw new Error("完整视频理解需要已配置的 Doubao Seed 2.0 Pro 与有效视频文件");
     return {
-        model: candidate.upstreamModel, store: false, max_output_tokens: 24_000,
+        model: candidate.upstreamModel, store: false, max_output_tokens: 24_000, stream: true,
         input: [
             ...messages.filter((message) => message.role === "system"),
             { role: "user", content: [{ type: "input_video", file_id: fileId }, { type: "input_text", text: messages.filter((message) => message.role !== "system").map((message) => message.content).join("\n\n") }] },
@@ -54,14 +54,7 @@ export async function requestBangbangFullVideo(input: {
         const call = await fetchInternalApi(`${input.origin}/api/ai/system/${encodeURIComponent(input.candidate.channelId)}/responses`, {
             method: "POST", headers: input.headers, body: JSON.stringify(buildBangbangVideoRequest(input.candidate, fileId, input.messages)), cache: "no-store", signal: AbortSignal.any([input.signal, AbortSignal.timeout(10 * 60_000)]),
         });
-        input.onResponse(call.headers);
-        if (!call.ok) throw new Error(toSafeGenerationErrorMessage(await call.text().catch(() => ""), `完整视频理解失败（HTTP ${call.status}）`));
-        const payload = await call.json().catch(() => null);
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("完整视频理解没有返回合法 JSON");
-        const direct = typeof payload.output_text === "string" ? payload.output_text : "";
-        const raw = direct || (Array.isArray(payload.output) ? payload.output : []).flatMap((item: { content?: Array<{ type?: string; text?: string }> }) => Array.isArray(item.content) ? item.content : []).filter((part: { type?: string }) => part.type === "output_text" || part.type === "text").map((part: { text?: string }) => part.text || "").join("\n");
-        if (!raw.trim()) throw new Error("完整视频理解响应缺少结果正文");
-        return raw;
+        return await readResponsesBody(call, input.onResponse);
     } finally {
         try {
             const deleted = await fetchDoubaoFileApi(endpoint(input.candidate, `files/${encodeURIComponent(fileId)}`), { method: "DELETE", headers: authorization, signal: AbortSignal.timeout(30_000) });

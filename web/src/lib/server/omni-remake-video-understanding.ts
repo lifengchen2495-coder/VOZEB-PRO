@@ -2,14 +2,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { runFfmpeg } from "./ffmpeg";
-import { fetchInternalApi } from "./internal-origin";
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "./logical-model-router";
 import { rankTextPlanningCandidates } from "./text-planning-runtime";
 import { buildDoubaoFileUploadBody, fetchDoubaoFileApi, readDoubaoJsonResponse } from "./doubao-file-api";
-import { resolveModelRequestTimeoutMs } from "./model-request-policy";
-import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "./system-ai-billing";
-import { maintenanceWorkerContextHeaders } from "./maintenance-auth";
-import { strictJsonObjectText } from "./structured-model-output";
+import { requestDoubaoVideoResponse } from "@/lib/server/doubao-video-response";
+import { hasSystemAiCharge, readSystemAiBilling, systemAiIdempotencyKey } from "./system-ai-billing";
 import { toSafeGenerationErrorMessage } from "./generation-errors";
 
 type ProbeResult = { durationMs: number };
@@ -49,9 +46,6 @@ export async function understandOmniVideo(input: { sourcePath: string; workDirec
 async function refundInvalidResponse(userId: string, model: string, headers: Headers) {
     const billing = readSystemAiBilling(headers);
     if (hasSystemAiCharge(billing)) await refundUserPoints(userId, model, billing.pointsCost, "text", 1, undefined, billing.pointsRecordId);
-}
-function records(value: unknown): Record<string, unknown>[] {
-    return Array.isArray(value) ? value.filter((row) => row && typeof row === "object" && !Array.isArray(row)) : [];
 }
 
 export async function resolveOmniAnalysisModels(requestedModel = "") {
@@ -155,37 +149,15 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
             store: false,
             max_output_tokens: 24_000,
         };
-        const headers = new Headers({
-            "Content-Type": "application/json",
-            "Idempotency-Key": input.idempotencyKey,
-            "X-Client-Request-Id": input.idempotencyKey,
-            ...systemAiBillingHeaders(input.model, input.idempotencyKey, input.candidate.upstreamModel),
+        return await requestDoubaoVideoResponse({
+            candidate: input.candidate,
+            model: input.model,
+            origin: input.origin,
+            credential: input.credential,
+            idempotencyKey: input.idempotencyKey,
+            body,
+            onInvalidResponse: (headers) => refundInvalidResponse(input.task.userId, input.model, headers),
         });
-        const workerHeaders = maintenanceWorkerContextHeaders(input.credential);
-        if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
-        else if (input.credential) headers.set("cookie", input.credential);
-        const response = await fetchInternalApi(`${input.origin}/api/ai/system/${encodeURIComponent(input.candidate.channelId)}/responses`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            cache: "no-store",
-            signal: AbortSignal.timeout(Math.max(10 * 60_000, resolveModelRequestTimeoutMs(input.candidate, "text"))),
-        });
-        if (!response.ok) {
-            await refundInvalidResponse(input.task.userId, input.model, response.headers);
-            throw new Error(toSafeGenerationErrorMessage(await response.text().catch(() => ""), `Doubao 视频理解调用失败（HTTP ${response.status}）`));
-        }
-        const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-        if (!payload || payload.status === "incomplete" || payload.status === "failed") {
-            await refundInvalidResponse(input.task.userId, input.model, response.headers);
-            throw new Error("Doubao 视频理解返回了无效或未完成的 JSON，请重试");
-        }
-        const argumentsText = strictJsonObjectText(readDoubaoOutputText(payload));
-        if (!argumentsText) {
-            await refundInvalidResponse(input.task.userId, input.model, response.headers);
-            throw new Error("Doubao 视频理解没有返回完整的结构化分析");
-        }
-        return { arguments: argumentsText, headers: response.headers };
     } finally {
         await deleteDoubaoFile(input.candidate, fileId).catch((error) => console.error("Omni 视频理解临时文件清理失败", toSafeGenerationErrorMessage(error, "文件删除失败")));
     }
@@ -233,17 +205,6 @@ async function deleteDoubaoFile(candidate: ResolvedLogicalModel, fileId: string)
         signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) throw new Error(`Doubao 临时视频清理失败（HTTP ${response.status}）`);
-}
-
-function readDoubaoOutputText(payload: Record<string, unknown>) {
-    const direct = typeof payload.output_text === "string" ? payload.output_text.trim() : "";
-    if (direct) return direct;
-    return records(payload.output)
-        .flatMap((item) => records(item.content))
-        .filter((item) => item.type === "output_text" || item.type === "text")
-        .map((item) => (typeof item.text === "string" ? item.text : ""))
-        .filter(Boolean)
-        .join("\n");
 }
 
 function doubaoFilesBaseUrl(candidate: ResolvedLogicalModel) {

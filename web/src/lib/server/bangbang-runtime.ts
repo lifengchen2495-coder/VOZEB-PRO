@@ -76,6 +76,7 @@ export async function executeBangbangStep(input: OperationInput): Promise<{ resu
             const referenceCache = new Map<string, RemakeProductionVisualBoard>();
             const initialReferences = fullVideo ? [] : stepReferences(project, step);
             const candidate = await resolveCandidate(project, fullVideo, initialReferences.length > 0);
+            const streamChat = /^gpt-6(?:[.-]|$)/i.test(candidate.upstreamModel) && resolveRemakeProductionVisionProtocol(candidate, true)?.kind === "chat";
             const call = async (current: BangbangProject, scope: string) => {
                 signal.throwIfAborted();
                 const key = systemAiIdempotencyKey("bangbang", input.userId, project.id, operation.id, step, scope, candidate.channelId, candidate.upstreamModel);
@@ -86,11 +87,12 @@ export async function executeBangbangStep(input: OperationInput): Promise<{ resu
                     raw = await requestBangbangFullVideo({ sourcePath: sourcePath!, workDirectory: directory, duration: probe!.duration, candidate, origin: input.origin, messages, headers, signal, onResponse: (responseHeaders) => trackCharge(candidate.logicalModelId, responseHeaders) });
                 } else {
                     const references = stepReferences(current, step);
-                    if (references.length) {
+                    if (references.length || streamChat) {
                         const boards = await loadBoards(references, input, directory, referenceCache);
-                        messages[1].content += `\n\n实际附图顺序：${JSON.stringify(boards.map((board) => ({ number: board.ordinal, label: board.description })))}`;
+                        if (boards.length) messages[1].content += `\n\n实际附图顺序：${JSON.stringify(boards.map((board) => ({ number: board.ordinal, label: board.description })))}`;
                         try {
-                            const response = await requestRemakeProductionVisionPrompt({ origin: input.origin, cookie: cookie(input.credential), candidate, messages, boards, headers, signal });
+                            // GPT-6 后台环节持续消费流式响应，避免同步等待触发中转网关 504。
+                            const response = await requestRemakeProductionVisionPrompt({ origin: input.origin, cookie: cookie(input.credential), candidate, messages, boards, headers, signal, stream: streamChat, allowTextOnly: boards.length === 0, jsonMode: boards.length === 0 });
                             trackCharge(candidate.logicalModelId, response.headers);
                             raw = response.text;
                         } catch (error) {

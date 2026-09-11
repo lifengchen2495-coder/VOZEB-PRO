@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { normalizeDramaSkillReport } from "@/lib/drama-skill-contract";
 
 import type { DramaAssetProfile, DramaContentAnalysis, DramaShotContinuity, DramaUtterance, DramaVisualAnalysis } from "@/lib/drama-project-contract";
 import { resolveDramaShotDuration, resolveDramaShotDurations, type DramaShotDurationPolicy } from "@/lib/server/drama-shot-config";
@@ -61,6 +62,7 @@ export function normalizeDramaContentAnalysis(value: unknown, durationPolicy: nu
             nextPreview: text(object(source.episode).nextPreview),
             sourceRange: text(object(source.episode).sourceRange),
         },
+        ...(normalizeDramaSkillReport(source.skill) ? { skill: normalizeDramaSkillReport(source.skill) } : {}),
         characters: normalizeAssets(source.characters),
         scenes: normalizeAssets(source.scenes),
         props: normalizeAssets(source.props),
@@ -227,7 +229,8 @@ export function normalizeDramaVisualAnalysis(value: unknown, shotIds: string[]):
             },
         ];
     });
-    return { shots };
+    const skill = normalizeDramaSkillReport(object(value).skill);
+    return { shots, ...(skill ? { skill } : {}) };
 }
 
 export function readDramaUpstreamError(value: string, status: number) {
@@ -554,12 +557,19 @@ function extractDramaUtterances(value: string, knownSpeakers: string[], modelUtt
 function extractDialogueSpans(value: string, knownSpeakers: string[] = []): DialogueSpan[] {
     const spans: DialogueSpan[] = [];
     const seen = new Set<string>();
+    let scriptLineStart = 0;
+    for (const line of value.split("\n")) {
+        const dialogue = extractScriptDialogueLine(line, knownSpeakers);
+        if (dialogue) addDialogueSpan(spans, seen, { ...dialogue, start: scriptLineStart + dialogue.start, end: scriptLineStart + dialogue.end, kind: "dialogue", spokenPunctuation: true });
+        scriptLineStart += line.length + 1;
+    }
     const quotePattern = /“([^“”]+)”|「([^「」]+)」|『([^『』]+)』|"([^"\r\n]+)"/g;
     for (const match of value.matchAll(quotePattern)) {
         const dialogue = [match[1], match[2], match[3], match[4]].find(Boolean)?.trim() || "";
         if (!dialogue) continue;
         const start = match.index || 0;
         const end = start + match[0].length;
+        if (spans.some((span) => start >= span.start && end <= span.end)) continue;
         const before = value.slice(Math.max(0, start - 80), start);
         const after = value.slice(end, Math.min(value.length, end + 240));
         const speaker = inferDialogueSpeaker(before, after.slice(0, 80), knownSpeakers);
@@ -589,8 +599,42 @@ function extractDialogueSpans(value: string, knownSpeakers: string[] = []): Dial
     return spans.sort((left, right) => left.start - right.start);
 }
 
+// Skill 的表演标注允许冒号出现在“口型：中”内部，须先解析完整人物头再找台词。
+function extractScriptDialogueLine(line: string, knownSpeakers: string[]) {
+    const trimmed = line.trim();
+    const wholeBracket = /^【[^】]+】$/u.test(trimmed);
+    const body = wholeBracket ? trimmed.slice(1, -1) : trimmed;
+    const header = body.match(/^(?:【([\p{Script=Han}A-Za-z0-9·]{1,20})】|([\p{Script=Han}A-Za-z0-9·]{1,20}))\s*([（(][^）)]*[）)])?\s*/u);
+    if (!header) return undefined;
+    const speaker = header[1] || header[2];
+    if (isProductionLabel(speaker)) return undefined;
+    const annotation = header[3] || "";
+    const remainder = body.slice(header[0].length);
+    const colon = /^[：:]\s*/u.exec(remainder);
+    const dialogue = remainder.slice(colon?.[0].length || 0).trim();
+    if (!dialogue || /无台词|无对白/u.test(dialogue)) return undefined;
+    const mouth = /口型\s*[：:]\s*[微中大]/u.test(annotation);
+    const emotional = /愤怒|惊讶|冷笑|坚定|紧张|平静|悲伤|疑惑|哽咽|激动|恐惧|担忧|失落|兴奋|得意|愧疚|不屑|温柔|委屈|焦急|沉重|轻声|低声/u.test(annotation);
+    const quoted = /^[“"「『]/u.test(dialogue);
+    const named = knownSpeakers.includes(speaker);
+    // 动作行也以人物开头；仅口型、明确说话格式或情绪台词头才作为对白。
+    if (!mouth && !(named && ((colon && !annotation) || quoted || emotional))) return undefined;
+    if (!colon && !header[1] && !quoted) return undefined;
+    if (/^(?:[（(]?\s*(?:微动态|中动态|强动态|动作|特写|音效|字幕)[：:]|【动[・·])/u.test(dialogue)) return undefined;
+    const quotedText = dialogue.match(/^(?:“([^“”]+)”|「([^「」]+)」|『([^『』]+)』|"([^"\r\n]+)")/u);
+    const text = quotedText ? quotedText.slice(1).find((item) => item !== undefined)!.trim() : dialogue;
+    const start = line.indexOf(body) + header[0].length + (colon?.[0].length || 0);
+    return text ? { speaker, text, start, end: quotedText ? start + quotedText[0].length : line.length } : undefined;
+}
+
+function isProductionLabel(value: string) {
+    return /^(?:SFX|BGM|音效|声音|配乐|环境音效|动作音效|环境音|动作音|背景音|背景音乐|字幕|屏幕文字|前景|中景|背景|后景|动作|画面|动态|微动态|中动态|强动态|转场|镜头|景别|场景|时间|光线|旁白|画外音|内心独白)(?:描述|说明|提示|特写|音效)?$/iu.test(value);
+}
+
 function isNonSpokenQuote(before: string, after: string) {
     const precedingClause = before.split(/[。！？!?；;\n]/u).pop() || "";
+    const productionLabel = precedingClause.trim().replace(/^【/u, "").match(/^([^（(：:】]+)(?:[（(][^）)]*[）)])?\s*[：:]/u)?.[1];
+    if (productionLabel && isProductionLabel(productionLabel.trim())) return true;
     if (/(?:心想|暗想|心中想|心里想|心中暗道|心里暗道|心道|暗道|腹诽|默念|想到|想道|内心独白|写道|写着|写下|写了|输入|打字|消息(?:是|写着)?|通知(?:是|写着)?)\s*[：:]?\s*$/u.test(precedingClause)) return true;
     // 连续引号可能共同组成一条文字消息，以整组引号之后的动作判断。
     const followingAction = after.replace(/^(?:[\s，,。.…]*[“「『"](?:[^”」』"]+)[”」』"])+/u, "").replace(/^[\s，,。.…]+/u, "");

@@ -15,14 +15,14 @@ import { DramaEpisodeSettings } from "./drama-episode-settings";
 import { DramaStageHeader } from "./drama-editor-elements";
 import { DramaSourceImport } from "./drama-source-import";
 
-export type DramaProjectStage = DramaWorkflowStage | "review" | "storyboard" | "generate";
+export type DramaProjectStage = DramaWorkflowStage | "adapted-script" | "review" | "storyboard" | "generate";
 
 const stages = [
-    { value: "script", label: "剧本输入", shortLabel: "剧本" },
-    { value: "story", label: "故事分析", shortLabel: "故事" },
-    { value: "characters", label: "人物分析", shortLabel: "人物" },
-    { value: "beats", label: "节奏分析", shortLabel: "节奏" },
-    { value: "storyboard", label: "分镜设计", shortLabel: "分镜" },
+    { value: "script", label: "原稿输入", shortLabel: "原稿" },
+    { value: "characters", label: "人物小传", shortLabel: "人物" },
+    { value: "beats", label: "节奏设计", shortLabel: "节奏" },
+    { value: "adapted-script", label: "详细剧本", shortLabel: "改编" },
+    { value: "storyboard", label: "分镜与提示词", shortLabel: "分镜" },
     { value: "generate", label: "视频制作", shortLabel: "制作" },
 ] as const;
 
@@ -311,13 +311,14 @@ function dramaStageStatuses(project: DramaProject, episode: DramaEpisode): Recor
     const tasks = episode.shots.flatMap((shot) => [shot.storyboardStatus, shot.generationStatus, shot.audioStatus]);
     const workflowStatus = (stage: DramaWorkflowStage) => {
         const scope = stage === "beats" || stage === "script" ? episode.id : undefined;
-        const adopted = latestDramaWorkflowArtifact(project, stage, scope, "adopted", "analysis") as DramaWorkflowArtifact | undefined;
-        return adopted ? (dramaWorkflowArtifactIsStale(project, adopted) ? "待更新" : "已分析") : "待分析";
+        const adopted = latestDramaWorkflowArtifact(project, stage, scope, "adopted", stage === "story" ? "analysis" : "creation") as DramaWorkflowArtifact | undefined;
+        return adopted ? (dramaWorkflowArtifactIsStale(project, adopted) ? "待更新" : "已采用") : "待创作";
     };
     return {
         story: workflowStatus("story"),
         characters: workflowStatus("characters"),
         beats: workflowStatus("beats"),
+        "adapted-script": workflowStatus("script"),
         script: !episode.script.trim() ? "待提供" : episode.contentStale ? "待分析" : episode.reviewStatus === "visual_ready" ? "已分析" : "已有原文",
         review: episode.reviewStatus === "approved" || episode.reviewStatus === "visual_ready" ? "已确认" : episode.reviewStatus === "content_review" ? "待确认" : "待审核",
         storyboard: episode.contentStale ? "待复核" : episode.reviewStatus === "visual_ready" ? "已设计" : episode.shots.length ? "待审核" : "待提取",
@@ -348,6 +349,7 @@ export function DramaScriptPanel({
     project,
     episode,
     analyzing,
+    busy = analyzing,
     onAnalyze,
     onStageChange,
     selectedShotId,
@@ -356,6 +358,7 @@ export function DramaScriptPanel({
     project: DramaProject;
     episode: DramaEpisode;
     analyzing: boolean;
+    busy?: boolean;
     onAnalyze: () => void;
     onStageChange: (stage: DramaProjectStage) => void;
     selectedShotId?: string;
@@ -368,8 +371,8 @@ export function DramaScriptPanel({
             <div className="shrink-0" data-drama-script-statusbar>
                 <DramaStageHeader
                     step="01"
-                    title="剧本输入"
-                    description="粘贴或导入剧本，AI 自动分析全剧故事、人物和本集节奏，并生成本集分镜。你可以在结果中修正。"
+                    title="原稿输入"
+                    description="提供原稿，AI 按完整 Skill 依次创作人物小传、节奏方案、详细改编剧本、分镜表和 Seedance 提示词。原稿独立保留。"
                     status={scriptText ? (episode.reviewStatus === "visual_ready" && !episode.contentStale ? "已分析" : "待分析") : "待提供剧本"}
                     tone={scriptText ? (episode.shots.length ? "ready" : "neutral") : "attention"}
                     metrics={[
@@ -379,17 +382,18 @@ export function DramaScriptPanel({
                     action={
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                             <DramaSourceImport project={project} onImported={() => onStageChange("script")} />
+                            <Button size="small" onClick={() => onStageChange("story")}>故事理解 / 旧分析</Button>
                             <Button
                                 type="primary"
                                 className="!h-8 !px-2.5 enabled:!border-violet-600 enabled:!bg-violet-600 enabled:!text-white enabled:hover:!border-violet-500 enabled:hover:!bg-violet-500 dark:enabled:!border-violet-400 dark:enabled:!bg-violet-400 dark:enabled:!text-violet-950"
                                 size="small"
                                 icon={<Sparkles className="size-3.5" />}
                                 loading={analyzing}
-                                disabled={!scriptText}
+                                disabled={busy || !scriptText}
                                 title={scriptText ? undefined : "请先填写或导入本集剧本"}
                                 onClick={onAnalyze}
                             >
-                                AI 一键分析剧本
+                                AI 完整 Skill 创作
                             </Button>
                             <Popover trigger="click" placement="bottomRight" styles={{ container: { padding: 12, width: 320 } }} content={<DramaEpisodeSettings project={project} episode={episode} embedded />}>
                                 <Button className="!h-8 !px-2.5" size="small" icon={<Settings2 className="size-3.5" />} aria-label="打开本集设置">

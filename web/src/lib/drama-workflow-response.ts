@@ -21,7 +21,7 @@ export function mergeDramaWorkflowArtifactResult(current: DramaProject, artifact
     const workflow = normalizeDramaWorkflow({ schemaVersion: 1, artifacts: [...others, artifact] })!;
     const merged = { ...current, workflow };
     if (artifact.status !== "adopted") return merged;
-    const analyzeCharacters = artifact.intent === "analysis" && artifact.stage === "characters";
+    const analyzeCharacters = artifact.stage === "characters";
     if (existing?.status === "adopted") {
         if (!analyzeCharacters || dramaWorkflowArtifactIsStale(merged, artifact)) return current;
         const aligned = alignAnalyzedCharacterIds(current, artifact, merged, true);

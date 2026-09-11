@@ -137,6 +137,8 @@ export type DramaVisualReview = {
 };
 
 export type DramaEpisode = {
+    storyboardSkill?: import("@/lib/drama-skill-contract").DramaSkillReport;
+    seedanceSkill?: import("@/lib/drama-skill-contract").DramaSkillReport;
     id: string;
     contentStale?: boolean;
     renderStale?: boolean;
@@ -216,6 +218,7 @@ export type CreateDramaProjectInput = Pick<DramaProject, "title" | "summary" | "
 };
 
 export type DramaContentAnalysis = {
+    skill?: import("@/lib/drama-skill-contract").DramaSkillReport;
     episode: Pick<DramaEpisode, "outline" | "hook" | "nextPreview" | "sourceRange">;
     characters: Array<Omit<DramaCharacter, "id">>;
     scenes: Array<Omit<DramaScene, "id">>;
@@ -232,6 +235,7 @@ export type DramaContentAnalysis = {
 };
 
 export type DramaVisualAnalysis = {
+    skill?: import("@/lib/drama-skill-contract").DramaSkillReport;
     shots: Array<
         Pick<DramaShot, "imagePrompt" | "videoPrompt" | "cameraMotion"> &
             Required<Pick<DramaShot, "startFramePrompt" | "endFramePrompt" | "negativePrompt" | "continuity">> & {
@@ -240,7 +244,7 @@ export type DramaVisualAnalysis = {
     >;
 };
 
-export type DramaVideoPromptAnalysis = { shots: Array<{ shotId: string; videoPrompt: string }> };
+export type DramaVideoPromptAnalysis = { skill?: import("@/lib/drama-skill-contract").DramaSkillReport; shots: Array<{ shotId: string; videoPrompt: string }> };
 
 export type DramaProjectVersion = {
     id: string;

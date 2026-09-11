@@ -1,8 +1,11 @@
 import type { DramaContentAnalysis } from "@/lib/drama-project-contract";
+import { mergeDramaSkillReports } from "@/lib/server/drama-skill-analysis";
 
 export function mergeDramaContentAnalyses(analyses: DramaContentAnalysis[]): DramaContentAnalysis {
     const first = analyses[0];
+    const skill = mergeDramaSkillReports(analyses.map((analysis) => analysis.skill));
     return {
+        ...(skill ? { skill } : {}),
         episode: analyses.reduce(
             (episode, analysis) => ({
                 outline: episode.outline || analysis.episode.outline,

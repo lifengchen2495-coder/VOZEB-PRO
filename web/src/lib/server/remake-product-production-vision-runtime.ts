@@ -2,12 +2,12 @@ import { fileTypeFromBuffer } from "file-type";
 import sharp, { type OverlayOptions } from "sharp";
 
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
-import { fetchInternalApi } from "@/lib/server/internal-origin";
+import { RemakeProductionVisionError, requestRemakeVisionPrompt, resolveRemakeVisionProtocol, type ResolvedVisionProtocol } from "@/lib/server/remake-vision-request";
 import type { ResolvedLogicalModel } from "@/lib/server/logical-model-router";
-import { resolveModelRequestTimeoutMs } from "@/lib/server/model-request-policy";
 import { remakeContactSheetDimensionError } from "@/lib/server/remake-contact-sheet-validation";
 import { fetchRemakeProductionImage } from "@/lib/server/remake-production-image-fetch";
-import { resolveTextProtocol } from "@/lib/server/text-protocol-resolver";
+
+export { RemakeProductionVisionError } from "@/lib/server/remake-vision-request";
 
 // 源图需先读取后缩放拼板，大小上限独立于压缩后的模型输入限制。
 export const REMAKE_PRODUCTION_SOURCE_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
@@ -16,7 +16,6 @@ export const REMAKE_PRODUCTION_VISUAL_BOARD_MAX_BYTES = 3_500_000;
 export const REMAKE_PRODUCTION_VISUAL_BOARDS_TOTAL_MAX_BYTES = 7_000_000;
 
 const SOURCE_IMAGE_MAX_PIXELS = 40_000_000;
-const MODEL_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 const REFERENCE_BOARD_WIDTH = 1_200;
 const REFERENCE_BOARD_HEIGHT = 720;
 const CONTACT_SHEET_BOARD_WIDTH = 1_200;
@@ -68,39 +67,8 @@ type LoadedImage = {
     height: number;
 };
 
-type ResolvedVisionProtocol = {
-    kind: RemakeProductionVisionProtocol;
-    path: string;
-};
-
-export class RemakeProductionVisionError extends Error {
-    constructor(
-        message: string,
-        readonly status = 502,
-        readonly responseHeaders?: Headers,
-    ) {
-        super(message);
-        this.name = "RemakeProductionVisionError";
-    }
-}
-
 export function resolveRemakeProductionVisionProtocol(candidate: ResolvedLogicalModel): ResolvedVisionProtocol | null {
-    if (candidate.capabilityProfile?.supportsReferenceImage !== true) return null;
-    if (candidate.capabilityProfile.maxReferenceImages !== undefined && candidate.capabilityProfile.maxReferenceImages < 2) return null;
-    try {
-        const protocol = resolveTextProtocol({
-            model: candidate.upstreamModel,
-            apiFormat: candidate.channel.apiFormat,
-            advancedConfig: candidate.channel.advancedConfig,
-            throughSystemProxy: true,
-        });
-        if (protocol.providerKind === "gemini") return { kind: "gemini", path: protocol.providerPath };
-        if (protocol.kind === "responses" && protocol.providerKind === "responses") return { kind: "responses", path: protocol.path };
-        if (protocol.kind === "chat" && protocol.providerKind === "chat") return { kind: "chat", path: protocol.path };
-        return null;
-    } catch {
-        return null;
-    }
+    return resolveRemakeVisionProtocol(candidate, 2);
 }
 
 export async function buildRemakeProductionVisualBoards(input: {
@@ -153,74 +121,7 @@ export async function requestRemakeProductionVisionPrompt(input: {
     const totalBytes = input.boards.reduce((sum, board) => sum + board.bytes.length, 0);
     if (totalBytes > REMAKE_PRODUCTION_VISUAL_BOARDS_TOTAL_MAX_BYTES) throw new RemakeProductionVisionError("生产视觉板总大小超过模型输入上限", 413);
 
-    const startedAt = Date.now();
-    const headers = new Headers(input.headers);
-    headers.set("content-type", "application/json");
-    if (input.cookie) headers.set("cookie", input.cookie);
-    const timeoutSignal = AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text"));
-    const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
-    const response = await fetchInternalApi(modelProxyUrl(input.origin, input.candidate.channelId, protocol.path), {
-        method: "POST",
-        headers,
-        body: JSON.stringify(buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards)),
-        cache: "no-store",
-        signal,
-    });
-    if (!response.ok) {
-        const detail = await readResponseText(response, 64 * 1024).catch(() => "");
-        throw new RemakeProductionVisionError(toSafeGenerationErrorMessage(detail, `生产视觉规划模型调用失败（HTTP ${response.status}）`), response.status, response.headers);
-    }
-    const payload = await readResponseJson(response).catch(() => null);
-    if (!payload) throw new RemakeProductionVisionError("生产视觉规划模型返回了无效 JSON", 502, response.headers);
-    const prompt = readPromptText(protocol.kind, payload);
-    if (!prompt.trim()) {
-        throw new RemakeProductionVisionError("模型没有返回视频提示词正文", 502, response.headers);
-    }
-    return { text: prompt, headers: response.headers, protocol: protocol.kind, elapsedMs: Date.now() - startedAt };
-}
-
-function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: RemakeProductionVisualBoard[]) {
-    const systemText = messages
-        .filter((message) => message.role === "system")
-        .map((message) => message.content)
-        .join("\n\n");
-    const userText = messages
-        .filter((message) => message.role !== "system")
-        .map((message) => message.content)
-        .join("\n\n");
-    if (protocol === "responses") {
-        return {
-            model,
-            input: [
-                ...(systemText ? [{ role: "system", content: systemText }] : []),
-                {
-                    role: "user",
-                    content: [{ type: "input_text", text: userText }, ...boards.map((board) => ({ type: "input_image", image_url: boardDataUrl(board), detail: "high" }))],
-                },
-            ],
-        };
-    }
-    if (protocol === "gemini") {
-        return {
-            contents: [
-                {
-                    role: "user",
-                    parts: [{ text: userText }, ...boards.map((board) => ({ inlineData: { mimeType: board.mimeType, data: board.bytes.toString("base64") } }))],
-                },
-            ],
-            ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-        };
-    }
-    return {
-        model,
-        messages: [
-            ...(systemText ? [{ role: "system", content: systemText }] : []),
-            {
-                role: "user",
-                content: [{ type: "text", text: userText }, ...boards.map((board) => ({ type: "image_url", image_url: { url: boardDataUrl(board), detail: "high" } }))],
-            },
-        ],
-    };
+    return requestRemakeVisionPrompt(input);
 }
 
 async function readProductionImage(asset: RemakeProductionVisionAsset, label: string, origin: string, cookie: string, budget: { remaining: number }): Promise<LoadedImage> {
@@ -357,55 +258,6 @@ function labelSvg(width: number, height: number, label: string) {
 }
 
 
-function boardDataUrl(board: RemakeProductionVisualBoard) {
-    return `data:${board.mimeType};base64,${board.bytes.toString("base64")}`;
-}
-
-function modelProxyUrl(origin: string, channelId: string, path: string) {
-    const normalizedPath = path.trim();
-    if (!normalizedPath || /^https?:\/\//i.test(normalizedPath)) throw new RemakeProductionVisionError("多模态文本协议路径无效", 503);
-    return `${origin.replace(/\/+$/, "")}/api/ai/system/${encodeURIComponent(channelId)}${normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`}`;
-}
-
-function readPromptText(protocol: RemakeProductionVisionProtocol, payload: Record<string, unknown>) {
-    if (protocol === "responses") {
-        if (payload.status === "incomplete" || payload.status === "failed") return "";
-        return records(payload.output)
-            .filter((item) => item.type === "message" && item.role === "assistant")
-            .flatMap((item) => records(item.content))
-            .filter((part) => part.type === "output_text")
-            .map((part) => typeof part.text === "string" ? part.text : "")
-            .join("");
-    }
-    if (protocol === "gemini") {
-        const candidate = records(payload.candidates)[0];
-        if (candidate?.finishReason && candidate.finishReason !== "STOP") return "";
-        return records(record(candidate?.content).parts)
-            .filter((part) => part.thought !== true && typeof part.text === "string")
-            .map((part) => part.text)
-            .join("");
-    }
-    const choice = records(payload.choices)[0];
-    if (choice?.finish_reason && choice.finish_reason !== "stop") return "";
-    const message = record(choice?.message);
-    if (message.refusal) return "";
-    return typeof message.content === "string" ? message.content : records(message.content)
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text)
-        .join("");
-}
-
-async function readResponseJson(response: Response) {
-    const text = await readResponseText(response, MODEL_RESPONSE_MAX_BYTES);
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-}
-
-async function readResponseText(response: Response, maximum: number) {
-    if (!response.body) return "";
-    return (await readBoundedBytes(response.body, maximum, "模型响应超过大小上限")).toString("utf8");
-}
-
 async function readBoundedBytes(body: ReadableStream<Uint8Array>, maximum: number, message: string) {
     const reader = body.getReader();
     const chunks: Buffer[] = [];
@@ -427,12 +279,4 @@ async function readBoundedBytes(body: ReadableStream<Uint8Array>, maximum: numbe
     }
     if (!total) throw new RemakeProductionVisionError("读取到的图片或模型响应为空", 422);
     return Buffer.concat(chunks, total);
-}
-
-function record(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function records(value: unknown) {
-    return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
 }

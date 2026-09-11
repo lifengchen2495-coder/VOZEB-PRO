@@ -17,6 +17,7 @@ import { clipboardImageFiles } from "@/lib/clipboard-image-files";
 import type { CreativeAsset, CreativeConversation, CreativeMessage } from "@/lib/creative-runtime-contract";
 import { CREATIVE_UPLOAD_MAX_BYTES, isCreativeUploadMimeType } from "@/lib/creative-upload";
 import type { DramaAssetReference, DramaEpisode, DramaNamedAsset, DramaProject } from "@/lib/drama-project-contract";
+import { dramaWorkflowArtifactIsStale, getDramaProductionScript } from "@/lib/drama-workflow";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { useCreativeAgentOptions } from "@/hooks/use-creative-agent-options";
 import {
@@ -1158,6 +1159,13 @@ function DramaAgentAssets({ assets, project, episode }: { assets: CreativeAsset[
 type VisualAssetKind = "characters" | "scenes" | "props" | "clues";
 
 const DRAMA_AGENT_STAGE_GUIDES: Record<DramaProjectStage, { label: string; prompts: Array<{ label: string; prompt: string }> }> = {
+    "adapted-script": {
+        label: "详细改编剧本协作",
+        prompts: [
+            { label: "核对 Skill 完整性", prompt: "核对当前详细剧本是否落实已采用的人物小传、节奏设计及详细写作 Skill 的全部要求，指出漏项。" },
+            { label: "审阅改编", prompt: "对照原稿和改编剧本，检查新增设定、剧情调整与对白动作是否一致，区分原稿事实和改编补充。" },
+        ],
+    },
     story: {
         label: "故事分析协作",
         prompts: [
@@ -1166,16 +1174,16 @@ const DRAMA_AGENT_STAGE_GUIDES: Record<DramaProjectStage, { label: string; promp
         ],
     },
     characters: {
-        label: "人物分析协作",
+        label: "人物小传协作",
         prompts: [
-            { label: "核对人物关系", prompt: "基于剧本原文核对人物分析的身份、目标和人物关系，指出遗漏或误读，不编造人物经历。" },
-            { label: "核对人物特征", prompt: "从原剧本提取已交代的外貌、声音和习惯动作，检查人物分析是否准确；未交代的保持未交代。" },
+            { label: "核对人物关系", prompt: "对照原稿及人物小传 Skill 核对人物身份、目标、关系和成长变化；检查改编补充是否自洽并明确记录。" },
+            { label: "核对完整小传", prompt: "核对小传的基础信息、核心背景、性格与行为逻辑、动态专属设定、剧情关联是否完整，检查外貌、动作和声音是否可执行。" },
         ],
     },
     beats: {
-        label: "节奏分析协作",
+        label: "节奏设计协作",
         prompts: [
-            { label: "核对节拍", prompt: "基于本集原文核对节奏分析中的事件顺序、情绪、反转和结尾钩子，原文未交代的时长不要虚构。" },
+            { label: "核对节奏方案", prompt: "按爽点与节奏设计 Skill 核对本集秒级时间表、情绪转折、核心与次级爽点、冲突留白及下集钩子，检查它们是否符合已采用的人物小传。" },
             { label: "检查集间承接", prompt: "检查本集开场、伏笔回收和下集预告是否连贯，避免无铺垫反转。" },
         ],
     },
@@ -1193,7 +1201,7 @@ const DRAMA_AGENT_STAGE_GUIDES: Record<DramaProjectStage, { label: string; promp
         prompts: [
             { label: "检查阶段完成度", prompt: "检查当前内容审核是否具备确认条件，按镜头列出已完成、待确认和阻塞项。" },
             { label: "检查缺失资产", prompt: "检查审核结果是否遗漏角色、场景、道具、线索或对应稳定引用，列出缺失项。" },
-            { label: "检查一致性", prompt: "核对镜头与原剧本的对白、旁白、角色、场景、道具、线索和镜头边界，列出不一致项。" },
+            { label: "检查一致性", prompt: "核对镜头与已采用改编剧本的对白、旁白、角色、场景、道具、线索和镜头边界，列出不一致项；将原稿与改编稿区分。" },
             { label: "建议下一步", prompt: "根据当前审核状态，只建议一个最值得立即执行的下一步，并说明完成标准。" },
         ],
     },
@@ -1244,8 +1252,8 @@ function dramaSnapshot(project: DramaProject, episode: DramaEpisode, stage: Dram
         currentStage: stage,
         adoptedWriting: project.workflow?.artifacts
             .filter((item) => item.status === "adopted" && (!item.episodeId || item.episodeId === episode.id))
-            .filter((item, _index, items) => !items.some((other) => other.stage === item.stage && other.episodeId === item.episodeId && other.version > item.version))
-            .map(({ stage, version, data }) => ({ stage, version, data })),
+            .filter((item, _index, items) => !items.some((other) => other.stage === item.stage && other.episodeId === item.episodeId && (other.intent || "creation") === (item.intent || "creation") && other.version > item.version))
+            .map((item) => ({ stage: item.stage, version: item.version, intent: item.intent || "creation", stale: dramaWorkflowArtifactIsStale(project, item), data: item.data })),
         project: {
             id: project.id,
             title: project.title,
@@ -1258,6 +1266,9 @@ function dramaSnapshot(project: DramaProject, episode: DramaEpisode, stage: Dram
             id: episode.id,
             title: episode.title,
             script: episode.script,
+            productionScript: getDramaProductionScript(project, episode.id),
+            storyboardSkill: episode.storyboardSkill,
+            seedanceSkill: episode.seedanceSkill,
             outline: episode.outline,
             hook: episode.hook,
             nextPreview: episode.nextPreview,

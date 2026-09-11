@@ -14,8 +14,11 @@ export function dramaVideoPromptInput(project: DramaProject, episode: DramaEpiso
     return {
         summary: project.summary,
         style: project.style,
+        ratio: project.ratio,
+        sourceScript: episode.script,
+        adoptedWorkflow: project.workflow?.artifacts.filter((item) => item.status === "adopted" && (!item.episodeId || item.episodeId === episode.id)),
         videoPromptInstructions: project.videoPromptInstructions,
-        episode: { id: episode.id, title: episode.title, outline: episode.outline, hook: episode.hook, nextPreview: episode.nextPreview, sourceRange: episode.sourceRange },
+        episode: { id: episode.id, title: episode.title, outline: episode.outline, hook: episode.hook, nextPreview: episode.nextPreview, sourceRange: episode.sourceRange, storyboardSkill: episode.storyboardSkill },
         characters: project.characters,
         scenes: project.scenes,
         props: project.props,
@@ -25,8 +28,10 @@ export function dramaVideoPromptInput(project: DramaProject, episode: DramaEpiso
 }
 
 export function dramaEpisodeHasActiveMedia(episode: DramaEpisode) {
-    return episode.renderTask?.status === "pending" || episode.renderTask?.status === "running" || episode.shots.some((shot) =>
-        [shot.storyboardStatus, shot.storyboardEndStatus, shot.generationStatus, shot.audioStatus].some((status) => status === "queued" || status === "running"),
+    return (
+        episode.renderTask?.status === "pending" ||
+        episode.renderTask?.status === "running" ||
+        episode.shots.some((shot) => [shot.storyboardStatus, shot.storyboardEndStatus, shot.generationStatus, shot.audioStatus].some((status) => status === "queued" || status === "running"))
     );
 }
 
@@ -35,6 +40,7 @@ export function applyDramaVideoPromptAnalysis(episode: DramaEpisode, analysis: D
     if (prompts.size !== episode.shots.length || episode.shots.some((shot) => !prompts.get(shot.id))) throw new Error("视频提示词未覆盖全部镜头，请重新生成");
     return {
         ...episode,
+        seedanceSkill: analysis.skill,
         renderTask: undefined,
         visualReview: undefined,
         shots: episode.shots.map((shot) => ({

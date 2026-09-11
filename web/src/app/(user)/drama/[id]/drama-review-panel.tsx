@@ -37,7 +37,7 @@ export function DramaReviewPanel({ project, episode, onDesignVisuals, designing,
             <DramaStageHeader
                 step="05"
                 title="分镜设计 · 内容审核"
-                description="确认剧本事实、镜头边界、对白与叙事信息；视觉模型不会在这个阶段改写内容。"
+                description="对照已采用的制作剧本核对镜头边界、对白与叙事信息，确认后生成视觉方案。"
                 status={!episode.shots.length ? "等待内容结构" : episode.reviewStatus === "visual_ready" ? "视觉方案已生成" : "待确认"}
                 tone={!episode.shots.length ? "attention" : episode.reviewStatus === "visual_ready" ? "ready" : "neutral"}
                 metrics={
@@ -96,12 +96,12 @@ export function DramaReviewPanel({ project, episode, onDesignVisuals, designing,
                                     <>
                                         <div className="mt-3 grid gap-3 xl:grid-cols-2">
                                             <label className="block space-y-1.5 xl:col-span-2">
-                                                <span className="text-xs font-medium text-muted-foreground">原文依据</span>
+                                                <span className="text-xs font-medium text-muted-foreground">制作剧本依据</span>
                                                 <Input.TextArea
                                                     value={shot.sourceText}
                                                     onChange={(event) => updateContentShot(shot.id, { sourceText: event.target.value })}
                                                     autoSize={{ minRows: 2, maxRows: 5 }}
-                                                    placeholder="保留这一镜头对应的连续原文，便于核对台词和动作"
+                                                    placeholder="保留这一镜头对应的制作剧本文字，便于核对台词和动作"
                                                 />
                                             </label>
                                             <label className="block space-y-1.5">
@@ -131,7 +131,7 @@ export function DramaReviewPanel({ project, episode, onDesignVisuals, designing,
                                                     value={shot.narration}
                                                     onChange={(event) => updateContentShot(shot.id, { narration: event.target.value, subtitle: [shot.dialogue, event.target.value].filter(Boolean).join("\n") })}
                                                     autoSize={{ minRows: 2, maxRows: 5 }}
-                                                    placeholder="只填写原文明确存在的旁白；没有旁白请留空"
+                                                    placeholder="填写制作剧本中的旁白；没有旁白请留空"
                                                 />
                                             </label>
                                         </div>
@@ -144,7 +144,7 @@ export function DramaReviewPanel({ project, episode, onDesignVisuals, designing,
                                     </>
                                 ) : (
                                     <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/60 pt-2 text-xs text-muted-foreground">
-                                        <span className="min-w-0 max-w-full truncate">原文：{sourcePreview}</span>
+                                        <span className="min-w-0 max-w-full truncate">剧本：{sourcePreview}</span>
                                         <span>{dialogueCount ? `${dialogueCount} 句对白` : "暂无对白"}</span>
                                         <span>{shot.duration} 秒</span>
                                     </div>
@@ -157,7 +157,7 @@ export function DramaReviewPanel({ project, episode, onDesignVisuals, designing,
                 <div className="mt-2.5 flex min-h-14 items-center rounded-lg border border-dashed border-border bg-card/25 px-3 py-2.5">
                     <div className="min-w-0">
                         <h3 className="text-sm font-medium">还没有待审核的内容结构</h3>
-                        <p className="mt-0.5 truncate text-xs text-muted-foreground">先填写或导入本集剧本，再由 AI 提取可编辑的镜头事实、对白和原文依据。</p>
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">先提供原稿并完成详细改编剧本，再按分镜 Skill 生成镜头内容、对白和对应依据。</p>
                     </div>
                 </div>
             )}

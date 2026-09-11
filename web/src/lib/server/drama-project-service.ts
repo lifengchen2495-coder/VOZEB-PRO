@@ -1,4 +1,6 @@
 import { nanoid } from "nanoid";
+import { normalizeDramaSkillReport } from "@/lib/drama-skill-contract";
+import { DRAMA_MAX_PROJECT_BYTES, DRAMA_PROJECT_SIZE_ERROR } from "@/lib/drama-project-limits";
 
 import type { CreateDramaProjectInput, DramaAssetProfile, DramaAssetReference, DramaEpisode, DramaNamedAsset, DramaProject, DramaShot, DramaShotContinuity, DramaUtterance, DramaVideoMode } from "@/lib/drama-project-contract";
 import { dramaRichContentToPlainText, normalizeDramaScriptRichContent } from "@/lib/drama-script-rich-content";
@@ -13,7 +15,7 @@ import { createDramaProjectVersion, getDramaProjectVersion, listDramaProjectVers
 import { collectLocalMediaStorageKeys } from "@/lib/server/local-media-references";
 import { deleteUserMediaAssetsCascade } from "@/lib/server/user-media-deletion-service";
 
-const MAX_PROJECT_BYTES = 2 * 1024 * 1024;
+const MAX_PROJECT_BYTES = DRAMA_MAX_PROJECT_BYTES;
 
 export class DramaProjectServiceError extends Error {
     constructor(
@@ -86,12 +88,12 @@ export async function createDramaProjectForUser(userId: string, value: unknown) 
 export async function updateDramaProjectForUser(userId: string, id: string, value: unknown) {
     const current = await getDramaProjectForUser(userId, id);
     const size = Buffer.byteLength(JSON.stringify(value || {}));
-    if (size > MAX_PROJECT_BYTES) throw new DramaProjectServiceError("短剧项目数据过大", 413);
+    if (size > MAX_PROJECT_BYTES) throw new DramaProjectServiceError(DRAMA_PROJECT_SIZE_ERROR, 413);
     const incomingUpdatedAt = parseTimestamp(object(value).updatedAt);
     if (incomingUpdatedAt && incomingUpdatedAt < parseTimestamp(current.updatedAt)) return current;
     assertWorkflowRevisionCurrent(value, current);
     const project = normalizeProject(value, current);
-    if (Buffer.byteLength(JSON.stringify(project)) > MAX_PROJECT_BYTES) throw new DramaProjectServiceError("短剧项目数据过大", 413);
+    if (Buffer.byteLength(JSON.stringify(project)) > MAX_PROJECT_BYTES) throw new DramaProjectServiceError(DRAMA_PROJECT_SIZE_ERROR, 413);
     if (incomingUpdatedAt) project.updatedAt = new Date(incomingUpdatedAt).toISOString();
     try {
         return await updateDramaProject(userId, project, current.updatedAt);
@@ -110,7 +112,7 @@ export async function createDramaProjectVersionForUser(userId: string, id: strin
     const current = await getDramaProjectForUser(userId, cleanText(id));
     const input = object(value);
     const snapshot = normalizeProject(input.snapshot, current);
-    if (Buffer.byteLength(JSON.stringify(snapshot)) > MAX_PROJECT_BYTES) throw new DramaProjectServiceError("短剧版本数据过大", 413);
+    if (Buffer.byteLength(JSON.stringify(snapshot)) > MAX_PROJECT_BYTES) throw new DramaProjectServiceError(DRAMA_PROJECT_SIZE_ERROR, 413);
     const reason = cleanText(input.reason) || "手动保存版本";
     return createDramaProjectVersion(userId, current.id, reason, snapshot);
 }
@@ -283,6 +285,8 @@ function normalizeEpisode(value: unknown, index: number, current?: DramaEpisode)
         title: cleanText(input.title) || "未命名剧集",
         script: scriptRichContent ? dramaRichContentToPlainText(scriptRichContent).trim() : script,
         scriptRichContent,
+        storyboardSkill: normalizeEpisodeSkill(input.storyboardSkill === undefined ? current?.storyboardSkill : input.storyboardSkill),
+        seedanceSkill: normalizeEpisodeSkill(input.seedanceSkill === undefined ? current?.seedanceSkill : input.seedanceSkill),
         outline: cleanText(input.outline),
         hook: cleanText(input.hook),
         nextPreview: cleanText(input.nextPreview),
@@ -293,6 +297,13 @@ function normalizeEpisode(value: unknown, index: number, current?: DramaEpisode)
         renderTask,
         visualReview: normalizeVisualReview(input.visualReview),
     };
+}
+
+function normalizeEpisodeSkill(value: unknown) {
+    if (value === undefined || value === null) return undefined;
+    const report = normalizeDramaSkillReport(value);
+    if (!report) throw new DramaProjectServiceError("Skill 产物格式不完整，无法保存全文与检查记录", 400);
+    return report;
 }
 
 function normalizeShotArchives(value: unknown, current?: DramaEpisode["shotArchives"]): DramaEpisode["shotArchives"] {

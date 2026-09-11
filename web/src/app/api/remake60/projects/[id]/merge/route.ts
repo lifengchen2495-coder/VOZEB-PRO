@@ -1,3 +1,4 @@
+import { streamLongOperation } from "@/lib/server/long-operation-response";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { readJsonBodyResult } from "@/lib/auth/request";
@@ -22,13 +23,15 @@ export async function POST(request: Request, context: Context) {
     if (!parsed.ok) return NextResponse.json({ code: parsed.status, msg: parsed.message, data: null }, { status: parsed.status });
     const revision = parsed.data.revision === undefined ? undefined : Number(parsed.data.revision);
     if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 1)) return NextResponse.json({ code: 400, msg: "项目版本号无效", data: null }, { status: 400 });
-    try {
-        const project = await mergeRemakeVideosForUser({ userId: user.id, projectId: (await context.params).id, expectedRevision: revision, origin: resolveInternalOrigin(new URL(request.url).origin), cookie: request.headers.get("cookie") || "" });
-        return NextResponse.json({ code: 0, msg: "1 分钟视频已合并", data: { project } });
-    } catch (error) {
-        const status = error instanceof RemakeProjectServiceError ? error.status : 502;
-        return NextResponse.json({ code: status, msg: toSafeGenerationErrorMessage(error, "视频合并失败，请稍后重试"), data: null }, { status });
-    }
+    return streamLongOperation(request, async () => {
+        try {
+            const project = await mergeRemakeVideosForUser({ userId: user.id, projectId: (await context.params).id, expectedRevision: revision, origin: resolveInternalOrigin(new URL(request.url).origin), cookie: request.headers.get("cookie") || "" });
+            return NextResponse.json({ code: 0, msg: "1 分钟视频已合并", data: { project } });
+        } catch (error) {
+            const status = error instanceof RemakeProjectServiceError ? error.status : 502;
+            return NextResponse.json({ code: status, msg: toSafeGenerationErrorMessage(error, "视频合并失败，请稍后重试"), data: null }, { status });
+        }
+    });
 }
 
 export async function GET(request: Request, context: Context) {

@@ -16,12 +16,12 @@ import { useDramaStore } from "../stores/use-drama-store";
 import type { DramaProjectStage } from "./drama-project-sections";
 import { DramaWorkflowResult } from "./drama-workflow-result";
 
-const labels: Record<DramaWorkflowStage, string> = { story: "故事分析", characters: "人物分析", beats: "节奏分析", script: "剧本创作" };
+const labels: Record<DramaWorkflowStage, string> = { story: "故事理解", characters: "人物小传", beats: "节奏设计", script: "详细改编剧本" };
 const descriptions: Record<DramaWorkflowStage, string> = {
     story: "从剧本中提取故事梗概、核心冲突、世界观和关键事实。",
-    characters: "从剧本中提取人物身份、动机、关系与外貌特征。",
-    beats: "从当前集剧本中梳理剧情事件、情绪变化、伏笔与结尾钩子。",
-    script: "按场次编辑动作、对白和旁白，采用后同步到剧本正文。",
+    characters: "按人物小传 Skill 完整创作人物背景、动机、关系和成长弧线，展示改编补充与检查结果。",
+    beats: "按爽点与节奏设计 Skill 编排本集冲突、情绪递进、反转和钩子。",
+    script: "按详细写作 Skill 将原稿、人物小传和节奏方案改编成可拍摄剧本。采用后用于拆镜，原稿独立保留。",
 };
 // 保留页面内切换阶段或剧集时尚未保存的编辑，按用户隔离。
 const draftCache = new Map<string, { data: unknown; selectedId: string; instructions: string }>();
@@ -38,6 +38,7 @@ export function DramaWorkflowPanel({
     onAnalysisBusyChange,
     onStageChange,
     onAdoptingChange,
+    onContinue,
 }: {
     project: DramaProject;
     episode: DramaEpisode;
@@ -48,26 +49,30 @@ export function DramaWorkflowPanel({
     onAnalysisBusyChange?: (busy: boolean) => void;
     onStageChange: (stage: DramaProjectStage) => void;
     onAdoptingChange: (busy: boolean) => void;
+    onContinue?: () => void;
 }) {
     const { message } = App.useApp();
     const [form] = Form.useForm();
     const scope = stage === "beats" || stage === "script" ? episode.id : undefined;
-    const analysisStage = stage !== "script";
+    const analysisStage = stage === "story";
+    const targetIntent = analysisStage ? "analysis" : "creation";
     const userId = useUserStore((state) => state.user?.id);
-    const cacheKey = `${userId}:${project.id}:${stage}:${scope || "project"}`;
+    const cacheKey = `${userId}:${project.id}:${stage}:${targetIntent}:${scope || "project"}`;
     const cached = useRef(draftCache.get(cacheKey));
     const artifacts = (project.workflow?.artifacts || []).filter((item) => item.stage === stage && item.episodeId === scope).toSorted((a, b) => b.version - a.version);
-    const defaultArtifact = artifacts.find((item) => item.intent === "analysis") || artifacts[0];
+    const defaultArtifact = artifacts.find((item) => (item.intent || "creation") === targetIntent) || artifacts[0];
     const [selectedId, setSelectedId] = useState(cached.current?.selectedId || defaultArtifact?.id || "");
     const selected = artifacts.find((item) => item.id === selectedId) || defaultArtifact;
-    const adopted = latestDramaWorkflowArtifact(project, stage, scope, "adopted");
+    const selectedSkill = selected && "skill" in selected.data ? selected.data.skill : undefined;
+    const adopted = latestDramaWorkflowArtifact(project, stage, scope, "adopted", targetIntent);
     const [instructions, setInstructions] = useState(cached.current?.instructions || "");
     const [busy, setBusy] = useState<WorkflowAction | null>(null);
     const actionDisabled = Boolean(busy) || pipelineBusy;
     const [dirty, setDirty] = useState(Boolean(cached.current));
-    const [editing, setEditing] = useState(!analysisStage || Boolean(cached.current));
+    const [editing, setEditing] = useState(Boolean(cached.current));
     const edits = useRef(0);
     const active = useRef(true);
+    const running = useRef(false);
     const initialValues = useRef(cached.current?.data || selected?.data || defaultValues(project, episode, stage));
     const isStale = selected && dramaWorkflowArtifactIsStale(project, selected);
     const adoptedIsStale = adopted && dramaWorkflowArtifactIsStale(project, adopted);
@@ -92,19 +97,21 @@ export function DramaWorkflowPanel({
         form.setFieldsValue(artifact.data);
         setSelectedId(artifact.id);
         markDirty(false);
-        if (analysisStage) setEditing(false);
+        setEditing(false);
     };
     const run = async (action: WorkflowAction) => {
-        if (actionDisabled) return;
+        if (actionDisabled || running.current) return;
         const generates = action === "analyze" || action === "generate";
         if (generates && !textModelReady) return message.warning("请先选择可用的文本模型");
+        running.current = true;
         setBusy(action);
         if (generates) onAnalysisBusyChange?.(true);
         if (action === "adopt") onAdoptingChange(true);
         const editRevision = edits.current;
         const hadEdits = dirty;
-        const intent = action === "analyze" ? "analysis" : selected?.intent;
-        const data = action === "save" || action === "generate" ? form.getFieldsValue(true) : undefined;
+        const intent = action === "analyze" ? "analysis" : action === "generate" ? targetIntent : selected?.intent || targetIntent;
+        const formData = form.getFieldsValue(true);
+        const data = action === "save" || (action === "generate" && dirty) ? { ...selected?.data, ...formData, ...(selectedSkill ? { skill: { ...selectedSkill, ...formData.skill } } : {}) } : undefined;
         try {
             const store = useDramaStore.getState();
             const snapshot = await store.flushProject(project.id);
@@ -133,11 +140,12 @@ export function DramaWorkflowPanel({
             if (active.current) {
                 const keepEdits = editRevision !== edits.current || (hadEdits && (action === "analyze" || action === "generate"));
                 if (!keepEdits) showArtifact(result.artifact);
-                message.success(keepEdits ? "新结果已保存到历史列表，当前编辑内容已保留" : result.artifact.status === "adopted" ? "分析结果已保存并应用" : result.artifact.intent === "analysis" ? "分析结果已保存，原稿有变化，请复核后再应用" : "候选稿已保存，请检查后采用");
+                message.success(keepEdits ? "新结果已保存到历史列表，当前编辑内容已保留" : result.artifact.status === "adopted" ? "结果已保存并应用" : result.artifact.intent === "analysis" ? "分析结果已保存，原稿有变化，请复核后再应用" : "完整候选稿已保存，请检查后采用");
             }
         } catch (error) {
             message.error(error instanceof Error ? error.message : "分析操作失败");
         } finally {
+            running.current = false;
             if (active.current) setBusy(null);
             if (generates) onAnalysisBusyChange?.(false);
             if (action === "adopt") onAdoptingChange(false);
@@ -152,9 +160,9 @@ export function DramaWorkflowPanel({
                     <p className="mt-1 text-sm text-muted-foreground">{descriptions[stage]}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                    <Tag color={adopted ? (adoptedIsStale ? "orange" : "green") : "default"}>{adopted ? (adoptedIsStale ? `已应用 v${adopted.version} · 待复核` : `已应用 v${adopted.version}`) : "尚无分析结果"}</Tag>
-                    <Button icon={<Sparkles className="size-4" />} loading={busy === "analyze" || busy === "generate"} disabled={actionDisabled || !textModelReady || (analysisStage && !hasScript)} onClick={() => void run(analysisStage ? "analyze" : "generate")}>
-                        {analysisStage ? selected ? "AI 重新分析" : "AI 分析这一阶段" : "AI 生成候选稿"}
+                    <Tag color={adopted ? (adoptedIsStale ? "orange" : "green") : "default"}>{adopted ? (adoptedIsStale ? `已应用 v${adopted.version} · 待复核` : `已应用 v${adopted.version}`) : "尚无采用稿"}</Tag>
+                    <Button icon={<Sparkles className="size-4" />} loading={busy === "analyze" || busy === "generate"} disabled={actionDisabled || !textModelReady || !hasScript} onClick={() => void run(analysisStage ? "analyze" : "generate")}>
+                        {analysisStage ? selected ? "AI 重新分析" : "AI 分析这一阶段" : "按 Skill 生成完整候选稿"}
                     </Button>
                 </div>
             </div>
@@ -165,10 +173,10 @@ export function DramaWorkflowPanel({
                     <div className="flex flex-wrap items-center gap-2">
                         <Select
                             className="min-w-52 flex-1"
-                            aria-label="分析历史"
+                            aria-label="创作与分析历史"
                             value={selected.id}
                             disabled={Boolean(busy)}
-                            options={artifacts.map((item) => ({ value: item.id, label: `v${item.version} · ${item.source === "ai" ? "AI" : "手动修订"} · ${item.status === "adopted" ? "已应用" : "待确认"}${dramaWorkflowArtifactIsStale(project, item) ? " · 待复核" : ""}` }))}
+                            options={artifacts.map((item) => ({ value: item.id, label: `v${item.version} · ${item.intent === "analysis" ? "原稿分析" : "skill" in item.data && item.data.skill ? "Skill 创作" : "旧创作稿"} · ${item.source === "ai" ? "AI" : "手动修订"} · ${item.status === "adopted" ? "已应用" : "待确认"}${dramaWorkflowArtifactIsStale(project, item) ? " · 待复核" : ""}` }))}
                             onChange={(id) => {
                                 if (dirty && !window.confirm("当前编辑尚未保存，确定切换分析结果？")) return;
                                 const artifact = artifacts.find((item) => item.id === id);
@@ -176,18 +184,19 @@ export function DramaWorkflowPanel({
                             }}
                         />
                         {dirty ? <Tag color="blue">编辑尚未保存</Tag> : null}
-                        {!editing ? <Button icon={<Pencil className="size-4" />} disabled={Boolean(busy)} onClick={() => { form.resetFields(); form.setFieldsValue(selected.data); setEditing(true); }}>编辑分析结果</Button> : null}
-                        {selected.status !== "adopted" ? <Button type="primary" loading={busy === "adopt"} disabled={actionDisabled || Boolean(isStale) || dirty} onClick={() => void run("adopt")}>应用此结果</Button> : null}
+                        {!editing ? <Button icon={<Pencil className="size-4" />} disabled={actionDisabled} onClick={() => { form.resetFields(); form.setFieldsValue(selected.data); setEditing(true); }}>高级修订</Button> : null}
+                        {selected.status !== "adopted" && (selected.intent || "creation") === targetIntent ? <Button type="primary" loading={busy === "adopt"} disabled={actionDisabled || Boolean(isStale) || dirty} onClick={() => void run("adopt")}>采用此结果</Button> : null}
                     </div>
+                    {!analysisStage && (selected.intent === "analysis" || !selectedSkill) ? <Alert type="info" showIcon title="这是旧版结果" description="可保留对照；点击按 Skill 生成完整候选稿，获取完整创作报告。" /> : null}
                     {!editing ? <DramaWorkflowResult artifact={selected} /> : null}
                 </>
-            ) : analysisStage ? (
+            ) : (
                 <div className="rounded-md bg-muted/30 px-4 py-8 text-center" data-drama-analysis-empty>
-                    <p className="text-sm font-medium">分析完成后，这里会展示{labels[stage]}结果</p>
-                    <p className="mt-2 text-sm text-muted-foreground">先提供剧本，AI 会自动提取，无需逐项填写。</p>
-                    <Button className="mt-4" icon={<ArrowRight className="size-4" />} onClick={() => onStageChange("script")}>返回剧本开始分析</Button>
+                    <p className="text-sm font-medium">完成后，这里会展示{labels[stage]}完整结果</p>
+                    <p className="mt-2 text-sm text-muted-foreground">提供原稿后即可让 AI 执行，无需逐项填写。每一步可审阅、修订和采用。</p>
+                    <Button className="mt-4" icon={<ArrowRight className="size-4" />} onClick={() => onStageChange("script")}>返回原稿</Button>
                 </div>
-            ) : null}
+            )}
             <div hidden={!editing}>
                 <Form
                     form={form}
@@ -200,11 +209,13 @@ export function DramaWorkflowPanel({
                         draftCache.set(cacheKey, { data: form.getFieldsValue(true), selectedId: selected?.id || "", instructions });
                     }}
                 >
-                    <WorkflowFields stage={stage} analysis={selected?.intent === "analysis"} />
+                    {selectedSkill ? <Form.Item name={["skill", "document"]} label="完整 Skill 报告"><Input.TextArea aria-label="完整 Skill 报告" autoSize={{ minRows: 12, maxRows: 30 }} /></Form.Item> : null}
+                    {stage === "script" && selected?.stage === "script" && selected.data.screenplay ? <Form.Item name="screenplay" label="改编剧本正文"><Input.TextArea aria-label="改编剧本正文" autoSize={{ minRows: 12, maxRows: 30 }} /></Form.Item> : null}
+                    <details><summary className="mb-3 cursor-pointer text-sm">高级结构字段（可选）</summary><WorkflowFields stage={stage} analysis={selected?.intent === "analysis"} /></details>
                 </Form>
                 <div className="mt-3 flex flex-wrap gap-2">
                     <Button type="primary" loading={busy === "save"} disabled={actionDisabled} onClick={() => void run("save")}>{selected?.intent === "analysis" ? "保存修订" : "保存为新候选"}</Button>
-                    {analysisStage ? <Button disabled={Boolean(busy)} onClick={() => { if (dirty && !window.confirm("当前修订尚未保存，确定放弃修订？")) return; if (selected) showArtifact(selected); else { markDirty(false); setEditing(false); } }}>取消编辑</Button> : null}
+                    <Button disabled={actionDisabled} onClick={() => { if (dirty && !window.confirm("当前修订尚未保存，确定放弃修订？")) return; if (selected) showArtifact(selected); else { markDirty(false); setEditing(false); } }}>取消编辑</Button>
                 </div>
             </div>
             <details className="border-t border-border pt-3">
@@ -223,7 +234,7 @@ export function DramaWorkflowPanel({
                     placeholder={analysisStage ? "例如：重点梳理人物之间的利益关系，原稿没有明确的信息请标注。" : "例如：保留结尾，只加强第二场冲突。"}
                 />
             </details>
-            {selected && !editing ? <Button type="text" icon={<ArrowRight className="size-4" />} disabled={Boolean(busy)} onClick={() => onStageChange("script")}>返回剧本</Button> : null}
+            {selected && !editing ? <div className="flex flex-wrap gap-2"><Button type="text" disabled={actionDisabled} onClick={() => onStageChange("script")}>返回原稿</Button>{adopted && !adoptedIsStale ? <Button icon={<ArrowRight className="size-4" />} disabled={actionDisabled} onClick={() => stage === "script" && onContinue ? onContinue() : onStageChange(stage === "story" ? "characters" : stage === "characters" ? "beats" : stage === "beats" ? "adapted-script" : "storyboard")}>{stage === "script" ? "继续生成分镜与提示词" : "查看下一阶段"}</Button> : null}</div> : null}
         </div>
     );
 }

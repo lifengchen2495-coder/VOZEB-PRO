@@ -1,3 +1,4 @@
+import { readLongOperationResponse } from "@/services/api/long-operation-response";
 import { normalizeRemakeVideoPromptInstructions } from "@/lib/remake60-video-prompt-instructions";
 
 import {
@@ -55,8 +56,9 @@ function messageFromEnvelope(value: unknown, fallback: string) {
 }
 
 async function requestPayload(url: string, init?: RequestInit) {
-    const response = await fetch(url, { cache: "no-store", ...init });
-    const payload = (await response.json().catch(() => ({}))) as ApiEnvelope;
+    const received = await fetch(url, { cache: "no-store", ...init });
+    const response = await readLongOperationResponse(received);
+    const payload = response.payload as ApiEnvelope;
     if (!response.ok) {
         const fallback = response.status >= 500 ? `复刻工作区服务暂时不可用（HTTP ${response.status}），请稍后重试` : "复刻工作区请求失败";
         const message = messageFromEnvelope(payload, fallback);
@@ -82,7 +84,7 @@ export async function getRemakeProject(id: string): Promise<RemakeProject> {
 }
 
 export async function mergeRemakeVideos(id: string, revision: number) {
-    return projectFromPayload(await requestPayload(`/api/remake60/projects/${encodeURIComponent(id)}/merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision }) }));
+    return projectFromPayload(await requestPayload(`/api/remake60/projects/${encodeURIComponent(id)}/merge`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "text/event-stream" }, body: JSON.stringify({ revision }) }));
 }
 
 export async function createRemakeProject(input: { title: string; sourceCopy?: string; copyStrategy?: RemakeCopyStrategy; voice?: RemakeVoice }): Promise<RemakeProject> {
@@ -124,7 +126,7 @@ export async function buildRemakeProduction(id: string, revision: number, groupI
     return projectFromPayload(
         await requestPayload(`/api/remake60/projects/${encodeURIComponent(id)}/production`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
             body: JSON.stringify({ revision, groupId, inputVersion }),
         }),
     );
@@ -133,7 +135,7 @@ export async function buildRemakeProduction(id: string, revision: number, groupI
 export async function buildRemakeProductScript(id: string, revision: number): Promise<RemakeProject> {
     return projectFromPayload(await requestPayload(`/api/remake60/projects/${encodeURIComponent(id)}/product-script`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ revision }),
     }));
 }

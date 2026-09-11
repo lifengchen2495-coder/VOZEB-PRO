@@ -774,6 +774,10 @@ function responseHeaders(headers: Headers, pointsResult?: Awaited<ReturnType<typ
         const value = headers.get(key);
         if (value) nextHeaders.set(key, value);
     });
+    if (/event-stream/i.test(headers.get("content-type") || "")) {
+        nextHeaders.set("x-accel-buffering", "no");
+        nextHeaders.set("cache-control", "no-cache, no-transform");
+    }
     if (upstreamUrl) nextHeaders.set("x-vozeb-pro-upstream-url", upstreamUrl);
     if (pointsResult) {
         nextHeaders.set("x-vozeb-pro-points-cost", String(pointsResult.cost));
