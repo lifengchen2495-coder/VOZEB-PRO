@@ -145,6 +145,7 @@ export type RemakeImageGeneration = {
     status: RemakeWorkStatus;
     taskId?: string;
     attemptNo?: number;
+    needsReview?: boolean;
     model?: string;
     prompt: string;
     result?: RemakeMediaAsset;
@@ -467,6 +468,8 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
     return REMAKE_RANGE_GROUP_DEFINITIONS.map((definition) => {
         const previous = fallbackByOrdinal.get(definition.ordinal) || emptyGroups[definition.ordinal - 1];
         const source = incomingByOrdinal.get(definition.ordinal) || {};
+        const replacementSource = object(source.replacementGeneration);
+        const previousReplacement = previous.replacementGeneration;
         const generationSource = object(source.imageGeneration);
         const videoGenerationSource = object(source.videoGeneration);
         const previousGeneration = previous.imageGeneration;
@@ -476,11 +479,21 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
             ordinal: definition.ordinal,
             frameOrdinals: frameOrdinalRange(definition.startFrame, definition.endFrame),
             sourceContactSheet: hasOwn(source, "sourceContactSheet") ? normalizeRemakeMediaAsset(source.sourceContactSheet) : previous.sourceContactSheet,
-            replacementGeneration: { status: "idle", prompt: "" },
+            replacementGeneration: {
+                status: normalizeWorkStatus(replacementSource.status) || previousReplacement.status,
+                taskId: hasOwn(replacementSource, "taskId") ? cleanText(replacementSource.taskId, 300) || undefined : previousReplacement.taskId,
+                attemptNo: hasOwn(replacementSource, "attemptNo") ? optionalNonNegativeInteger(replacementSource.attemptNo) : previousReplacement.attemptNo,
+                needsReview: hasOwn(replacementSource, "needsReview") ? replacementSource.needsReview === true : previousReplacement.needsReview,
+                model: hasOwn(replacementSource, "model") ? cleanText(replacementSource.model, 300) || undefined : previousReplacement.model,
+                prompt: hasOwn(replacementSource, "prompt") ? cleanText(replacementSource.prompt, 100_000) : previousReplacement.prompt,
+                result: hasOwn(replacementSource, "result") ? normalizeRemakeMediaAsset(replacementSource.result) : previousReplacement.result,
+                error: hasOwn(replacementSource, "error") ? cleanText(replacementSource.error, 1_000) || undefined : previousReplacement.error,
+            },
             imageGeneration: {
                 status: normalizeWorkStatus(generationSource.status) || previousGeneration.status,
                 taskId: hasOwn(generationSource, "taskId") ? cleanText(generationSource.taskId, 300) || undefined : previousGeneration.taskId,
                 attemptNo: hasOwn(generationSource, "attemptNo") ? optionalNonNegativeInteger(generationSource.attemptNo) : previousGeneration.attemptNo,
+                needsReview: hasOwn(generationSource, "needsReview") ? generationSource.needsReview === true : previousGeneration.needsReview,
                 model: hasOwn(generationSource, "model") ? cleanText(generationSource.model, 300) || undefined : previousGeneration.model,
                 prompt: hasOwn(generationSource, "prompt") ? cleanText(generationSource.prompt, 100_000) : previousGeneration.prompt,
                 result: hasOwn(generationSource, "result") ? normalizeRemakeMediaAsset(generationSource.result) : previousGeneration.result,
@@ -591,6 +604,14 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
     const timestampFallback = frames.length === REMAKE_FRAME_COUNT ? frames.map((frame) => frame.time) : [];
     const timestamps = normalizeRemakeTimestamps(project.analysis.timestamps);
     const pipelineFallback = defaultRemakePipeline({ hasSourceVideo: Boolean(project.sourceVideo?.url), analysisStatus: project.analysis.status });
+    const groups = normalizeRemakeRangeGroups(project.groups);
+    const pipeline = normalizeRemakePipeline(project.pipeline, pipelineFallback);
+    const imagesReady = groups.every((group) => group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+    if (!imagesReady) {
+        pipeline.steps.images.status = groups.some((group) => group.replacementGeneration.status === "error" || group.imageGeneration.status === "error") ? "error"
+            : groups.some((group) => [group.replacementGeneration.status, group.imageGeneration.status].some((status) => status === "queued" || status === "running")) ? "running" : "pending";
+        if (["copy", "prompts", "prompts-ready", "ready"].includes(pipeline.stage)) pipeline.stage = "images";
+    }
     return {
         ...project,
         sourceCopy,
@@ -604,10 +625,10 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
             raw: cleanText(project.analysis.raw, 500_000),
             timestamps: timestamps.length ? timestamps : timestampFallback,
         },
-        pipeline: normalizeRemakePipeline(project.pipeline, pipelineFallback),
+        pipeline,
         modelSelection: normalizeRemakeModelSelection(project.modelSelection),
         references: normalizeRemakeReferences(project.references),
-        groups: normalizeRemakeRangeGroups(project.groups),
+        groups,
         copy,
     };
 }

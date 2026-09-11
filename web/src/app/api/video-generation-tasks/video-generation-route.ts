@@ -138,6 +138,9 @@ export async function POST(request: Request) {
                     const project = await fixedRemake.get(user.id, remakeProjectId);
                     const group = project.groups.find((item) => fixedRemake.slotPrefix + item.id === remakeSlotId);
                     if (!group?.videoPrompt.trim()) return NextResponse.json({ error: "请先生成并保存该分组的视频提示词" }, { status: 409 });
+                    if (fixedRemake.projectPrefix === "remake-product-" && (group.replacementGeneration.status !== "completed" || !group.replacementGeneration.result?.url || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url)) {
+                        return NextResponse.json({ error: "请先完成该分组的原产品去除和新产品放入，再生成视频" }, { status: 409 });
+                    }
                     if (requestedPrompt !== group.videoPrompt) return NextResponse.json({ error: "复刻视频提示词与已保存原文不一致，请刷新项目后重试" }, { status: 409 });
                     prompt = group.videoPrompt;
                     workflowDuration = 15;

@@ -53,7 +53,8 @@ import {
 } from "@/lib/server/remake-product-project-contract";
 import { collectLocalMediaStorageKeys } from "@/lib/server/local-media-references";
 import { localMediaStorageKeyFromValue } from "@/lib/server/local-media-references";
-import { remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-product-image-prompt";
+import { remakeReplacementPrompt, remakeReplacementPromptReferences, remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-product-image-prompt";
+import { resolveRemakeActiveImageTaskState } from "./remake-image-task-state";
 import type { ImageTask } from "@/lib/server/image-task-store";
 import { getStoredGenerationTaskRecord } from "@/lib/server/generation-task-store";
 import { createRemakeAnalysisTask, failRemakeAnalysisTask, findActiveRemakeAnalysisTask, getRemakeAnalysisTask, queueRemakeAnalysisTask, type RemakeAnalysisTask } from "@/lib/server/remake-product-analysis-task-store";
@@ -172,7 +173,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     let groups = sourceChanged
         ? emptyRemakeRangeGroups()
         : referencesChanged || imageModelChanged || productInfoChanged || hasOwn(input, "frames")
-          ? invalidateRemakeImages(current.groups)
+          ? invalidateRemakeImages(current.groups, referencesChanged || productInfoChanged ? !imageModelChanged && !hasOwn(input, "frames") : false)
           : hasOwn(input, "groups")
             ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, modelSelection, productInfo })
             : current.groups;
@@ -413,7 +414,7 @@ export async function completeRemakeProductionForUser(userId: string, id: string
         const noNarration = isRemakeNoNarrationCopy(normalized.sourceCopy);
         const copyReady = copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));
         if (!copyReady) throw new RemakeProjectServiceError(noNarration ? "无口播视频的 16 个语义文案区间必须保持为空" : "16 个语义文案区间存在空内容", 409);
-        const imagesReady = groups.every((group) => group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result));
+        const imagesReady = groups.every((group) => group.replacementGeneration.status === "completed" && Boolean(group.replacementGeneration.result) && group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result));
         const stage = promptsReady ? (imagesReady ? "ready" : "prompts-ready") : "prompts";
         let pipeline = withPipelineStep(normalized.pipeline, "copy", "completed", stage, copy.taskId);
         pipeline = withPipelineStep(pipeline, "prompts", promptsReady ? "completed" : "pending", stage);
@@ -430,11 +431,19 @@ export async function assertRemakeImageGenerationsForUser(userId: string, projec
     if (project.groups.length !== 4) throw new RemakeProjectServiceError("四组十二宫格生图任务不完整", 409);
     await Promise.all(
         project.groups.map(async (group) => {
+            if (group.replacementGeneration.status !== "completed" || !group.replacementGeneration.taskId || !group.replacementGeneration.result) throw new RemakeProjectServiceError(`分镜 ${group.id} 的去产品十二宫格尚未由有效任务完成`, 409);
+            const replacement = await authoritativeRemakeImageGeneration({
+                userId, projectId: project.id, group, references: project.references, frames: project.frames, productInfo: project.productInfo,
+                requested: group.replacementGeneration, stage: "replacement", selectedModel: project.modelSelection.image,
+            });
+            if (replacement.status !== "completed" || mediaIdentity(replacement.result?.url) !== mediaIdentity(group.replacementGeneration.result.url)) {
+                throw new RemakeProjectServiceError(`分镜 ${group.id} 的去产品结果与生成任务不一致`, 409);
+            }
             if (group.imageGeneration.status !== "completed" || !group.imageGeneration.taskId || !group.imageGeneration.result) throw new RemakeProjectServiceError(`分镜 ${group.id} 的最终十二宫格尚未由有效任务完成`, 409);
             const authoritative = await authoritativeRemakeImageGeneration({
                 userId,
                 projectId: project.id,
-                group,
+                group: { ...group, replacementGeneration: replacement },
                 references: project.references,
                 frames: project.frames,
                 productInfo: project.productInfo,
@@ -466,24 +475,35 @@ async function normalizeEditableRemakeGroups(input: {
             const sourceContactSheet = previous.sourceContactSheet;
             const expectedGroup = { ...group, sourceContactSheet };
             const videoPrompt = group.videoPrompt ? previous.videoPrompt : "";
-            const imageGeneration = await authoritativeRemakeImageGeneration({
+            const replacementGeneration = await authoritativeRemakeImageGeneration({
                 userId: input.userId, projectId: input.projectId, group: expectedGroup,
                 references: input.references, frames: input.frames, productInfo: input.productInfo,
-                requested: group.imageGeneration, previous: previous.imageGeneration,
-                stage: "storyboard", selectedModel: input.modelSelection.image,
+                requested: group.replacementGeneration, previous: previous.replacementGeneration,
+                stage: "replacement", selectedModel: input.modelSelection.image,
             });
-            const stablePrompt = imageGeneration.status === "completed" ? videoPrompt : "";
+            // 历史单步任务只允许继续核查原任务，不计入两步完成条件。
+            const legacyStoryboard = replacementGeneration.status !== "completed" && previous.imageGeneration.prompt.startsWith("# 十二宫格换品重绘：保留原人物")
+                && group.imageGeneration.prompt === previous.imageGeneration.prompt && group.imageGeneration.taskId === previous.imageGeneration.taskId;
+            const imageGeneration = replacementGeneration.status === "completed" || legacyStoryboard
+                ? await authoritativeRemakeImageGeneration({
+                    userId: input.userId, projectId: input.projectId, group: { ...expectedGroup, replacementGeneration },
+                    references: input.references, frames: input.frames, productInfo: input.productInfo,
+                    requested: group.imageGeneration, previous: previous.imageGeneration,
+                    stage: "storyboard", selectedModel: input.modelSelection.image, legacyStoryboard,
+                })
+                : { status: "idle" as const, prompt: "" };
+            const stablePrompt = replacementGeneration.status === "completed" && imageGeneration.status === "completed" ? videoPrompt : "";
             const videoGeneration =
                 stablePrompt && group.videoGeneration.status !== "idle"
                     ? await authoritativeRemakeVideoGeneration({
                           userId: input.userId,
                           projectId: input.projectId,
-                          group: { ...expectedGroup, imageGeneration, videoPrompt: stablePrompt },
+                          group: { ...expectedGroup, replacementGeneration, imageGeneration, videoPrompt: stablePrompt },
                           requested: group.videoGeneration,
                           selectedModel: input.modelSelection.video,
                       })
                     : { status: "idle" as const };
-            return { ...expectedGroup, imageGeneration, videoPrompt: stablePrompt, videoGeneration };
+            return { ...expectedGroup, replacementGeneration, imageGeneration, videoPrompt: stablePrompt, videoGeneration };
         }),
     );
 }
@@ -496,11 +516,12 @@ async function authoritativeRemakeImageGeneration(input: {
     frames: RemakeFrame[];
     requested: RemakeRangeGroup["imageGeneration"];
     previous?: RemakeRangeGroup["imageGeneration"];
-    stage: "storyboard";
+    stage: "replacement" | "storyboard";
     selectedModel: string;
     productInfo: string;
+    legacyStoryboard?: boolean;
 }): Promise<RemakeRangeGroup["imageGeneration"]> {
-    const prompt = canonicalRemakeImagePrompt(input.stage, input.group, input.references, input.frames, input.productInfo);
+    const prompt = input.legacyStoryboard ? input.previous?.prompt : canonicalRemakeImagePrompt(input.stage, input.group, input.references, input.frames, input.productInfo);
     if (input.requested.status === "idle") return { status: "idle", prompt: "", attemptNo: input.requested.attemptNo };
     if (!prompt || input.requested.prompt !== prompt) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的生图提示词与当前参考素材不一致`, 409);
     const requestedAttempt = input.requested.attemptNo ?? 0;
@@ -508,7 +529,7 @@ async function authoritativeRemakeImageGeneration(input: {
     if (requestedAttempt < minimumAttempt) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务已开始新一次生成，请刷新后重试`, 409);
     if (!input.requested.taskId) {
         if (input.requested.status === "queued") return { status: "queued", model: input.requested.model || input.selectedModel || undefined, prompt, attemptNo: requestedAttempt };
-        if (input.requested.status === "error") return { status: "error", model: input.requested.model || input.selectedModel || undefined, prompt, attemptNo: requestedAttempt, error: input.requested.error || "图片任务创建失败" };
+        if (input.requested.status === "error") return { status: "error", model: input.requested.model || input.selectedModel || undefined, prompt, attemptNo: requestedAttempt, needsReview: input.requested.needsReview, error: input.requested.error || "图片任务创建失败" };
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务标识缺失`, 409);
     }
     const taskRecord = await getStoredGenerationTaskRecord("image", input.requested.taskId);
@@ -524,10 +545,10 @@ async function authoritativeRemakeImageGeneration(input: {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的十二宫格必须由 9:16 图片编辑任务生成`, 409);
     }
     const taskModel = task.config.logicalModel || task.config.model;
-    if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references)) {
+    if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references, input.legacyStoryboard)) {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务输入与当前参考素材不一致`, 409);
     }
-    if (task.status === "pending" || task.status === "running") return { status: "running", taskId: task.id, model: taskModel, prompt, attemptNo };
+    if (task.status === "pending" || task.status === "running") return { ...resolveRemakeActiveImageTaskState({ taskId: task.id, requested: input.requested, execution: taskRecord || undefined }), taskId: task.id, model: taskModel, prompt, attemptNo };
     if (task.status === "error" || task.status === "cancelled") return { status: "error", taskId: task.id, model: taskModel, prompt, attemptNo, error: task.error || (task.status === "cancelled" ? "图片任务已取消" : "图片生成失败") };
     if (task.status !== "success") throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务状态无效`, 409);
     const result = authoritativeImageAsset(task, `${input.group.id}-${input.stage}`);
@@ -553,27 +574,30 @@ function authoritativeImageAsset(task: ImageTask, groupId: string): RemakeMediaA
     };
 }
 
-function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences) {
-    const expected = remakeStoryboardPromptReferences({ sourceContactSheet: group.sourceContactSheet, product: references.product }).map((reference) => reference.asset.url!);
+function sameRemakeTaskReferences(task: ImageTask, stage: "replacement" | "storyboard", group: RemakeRangeGroup, references: RemakeReferences, legacyStoryboard = false) {
+    const expected = legacyStoryboard ? [group.sourceContactSheet?.url, references.product?.url].filter((url): url is string => Boolean(url))
+        : (stage === "replacement" ? remakeReplacementPromptReferences({ sourceContactSheet: group.sourceContactSheet })
+            : remakeStoryboardPromptReferences({ replacementContactSheet: group.replacementGeneration.result, product: references.product })).map((reference) => reference.asset.url!);
     const actual = task.references.map((reference) => reference.serverUrl || reference.remoteUrl || reference.url || reference.dataUrl);
     return actual.length === expected.length && expected.every((value, index) => mediaIdentity(value) === mediaIdentity(actual[index]));
 }
 
-function canonicalRemakeImagePrompt(_stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[], productInfo: string) {
-    return productInfo.trim() && group.sourceContactSheet?.url && references.product?.url ? remakeStoryboardPrompt(group.id, frames, productInfo) : "";
+function canonicalRemakeImagePrompt(stage: "replacement" | "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[], productInfo: string) {
+    if (stage === "replacement") return group.sourceContactSheet?.url ? remakeReplacementPrompt(group.id, frames) : "";
+    return productInfo.trim() && group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && references.product?.url ? remakeStoryboardPrompt(group.id, frames, productInfo) : "";
 }
 
-function invalidateRemakeImages(groups: RemakeRangeGroup[]) {
+function invalidateRemakeImages(groups: RemakeRangeGroup[], preserveReplacement = false) {
     return normalizeRemakeRangeGroups(groups).map((group) => ({
         ...group,
-        replacementGeneration: { status: "idle" as const, prompt: "" },
+        replacementGeneration: preserveReplacement ? group.replacementGeneration : { status: "idle" as const, prompt: "" },
         imageGeneration: { status: "idle" as const, prompt: "" },
         videoPrompt: "",
         videoGeneration: { status: "idle" as const },
     }));
 }
 
-function remakeImageGenerationSlotId(stage: "storyboard", groupId: string) {
+function remakeImageGenerationSlotId(stage: "replacement" | "storyboard", groupId: string) {
     return `remake-product:${groupId}:${stage}`;
 }
 
@@ -628,12 +652,12 @@ function deriveRemakePipeline(input: {
     const imagesReady =
         input.groups.length === 4 &&
         input.groups.every(
-            (group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url,
+            (group) => group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url,
         );
     const imageActive = input.groups.some(
-        (group) => group.imageGeneration.status === "queued" || group.imageGeneration.status === "running",
+        (group) => group.replacementGeneration.status === "queued" || group.replacementGeneration.status === "running" || group.imageGeneration.status === "queued" || group.imageGeneration.status === "running",
     );
-    const imageError = input.groups.some((group) => group.imageGeneration.status === "error");
+    const imageError = input.groups.some((group) => group.replacementGeneration.status === "error" || group.imageGeneration.status === "error");
     const noNarration = isRemakeNoNarrationCopy(input.sourceCopy);
     const copyReady =
         input.copy.status === "completed" && input.copyBlocks.length === REMAKE_COPY_BLOCK_COUNT && input.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));

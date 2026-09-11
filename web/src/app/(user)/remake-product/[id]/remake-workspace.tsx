@@ -16,7 +16,7 @@ import { RemakeProductionStage } from "./remake-production-stage";
 import { remakeImagesReady, remakeProductionReady } from "./remake-production-utils";
 import { RemakeSourcePanel } from "./remake-source-panel";
 import { RemakeUnitEditor } from "./remake-unit-editor";
-import { editRemakeCopyBlock, hasRemakePatch, invalidateRemakeProduction, invalidateRemakeImages, isRemakeAnalysisActive, mergeEditablePatch, mergeRemakeConcurrentResult, mergeRemakeVideoProgress, remakeVideoInputVersion, rebaseRemakeConflict, recoveredFlowStage, type RemakePendingVideoProgress, type RemakeWorkspacePatch } from "./remake-workspace-state";
+import { editRemakeCopyBlock, hasRemakePatch, invalidateRemakeProduction, invalidateRemakeImages, invalidateRemakeStoryboard, isRemakeAnalysisActive, mergeEditablePatch, mergeRemakeConcurrentResult, mergeRemakeVideoProgress, remakeVideoInputVersion, rebaseRemakeConflict, recoveredFlowStage, type RemakePendingVideoProgress, type RemakeWorkspacePatch } from "./remake-workspace-state";
 
 type SaveState = "saved" | "pending" | "saving" | "error" | "conflict";
 type ConflictState = { local: RemakeProject; remote: RemakeProject; dirty: RemakeWorkspacePatch };
@@ -310,14 +310,7 @@ export function RemakeWorkspace() {
             const current = projectRef.current;
             if (!current) return;
             const references = { ...current.references, [key]: asset };
-            const groups = current.groups.map((group) => ({
-                ...group,
-                replacementGeneration: { status: "idle" as const, taskId: null, model: null, prompt: "", result: null, error: null },
-                imageGeneration: { status: "idle" as const, taskId: null, model: null, prompt: "", result: null, error: null },
-                videoPrompt: "",
-                videoGeneration: { status: "idle" as const, taskId: null, model: null, result: null, error: null },
-            }));
-            queuePatch({ references, groups });
+            queuePatch(invalidateRemakeStoryboard(current, { references }));
         },
         [queuePatch],
     );
@@ -325,7 +318,7 @@ export function RemakeWorkspace() {
     const updateProduct = useCallback((patch: Pick<RemakeWorkspacePatch, "productInfo">) => {
         const current = projectRef.current;
         if (!current || editingLockedRef.current) return;
-        queuePatch(invalidateRemakeImages(current, patch));
+        queuePatch(invalidateRemakeStoryboard(current, patch));
     }, [queuePatch]);
 
     const updateGroup = useCallback(
@@ -339,6 +332,7 @@ export function RemakeWorkspace() {
                     ? {
                           ...group,
                           ...patch,
+                          replacementGeneration: patch.replacementGeneration ? { ...group.replacementGeneration, ...patch.replacementGeneration } : group.replacementGeneration,
                           imageGeneration: patch.imageGeneration ? { ...group.imageGeneration, ...patch.imageGeneration } : group.imageGeneration,
                           videoGeneration: patch.videoGeneration ? { ...group.videoGeneration, ...patch.videoGeneration } : group.videoGeneration,
                       }

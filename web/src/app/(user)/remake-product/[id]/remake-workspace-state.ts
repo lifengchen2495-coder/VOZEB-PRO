@@ -49,7 +49,7 @@ export function mergeRemakeConcurrentResult(incoming: RemakeProject, current: Re
 
 export type RemakeImageTaskSnapshot = {
     groupId: string;
-    stage: "storyboard";
+    stage: "replacement" | "storyboard";
     slotId: string;
     taskId: string;
     inputVersion: string;
@@ -172,6 +172,13 @@ export function invalidateRemakeImages(project: RemakeProject, patch: RemakeWork
     };
 }
 
+export function invalidateRemakeStoryboard(project: RemakeProject, patch: RemakeWorkspacePatch): RemakeWorkspacePatch {
+    return {
+        ...patch,
+        groups: (patch.groups || project.groups).map((group) => ({ ...group, imageGeneration: { status: "idle", prompt: "" }, videoPrompt: "", videoGeneration: { status: "idle" } })),
+    };
+}
+
 export function isRemakeCopyPlanReady(project: Pick<RemakeProject, "sourceCopy" | "copy" | "copyBlocks">) {
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     return (
@@ -224,15 +231,17 @@ export function remakeReferenceVersion(references: RemakeReferenceAssets) {
     return JSON.stringify([assetIdentity(references.product)]);
 }
 
-export function remakeGroupInputVersion(group: RemakeRangeGroup, references: RemakeReferenceAssets, stage: "storyboard" = "storyboard", productInfo = "") {
-    return JSON.stringify([productInfo, stage, assetIdentity(group.sourceContactSheet), remakeReferenceVersion(references)]);
+export function remakeGroupInputVersion(group: RemakeRangeGroup, references: RemakeReferenceAssets, stage: "replacement" | "storyboard" = "storyboard", productInfo = "") {
+    return stage === "replacement"
+        ? JSON.stringify([stage, assetIdentity(group.sourceContactSheet)])
+        : JSON.stringify([stage, assetIdentity(group.sourceContactSheet), assetIdentity(group.replacementGeneration.result || undefined), group.replacementGeneration.taskId || "", group.replacementGeneration.attemptNo ?? 0, productInfo, remakeReferenceVersion(references)]);
 }
 
 export function remakeImageClientRequestId(
     projectId: string,
     group: RemakeRangeGroup,
     references: RemakeReferenceAssets,
-    stage: "storyboard",
+    stage: "replacement" | "storyboard",
     request: { model: string; prompt: string; quality?: string },
 ) {
     // 模型、提示词和画质改变后属于新请求，不能复用旧输入的失败或成功任务。
@@ -240,17 +249,17 @@ export function remakeImageClientRequestId(
     return `remake-product-image:${group.id}:${stage}:${stableTextHash(identity)}`;
 }
 
-export function remakeImageGenerationSlotId(groupId: string, stage: "storyboard" = "storyboard") {
+export function remakeImageGenerationSlotId(groupId: string, stage: "replacement" | "storyboard" = "storyboard") {
     return `remake-product:${groupId}:${stage}`;
 }
 
 export function isRemakeImageTaskCurrent(project: Pick<RemakeProject, "groups" | "references" | "productInfo">, snapshot: RemakeImageTaskSnapshot) {
     const group = project.groups.find((item) => item.id === snapshot.groupId);
-    const generation = group?.imageGeneration;
+    const generation = snapshot.stage === "replacement" ? group?.replacementGeneration : group?.imageGeneration;
     return Boolean(group && generation && snapshot.slotId === remakeImageGenerationSlotId(group.id, snapshot.stage) && generation.taskId === snapshot.taskId && remakeGroupInputVersion(group, project.references, snapshot.stage, project.productInfo) === snapshot.inputVersion);
 }
 
-export function isRemakeImageInputCurrent(project: Pick<RemakeProject, "groups" | "references" | "productInfo">, groupId: string, inputVersion: string, stage: "storyboard" = "storyboard") {
+export function isRemakeImageInputCurrent(project: Pick<RemakeProject, "groups" | "references" | "productInfo">, groupId: string, inputVersion: string, stage: "replacement" | "storyboard" = "storyboard") {
     const group = project.groups.find((item) => item.id === groupId);
     return Boolean(group && remakeGroupInputVersion(group, project.references, stage, project.productInfo) === inputVersion);
 }
@@ -301,7 +310,7 @@ function groupTaskIds(group: RemakeRangeGroup) {
 }
 
 function groupImagesReady(group: RemakeRangeGroup) {
-    return Boolean(group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+    return Boolean(group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
 }
 
 function stableTextHash(value: string) {

@@ -9,7 +9,7 @@ import { deleteUserLocalMediaAssets } from "@/lib/server/local-media-storage";
 import { downloadMediaToFile } from "@/lib/server/media-download";
 import { getVideoTask } from "@/lib/server/video-task-store";
 import { normalizeRemakeProjectWorkflow, type HydratedRemakeProject, type RemakeMediaAsset } from "./remake-product-project-contract";
-import { getRemakeProjectForUser, RemakeProjectServiceError } from "./remake-product-project-service";
+import { assertRemakeImageGenerationsForUser, getRemakeProjectForUser, RemakeProjectServiceError } from "./remake-product-project-service";
 import { mutateRemakeProject } from "./remake-product-project-store";
 import { remakeMergeInputVersion } from "./remake-product-merge-contract";
 
@@ -20,6 +20,7 @@ export async function mergeRemakeVideosForUser(input: MergeRequest) {
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
     if (input.expectedRevision !== undefined && project.revision !== input.expectedRevision) throw new RemakeProjectServiceError("项目版本已变化，请刷新后重试", 409);
     assertMergeReady(project);
+    await assertRemakeImageGenerationsForUser(input.userId, project);
     const version = remakeMergeInputVersion(project);
     if (project.mergedVideo?.url && project.mergedVideoInputVersion === version) return project;
     const key = `${input.userId}:${project.id}:${version}`;
@@ -72,6 +73,7 @@ async function mergeAndPersist(input: MergeRequest, project: HydratedRemakeProje
 }
 
 export function assertMergeReady(project: HydratedRemakeProject) {
+    if (project.groups.some((group) => group.replacementGeneration.status !== "completed" || !group.replacementGeneration.result?.url || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url)) throw new RemakeProjectServiceError("请先完成去产品和换品两步生图", 409);
     if (project.groups.length !== 4 || project.groups.some((group, index) => group.ordinal !== index + 1 || group.videoGeneration.status !== "completed" || !group.videoGeneration.taskId || !group.videoGeneration.result?.url)) throw new RemakeProjectServiceError("请先完成四条各 15 秒的视频", 409);
 }
 

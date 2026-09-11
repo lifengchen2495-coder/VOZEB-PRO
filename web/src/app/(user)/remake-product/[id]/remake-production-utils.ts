@@ -1,17 +1,25 @@
 import type { ImageGenerationResult } from "@/services/api/image";
-import { remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-product-image-prompt";
+import { remakeReplacementPrompt, remakeReplacementPromptReferences, remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-product-image-prompt";
 import { parseServerMediaUrl } from "@/services/server-media-storage";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio } from "@/types/media";
 
 import { isRemakeNoNarrationCopy, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets } from "../remake-contract";
 
+export function buildRemakeReplacementPrompt(project: Pick<RemakeProject, "frames">, group: RemakeRangeGroup) {
+    return remakeReplacementPrompt(group.id, project.frames);
+}
+
+export function remakeReplacementReferenceImages(group: RemakeRangeGroup): ReferenceImage[] {
+    return remakeReplacementPromptReferences({ sourceContactSheet: group.sourceContactSheet }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+}
+
 export function buildRemakeImagePrompt(project: Pick<RemakeProject, "frames" | "productInfo">, group: RemakeRangeGroup) {
     return remakeStoryboardPrompt(group.id, project.frames, project.productInfo);
 }
 
 export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
-    return remakeStoryboardPromptReferences({ sourceContactSheet: group.sourceContactSheet, product: references.product }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+    return remakeStoryboardPromptReferences({ replacementContactSheet: group.replacementGeneration.result, product: references.product }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
 }
 
 export function remakeVideoReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
@@ -47,7 +55,7 @@ export function remakeReferencesReady(project: Pick<RemakeProject, "references">
 }
 
 export function remakeImagesReady(project: Pick<RemakeProject, "groups">) {
-    return project.groups.length === 4 && project.groups.every((group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+    return project.groups.length === 4 && project.groups.every((group) => group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
 }
 
 export function remakeVideosReady(project: Pick<RemakeProject, "groups">) {

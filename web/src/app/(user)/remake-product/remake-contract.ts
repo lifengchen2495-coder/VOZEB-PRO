@@ -119,6 +119,7 @@ export type RemakeRangeGroup = {
         status: RemakeImageGenerationStatus;
         taskId?: string | null;
         attemptNo?: number;
+        needsReview?: boolean;
         model?: string | null;
         prompt: string;
         result?: RemakeMediaAsset | null;
@@ -128,6 +129,7 @@ export type RemakeRangeGroup = {
         status: RemakeImageGenerationStatus;
         taskId?: string | null;
         attemptNo?: number;
+        needsReview?: boolean;
         model?: string | null;
         prompt: string;
         result?: RemakeMediaAsset | null;
@@ -431,6 +433,7 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
                 status: normalizeImageGenerationStatus(firstDefined(replacement.status, group.replacementStatus, group.replacement_status)),
                 taskId: stringValue(firstDefined(replacement.taskId, replacement.task_id, group.replacementTaskId, group.replacement_task_id)) || undefined,
                 attemptNo: Number.isSafeInteger(replacement.attemptNo) && Number(replacement.attemptNo) >= 0 ? Number(replacement.attemptNo) : undefined,
+                needsReview: replacement.needsReview === true,
                 model: stringValue(firstDefined(replacement.model, group.replacementModel, group.replacement_model)) || undefined,
                 prompt: stringValue(firstDefined(replacement.prompt, group.replacementPrompt, group.replacement_prompt)),
                 result: normalizeMediaAsset(firstDefined(replacement.result, replacement.output, group.replacementImage, group.replacement_image)),
@@ -440,6 +443,7 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
                 status: normalizeImageGenerationStatus(firstDefined(generation.status, group.imageStatus, group.image_status)),
                 taskId: stringValue(firstDefined(generation.taskId, generation.task_id, group.imageTaskId, group.image_task_id)) || undefined,
                 attemptNo: Number.isSafeInteger(generation.attemptNo) && Number(generation.attemptNo) >= 0 ? Number(generation.attemptNo) : undefined,
+                needsReview: generation.needsReview === true,
                 model: stringValue(firstDefined(generation.model, group.imageModel, group.image_model)) || undefined,
                 prompt: stringValue(firstDefined(generation.prompt, group.imagePrompt, group.image_prompt)),
                 result: normalizeMediaAsset(firstDefined(generation.result, generation.output, group.generatedImage, group.generated_image)),
@@ -512,7 +516,7 @@ function normalizePipeline(value: unknown, input: { sourceVideo?: RemakeSourceVi
     const rawSteps = record(pipeline.steps);
     const referenceReady = Boolean(input.references.product?.url);
     const imagesReady = input.groups.every(
-        (group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url,
+        (group) => group.replacementGeneration.status === "completed" && group.replacementGeneration.result?.url && group.imageGeneration.status === "completed" && group.imageGeneration.result?.url,
     );
     const promptsReady = input.groups.every((group) => group.videoPrompt.trim());
     const derivedStatuses: Record<RemakePipelineStepKey, RemakePipelineStepStatus> = {
@@ -554,14 +558,15 @@ function normalizePipeline(value: unknown, input: { sourceVideo?: RemakeSourceVi
             return [
                 key,
                 {
-                    status: Object.keys(step).length ? normalizePipelineStepStatus(step.status) : derivedStatuses[key],
+                    status: key === "images" ? derivedStatuses.images : Object.keys(step).length ? normalizePipelineStepStatus(step.status) : derivedStatuses[key],
                     taskId: stringValue(firstDefined(step.taskId, step.task_id)) || undefined,
                     error: stringValue(step.error) || undefined,
                 },
             ];
         }),
     ) as Record<RemakePipelineStepKey, RemakePipelineStep>;
-    return { stage: normalizePipelineStage(pipeline.stage, fallbackStage), steps };
+    const stage = normalizePipelineStage(pipeline.stage, fallbackStage);
+    return { stage: !imagesReady && ["copy", "prompts", "prompts-ready", "ready"].includes(stage) ? fallbackStage : stage, steps };
 }
 
 function nonNegativeInteger(value: unknown) {

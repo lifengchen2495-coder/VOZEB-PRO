@@ -8,7 +8,7 @@ import { createZip, type ZipFile } from "@/lib/zip";
 import { isRemakeNoNarrationCopy, type RemakeMediaAsset, type RemakeProject } from "../remake-contract";
 
 type ExportManifestEntry = {
-    kind: "source-video" | "frame" | "reference" | "product-reference" | "source-contact-sheet" | "merged-video" | "storyboard-contact-sheet" | "generated-video" | "audio";
+    kind: "source-video" | "frame" | "reference" | "product-reference" | "source-contact-sheet" | "replacement-contact-sheet" | "merged-video" | "storyboard-contact-sheet" | "generated-video" | "audio";
     name: string;
     fileName?: string;
     sourceUrl: string;
@@ -64,12 +64,17 @@ export async function downloadRemakeProductionBundle(project: RemakeProject): Pr
         {
             name: "提示词/生图-全部.txt",
             data: project.groups
-                .map((group) => `=== 分镜 ${group.id} · 保留原人物换品 ===
+                .map((group) => `=== 分镜 ${group.id} · 去除原产品 ===
+
+${group.replacementGeneration.prompt}
+
+=== 分镜 ${group.id} · 保留原人物换品 ===
 
 ${group.imageGeneration.prompt}`)
                 .join("\n\n"),
         },
         ...project.groups.flatMap((group) => [
+            { name: `提示词/生图-${String(group.ordinal).padStart(2, "0")}-${group.id}-去除原产品.txt`, data: group.replacementGeneration.prompt },
             { name: `提示词/生图-${String(group.ordinal).padStart(2, "0")}-${group.id}-保留原人物换品.txt`, data: group.imageGeneration.prompt },
         ]),
         {
@@ -94,6 +99,7 @@ ${group.imageGeneration.prompt}`)
                         id: group.id,
                         ordinal: group.ordinal,
                         frameOrdinals: group.frameOrdinals,
+                        replacementImageTaskId: group.replacementGeneration.taskId || null,
                         storyboardImageTaskId: group.imageGeneration.taskId || null,
                         videoTaskId: group.videoGeneration.taskId || null,
                         assetBindings: assetBindings[index],
@@ -125,6 +131,7 @@ function productionMedia(project: RemakeProject): Array<{ kind: ExportManifestEn
     ];
     const groups = project.groups.flatMap((group) => [
         group.sourceContactSheet ? { kind: "source-contact-sheet" as const, name: `十二宫格/来源-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.sourceContactSheet } : null,
+        group.replacementGeneration.result ? { kind: "replacement-contact-sheet" as const, name: `十二宫格/去除原产品-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.replacementGeneration.result } : null,
         group.imageGeneration.result ? { kind: "storyboard-contact-sheet" as const, name: `十二宫格/最终换品-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
         group.videoGeneration.result ? { kind: "generated-video" as const, name: `独立视频/${String(group.ordinal).padStart(2, "0")}-${group.id}-15秒`, asset: group.videoGeneration.result } : null,
     ]);
@@ -151,6 +158,9 @@ function assertCompleteProductionBundle(project: RemakeProject) {
             (group, index) =>
                 group.ordinal !== index + 1 ||
                 !group.sourceContactSheet?.url ||
+                group.replacementGeneration.status !== "completed" ||
+                !group.replacementGeneration.result?.url ||
+                !group.replacementGeneration.prompt.trim() ||
                 group.imageGeneration.status !== "completed" ||
                 !group.imageGeneration.result?.url ||
                 !group.imageGeneration.prompt.trim() ||
@@ -159,7 +169,7 @@ function assertCompleteProductionBundle(project: RemakeProject) {
                 !group.videoGeneration.result?.url,
         )
     ) {
-        missing.push("来源十二宫格、4 组换品生图、视频 Prompt 和 15 秒视频");
+        missing.push("来源十二宫格、4 组去产品图与换品生图、视频 Prompt 和 15 秒视频");
     }
     if (missing.length) throw new Error(`生产包不完整：缺少${Array.from(new Set(missing)).join("、")}，请补齐或重新生成后再下载`);
 }

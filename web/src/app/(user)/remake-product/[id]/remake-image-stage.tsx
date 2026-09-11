@@ -7,17 +7,21 @@ import { Check, Copy, ImagePlus, Images, LoaderCircle, RefreshCw, Trash2, Upload
 import { ModelPicker } from "@/components/model-picker";
 import { friendlyAgentError } from "@/components/agent/agent-message-format";
 import { imagePreviewUrl } from "@/lib/media-image-url";
-import { createImageGenerationTask, isImageGenerationTaskDeferredError, waitForImageGenerationTask } from "@/services/api/image";
+import { createImageGenerationTask, isImageGenerationTaskDeferredError, recoverImageGenerationTask, waitForImageGenerationTask } from "@/services/api/image";
+import { isGenerationTaskNeedsReviewError } from "@/services/api/generation-task-state";
+import { isGenerationCapacityError } from "@/services/api/generation-task-request-error";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 
 import type { RemakeMediaAsset, RemakeProject, RemakeRangeGroup } from "../remake-contract";
 import {
     buildRemakeImagePrompt,
+    buildRemakeReplacementPrompt,
     imageGenerationResultAsset,
     remakeGroupReferenceImages,
     remakeImagesReady,
     remakeReferencesReady,
+    remakeReplacementReferenceImages,
 } from "./remake-production-utils";
 import {
     isRemakeImageInputCurrent,
@@ -30,9 +34,10 @@ import {
 } from "./remake-workspace-state";
 
 type ReferenceKey = "product";
-type ImageStage = "storyboard";
+type ImageStage = "replacement" | "storyboard";
 
 export type RemakeGroupPatch = {
+    replacementGeneration?: Partial<RemakeRangeGroup["replacementGeneration"]>;
     imageGeneration?: Partial<RemakeRangeGroup["imageGeneration"]>;
     videoPrompt?: string;
     videoGeneration?: Partial<RemakeRangeGroup["videoGeneration"]>;
@@ -78,8 +83,10 @@ export function RemakeImageStage({
     const creationControllersRef = useRef(new Map<string, AbortController>());
     const invalidStagesRef = useRef(new Set<string>());
     const startingStagesRef = useRef(new Set<string>());
+    const startStageRef = useRef<((groupId: string, stage: ImageStage, announce?: boolean) => Promise<unknown>) | null>(null);
     const uploadingKeyRef = useRef<ReferenceKey | undefined>(undefined);
     const [uploadingKey, setUploadingKey] = useState<ReferenceKey>();
+    const [checkingTaskIds, setCheckingTaskIds] = useState<string[]>([]);
 
     const emitGroupChange = useCallback(
         (groupId: string, patch: RemakeGroupPatch) => {
@@ -91,6 +98,7 @@ export function RemakeImageStage({
                         ? {
                               ...group,
                               ...patch,
+                              replacementGeneration: patch.replacementGeneration ? { ...group.replacementGeneration, ...patch.replacementGeneration } : group.replacementGeneration,
                               imageGeneration: patch.imageGeneration ? { ...group.imageGeneration, ...patch.imageGeneration } : group.imageGeneration,
                               videoGeneration: patch.videoGeneration ? { ...group.videoGeneration, ...patch.videoGeneration } : group.videoGeneration,
                           }
@@ -123,11 +131,11 @@ export function RemakeImageStage({
     );
 
     const waitForGroupTask = useCallback(
-        async (stage: ImageStage, groupId: string, taskId: string, prompt: string, inputVersion: string, model: string, announce = false) => {
+        async (stage: ImageStage, groupId: string, taskId: string, prompt: string, inputVersion: string, model: string, announce = false, recover = false) => {
             const snapshot: RemakeImageTaskSnapshot = { stage, groupId, slotId: remakeImageGenerationSlotId(groupId, stage), taskId, inputVersion };
             if (!isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) return;
             const groupAtStart = latestProjectRef.current.groups.find((group) => group.id === groupId)!;
-            const attemptNo = stageGeneration(groupAtStart).attemptNo ?? 0;
+            const attemptNo = stageGeneration(groupAtStart, stage).attemptNo ?? 0;
             const existing = activeTasksRef.current.get(taskId);
             if (existing) {
                 if (existing.snapshot.stage === snapshot.stage && existing.snapshot.groupId === snapshot.groupId && existing.snapshot.inputVersion === snapshot.inputVersion) return;
@@ -136,28 +144,36 @@ export function RemakeImageStage({
             }
             const controller = new AbortController();
             activeTasksRef.current.set(taskId, { controller, snapshot });
+            if (recover) setCheckingTaskIds((ids) => [...ids, taskId]);
             try {
                 const currentProject = latestProjectRef.current;
                 const taskConfig = { ...imageConfig, model, imageModel: model };
+                if (recover) await recoverImageGenerationTask(taskId, { signal: controller.signal });
                 const result = await waitForImageGenerationTask(taskConfig, { id: taskId, kind: "generation", model }, { signal: controller.signal, logSource: "image-workbench", projectId: currentProject.id });
                 if (!isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) return;
                 let asset = imageGenerationResultAsset(result);
                 if (!asset && result.dataUrl) asset = uploadedAsset(await uploadImage(result.dataUrl), `remake-${groupId}-${stage}.png`);
                 if (!isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) return;
                 if (!asset) throw new Error("图片任务完成，但没有返回可长期保存的图片地址");
-                const generationPatch = { status: "completed" as const, taskId, attemptNo, model, prompt, result: asset, error: null };
-                emitGroupChange(groupId, { imageGeneration: generationPatch });
-                await onFlush();
-                if (announce) message.success(`分镜 ${groupId} 换品十二宫格已生成`);
+                const generationPatch = { status: "completed" as const, taskId, attemptNo, model, prompt, result: asset, needsReview: false, error: null };
+                emitGroupChange(groupId, stagePatch(stage, generationPatch));
+                const saved = await onFlush();
+                // 只接续本次完成并保存的清理任务，修改产品信息或重新打开页面不应自动收费生图。
+                if (saved && stage === "replacement" && isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) {
+                    void startStageRef.current?.(groupId, "storyboard", false);
+                }
+                if (announce) message.success(stage === "replacement" ? `分镜 ${groupId} 原产品已去除，继续放入新产品` : `分镜 ${groupId} 换品十二宫格已生成`);
             } catch (reason) {
                 if (controller.signal.aborted || !isRemakeImageTaskCurrent(latestProjectRef.current, snapshot)) return;
-                const detail = isImageGenerationTaskDeferredError(reason) ? "图片任务查询已超时，系统已停止自动查询，请确认原任务状态后再手动重试。" : friendlyAgentError(reason, "十二宫格生成失败，请稍后重试");
-                const generationPatch = { status: "error" as const, taskId, attemptNo, model, prompt, error: detail };
-                emitGroupChange(groupId, { imageGeneration: generationPatch });
+                const needsReview = isGenerationTaskNeedsReviewError(reason) || isImageGenerationTaskDeferredError(reason);
+                const detail = isImageGenerationTaskDeferredError(reason) ? "图片任务查询已超时，已暂停自动查询，请检查原任务状态。" : friendlyAgentError(reason, "十二宫格生成失败，请稍后重试");
+                const generationPatch = { status: "error" as const, taskId, attemptNo, model, prompt, needsReview, error: detail };
+                emitGroupChange(groupId, stagePatch(stage, generationPatch));
                 await onFlush();
                 if (announce) message.error({ key: "remake-image-error", content: `分镜 ${groupId}：${detail}` });
             } finally {
                 if (activeTasksRef.current.get(taskId)?.controller === controller) activeTasksRef.current.delete(taskId);
+                if (recover) setCheckingTaskIds((ids) => ids.filter((id) => id !== taskId));
             }
         },
         [emitGroupChange, imageConfig, message, onFlush],
@@ -203,22 +219,29 @@ export function RemakeImageStage({
             const current = latestProjectRef.current;
             const group = current.groups.find((item) => item.id === groupId);
             if (!group) return;
-            const generation = stageGeneration(group);
+            const generation = stageGeneration(group, stage);
             const key = stageKey(group.id, stage);
             const awaitingCreation = (generation.status === "queued" || generation.status === "running") && !generation.taskId;
             if ((isGenerationActive(generation) && !awaitingCreation) || startingStagesRef.current.has(key)) return;
+            if (generation.needsReview) {
+                if (!generation.taskId) return message.warning("原任务提交结果待核查，暂不能重新生成，请先核对原任务记录。");
+                await waitForGroupTask(stage, group.id, generation.taskId, generation.prompt, remakeGroupInputVersion(group, current.references, stage, current.productInfo), generation.model || selectedImageModel, announce, true);
+                return;
+            }
+            if (disabled) return;
             if (uploadingKeyRef.current) return message.warning("请等待参考图上传完成后再生成十二宫格");
             if (!remakeReferencesReady(current)) return message.warning("请先上传新产品图");
             if (!current.productInfo.trim()) return message.warning("请先填写新产品信息");
             if (!group.sourceContactSheet?.url) return message.warning(`分镜 ${group.id} 缺少来源十二宫格，请重新执行视频分析`);
+            if (stage === "storyboard" && !completedAsset(group.replacementGeneration)?.url) return message.warning(`请先完成分镜 ${group.id} 的原产品去除`);
             const model = current.modelSelection.image || selectedImageModel;
             if (!model || !isAiConfigReady({ ...imageConfig, model, imageModel: model }, model)) {
                 openConfigDialog(true);
                 return message.warning("请先配置可用的生图模型");
             }
             if (!current.modelSelection.image) emitModelChange(model);
-            const prompt = buildRemakeImagePrompt(current, group);
-            const references = remakeGroupReferenceImages(group, current.references);
+            const prompt = stage === "replacement" ? buildRemakeReplacementPrompt(current, group) : buildRemakeImagePrompt(current, group);
+            const references = stage === "replacement" ? remakeReplacementReferenceImages(group) : remakeGroupReferenceImages(group, current.references);
             const inputVersion = remakeGroupInputVersion(group, current.references, stage, current.productInfo);
             const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage, { model, prompt, quality: imageConfig.quality });
             const previousAttempt = generation.attemptNo ?? 0;
@@ -226,15 +249,20 @@ export function RemakeImageStage({
             const controller = new AbortController();
             startingStagesRef.current.add(key);
             creationControllersRef.current.set(key, controller);
-            const queued = { status: "queued" as const, taskId: null, attemptNo, model, prompt, result: null, error: null };
+            const queued = { status: "queued" as const, taskId: null, attemptNo, model, prompt, result: null, needsReview: false, error: null };
             emitGroupChange(
                 group.id,
-                { imageGeneration: queued, videoPrompt: "", videoGeneration: { status: "idle", taskId: null, model: null, result: null, error: null } },
+                {
+                    ...stagePatch(stage, queued),
+                    ...(stage === "replacement" ? { imageGeneration: { status: "idle" as const, taskId: null, attemptNo: 0, model: null, prompt: "", result: null, needsReview: false, error: null } } : {}),
+                    videoPrompt: "",
+                    videoGeneration: { status: "idle", taskId: null, model: null, result: null, error: null },
+                },
             );
             try {
                 if (!(await onFlush())) {
                     const blocked = { ...queued, status: "error" as const, error: "项目尚未保存，生图请求未提交。请先处理保存错误后重试。" };
-                    emitGroupChange(group.id, { imageGeneration: blocked });
+                    emitGroupChange(group.id, stagePatch(stage, blocked));
                     return;
                 }
                 if (controller.signal.aborted || !isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage)) return;
@@ -242,17 +270,17 @@ export function RemakeImageStage({
                 const task = await createImageGenerationTask(taskConfig, prompt, references, undefined, {
                     signal: controller.signal,
                     logSource: "image-workbench",
-                    logTitle: `${current.title} · 分镜 ${group.id} · 保留人物换品`,
+                    logTitle: `${current.title} · 分镜 ${group.id} · ${stage === "replacement" ? "去除原产品" : "放入新产品"}`,
                     projectId: current.id,
                     clientRequestId,
                     ...(attemptNo > 0 ? { attemptNo } : {}),
                     generationSlotId: remakeImageGenerationSlotId(group.id, stage),
                 });
                 const latestGroup = latestProjectRef.current.groups.find((item) => item.id === group.id);
-                const latestGeneration = latestGroup ? stageGeneration(latestGroup) : undefined;
+                const latestGeneration = latestGroup ? stageGeneration(latestGroup, stage) : undefined;
                 if (controller.signal.aborted || !isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage) || (latestGeneration?.taskId && latestGeneration.taskId !== task.id)) return;
-                const running = { status: "running" as const, taskId: task.id, attemptNo, model, prompt, result: null, error: null };
-                emitGroupChange(group.id, { imageGeneration: running });
+                const running = { status: "running" as const, taskId: task.id, attemptNo, model, prompt, result: null, needsReview: false, error: null };
+                emitGroupChange(group.id, stagePatch(stage, running));
                 await onFlush();
                 void waitForGroupTask(stage, group.id, task.id, prompt, inputVersion, model, announce);
             } catch (reason) {
@@ -262,14 +290,14 @@ export function RemakeImageStage({
                 const detail = friendlyAgentError(reason, "十二宫格任务创建失败，请稍后重试");
                 if (disposition === "deferred") {
                     // 创建请求超时后无法确认上游是否已经受理，不能自动创建第二个任务。
-                    const failed = { status: "error" as const, taskId: null, attemptNo, model, prompt, result: null, error: detail };
-                    emitGroupChange(group.id, { imageGeneration: failed });
+                    const failed = { status: "error" as const, taskId: null, attemptNo, model, prompt, result: null, needsReview: !isGenerationCapacityError(reason), error: detail };
+                    emitGroupChange(group.id, stagePatch(stage, failed));
                     await onFlush();
                     if (announce) message.error({ key: "remake-image-error", content: `分镜 ${group.id}：${detail}` });
                     return;
                 }
-                const failed = { status: "error" as const, taskId: null, attemptNo, model, prompt, result: null, error: detail };
-                emitGroupChange(group.id, { imageGeneration: failed });
+                const failed = { status: "error" as const, taskId: null, attemptNo, model, prompt, result: null, needsReview: false, error: detail };
+                emitGroupChange(group.id, stagePatch(stage, failed));
                 await onFlush();
                 if (announce) message.error({ key: "remake-image-error", content: `分镜 ${group.id}：${detail}` });
             } finally {
@@ -277,16 +305,18 @@ export function RemakeImageStage({
                 startingStagesRef.current.delete(key);
             }
         },
-        [emitGroupChange, emitModelChange, imageConfig, isAiConfigReady, message, onFlush, openConfigDialog, selectedImageModel, waitForGroupTask],
+        [disabled, emitGroupChange, emitModelChange, imageConfig, isAiConfigReady, message, onFlush, openConfigDialog, selectedImageModel, waitForGroupTask],
     );
+    startStageRef.current = startStage;
 
     useEffect(() => {
         for (const group of project.groups) {
-            for (const stage of ["storyboard"] as const) {
-                const generation = stageGeneration(group);
+            for (const stage of ["replacement", "storyboard"] as const) {
+                const generation = stageGeneration(group, stage);
+                if (generation.needsReview) continue;
                 const model = generation.model || selectedImageModel;
                 if ((generation.status === "queued" || generation.status === "running") && generation.taskId && model) {
-                    const prompt = generation.prompt || buildRemakeImagePrompt(project, group);
+                    const prompt = generation.prompt || (stage === "replacement" ? buildRemakeReplacementPrompt(project, group) : buildRemakeImagePrompt(project, group));
                     void waitForGroupTask(stage, group.id, generation.taskId, prompt, remakeGroupInputVersion(group, project.references, stage, project.productInfo), model);
                 } else if (generation.status === "queued" || generation.status === "running") {
                     const key = stageKey(group.id, stage);
@@ -296,19 +326,21 @@ export function RemakeImageStage({
                         ...generation,
                         status: "error" as const,
                         taskId: null,
-                        error: "图片任务缺少可查询的任务 ID，系统已停止自动重试，请手动重试。",
+                        needsReview: true,
+                        error: "图片任务缺少可查询的任务 ID，已停止自动重试，请先核对原任务记录。",
                     };
-                    emitGroupChange(group.id, { imageGeneration: failed });
+                    emitGroupChange(group.id, stagePatch(stage, failed));
                     void onFlush();
                 }
             }
         }
-    }, [emitGroupChange, onFlush, project, selectedImageModel, startStage, waitForGroupTask]);
+    }, [emitGroupChange, onFlush, project, selectedImageModel, waitForGroupTask]);
 
     const startGroup = useCallback(
         async (group: RemakeRangeGroup, announce = true) => {
             const latest = latestProjectRef.current.groups.find((item) => item.id === group.id) || group;
-            const stage: ImageStage = "storyboard";
+            const reviewStage = (["replacement", "storyboard"] as const).find((stage) => stageGeneration(latest, stage).needsReview);
+            const stage: ImageStage = reviewStage || (completedAsset(latest.replacementGeneration)?.url && latest.imageGeneration.status !== "completed" ? "storyboard" : "replacement");
             invalidStagesRef.current.delete(stageKey(latest.id, stage));
             await startStage(latest.id, stage, announce);
         },
@@ -318,7 +350,7 @@ export function RemakeImageStage({
     const referencesReady = remakeReferencesReady(project);
     const productReady = Boolean(project.productInfo.trim());
     const imagesReady = remakeImagesReady(project);
-    const generationActive = startingStagesRef.current.size > 0 || project.groups.some(activeGeneration);
+    const generationActive = startingStagesRef.current.size > 0 || checkingTaskIds.length > 0 || project.groups.some(activeGeneration);
     const completedCount = project.groups.filter(groupComplete).length;
 
     return (
@@ -327,8 +359,8 @@ export function RemakeImageStage({
                 <div className="flex min-w-0 flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-end sm:justify-between">
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 02</div>
-                        <h2 className="mt-1 text-lg font-semibold">保留原人物 · 更换产品</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">上传新产品图并填写产品信息，按原人物、场景和动作生成 4 组十二宫格。</p>
+                        <h2 className="mt-1 text-lg font-semibold">保留原人物 · 两步换品</h2>
+                        <p className="mt-1 text-sm text-muted-foreground">先去除原产品并保留人物、动作和背景，再根据清理图放入新产品。每组依次生成两张十二宫格。</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                         <ModelPicker
@@ -376,7 +408,7 @@ export function RemakeImageStage({
                         新产品信息
                         <Input.TextArea value={project.productInfo} disabled={disabled || generationActive} maxLength={20000} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="填写新产品名称、外观、规格和产品特征。" onChange={(event) => onProductChange({ productInfo: event.target.value })} />
                     </label>
-                    <p className="text-xs leading-5 text-muted-foreground">原人物身份、服装、背景、动作和拍摄角度保持一致。仅替换原镜头中人物或手部持有的产品。</p>
+                    <p className="text-xs leading-5 text-muted-foreground">第一步去除原产品、字幕和水印，保留原人物与场景；第二步在原产品对应位置放入新产品。第一步失败时停止，第二步失败时可复用清理图重试。</p>
                 </section>
 
                 {!referencesReady ? (
@@ -387,7 +419,7 @@ export function RemakeImageStage({
 
                 <div className="grid items-start gap-3 py-4">
                     {project.groups.map((group) => (
-                        <RemakeGroupCard key={group.id} project={project} group={group} disabled={disabled || Boolean(uploadingKey) || !referencesReady || !productReady} onGenerate={() => void startGroup(group)} />
+                        <RemakeGroupCard key={group.id} project={project} group={group} checking={checkingTaskIds.some((id) => id === group.replacementGeneration.taskId || id === group.imageGeneration.taskId)} disabled={disabled || Boolean(uploadingKey) || (!groupNeedsReview(group) && (!referencesReady || !productReady))} onGenerate={() => void startGroup(group)} />
                     ))}
                 </div>
 
@@ -427,17 +459,20 @@ function ReferenceSlot({ label, detail, required, asset, loading, disabled, onCh
     );
 }
 
-function RemakeGroupCard({ project, group, disabled, onGenerate }: { project: RemakeProject; group: RemakeRangeGroup; disabled: boolean; onGenerate: () => void }) {
+function RemakeGroupCard({ project, group, disabled, checking, onGenerate }: { project: RemakeProject; group: RemakeRangeGroup; disabled: boolean; checking: boolean; onGenerate: () => void }) {
     const { message } = App.useApp();
-    const active = activeGeneration(group);
+    const active = checking || activeGeneration(group);
+    const reviewGeneration = [group.replacementGeneration, group.imageGeneration].find((generation) => generation.needsReview);
+    const replacementError = group.replacementGeneration.error ? friendlyAgentError(group.replacementGeneration.error, "去除原产品失败") : "";
     const imageError = group.imageGeneration.error ? friendlyAgentError(group.imageGeneration.error, "图片生成失败，请稍后重试") : "";
+    const replacementPrompt = group.replacementGeneration.prompt || buildRemakeReplacementPrompt(project, group);
     const storyboardPrompt = group.imageGeneration.prompt || buildRemakeImagePrompt(project, group);
     return (
         <article className="min-w-0 overflow-hidden rounded-lg border border-border bg-card" aria-label={`分镜 ${group.id} 十二宫格`}>
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">分镜 {group.id} · 十二宫格</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">3 列 × 4 行 · 单次换品生图 · 9:16</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">3 列 × 4 行 · 去除原产品 → 放入新产品 · 9:16</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                     <GenerationTag group={group} />
@@ -445,23 +480,26 @@ function RemakeGroupCard({ project, group, disabled, onGenerate }: { project: Re
                         size="small"
                         type={groupComplete(group) ? "default" : "primary"}
                         loading={active}
-                        disabled={disabled || active || !group.sourceContactSheet}
+                        disabled={disabled || active || !group.sourceContactSheet || Boolean(reviewGeneration && !reviewGeneration.taskId)}
                         icon={groupComplete(group) || hasGenerationError(group) ? <RefreshCw className="size-3.5" /> : <Images className="size-3.5" />}
                         onClick={onGenerate}
                     >
-                        {groupComplete(group) ? "重新生成" : hasGenerationError(group) ? "重试" : "生成"}
+                        {reviewGeneration ? "检查原任务" : groupComplete(group) ? "重新生成两步" : completedAsset(group.replacementGeneration) ? hasGenerationError(group) ? "重试放入新产品" : "放入新产品" : hasGenerationError(group) ? "重试去除原产品" : "开始两步换品"}
                     </Button>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
                 <ContactSheet label="来源十二宫格" asset={group.sourceContactSheet} />
-                <ContactSheet label="保留原人物 · 换品结果" asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} error={imageError || undefined} />
+                <ContactSheet label="第一步 · 去除原产品" asset={completedAsset(group.replacementGeneration)} loading={isGenerationActive(group.replacementGeneration)} needsReview={group.replacementGeneration.needsReview} error={replacementError || undefined} />
+                <ContactSheet label="第二步 · 放入新产品" asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} needsReview={group.imageGeneration.needsReview} error={imageError || undefined} />
             </div>
 
-            {imageError ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{imageError}</div> : null}
+            {replacementError ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">第一步：{replacementError}</div> : null}
+            {imageError ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">第二步：{imageError}</div> : null}
 
-            <PromptDetails title="完整换品提示词" prompt={storyboardPrompt} copyLabel={`分镜 ${group.id} 换品提示词`} onCopied={() => message.success("完整换品提示词已复制")} />
+            <PromptDetails title="第一步 · 去除原产品提示词" prompt={replacementPrompt} copyLabel={`分镜 ${group.id} 去除原产品提示词`} onCopied={() => message.success("去除原产品提示词已复制")} />
+            <PromptDetails title="第二步 · 放入新产品提示词" prompt={storyboardPrompt} copyLabel={`分镜 ${group.id} 换品提示词`} onCopied={() => message.success("换品提示词已复制")} />
         </article>
     );
 }
@@ -492,7 +530,7 @@ function PromptDetails({ title, prompt, copyLabel, onCopied }: { title: string; 
     );
 }
 
-function ContactSheet({ label, asset, loading, error }: { label: string; asset?: RemakeMediaAsset; loading?: boolean; error?: string }) {
+function ContactSheet({ label, asset, loading, needsReview, error }: { label: string; asset?: RemakeMediaAsset; loading?: boolean; needsReview?: boolean; error?: string }) {
     return (
         <div className="min-w-0 bg-card p-2.5">
             <div className="mb-2 min-h-8 text-[11px] font-medium leading-4 text-muted-foreground">{label}</div>
@@ -510,7 +548,7 @@ function ContactSheet({ label, asset, loading, error }: { label: string; asset?:
                     <div className="absolute inset-0 grid place-items-center px-4 text-center text-white/55">
                         <div>
                             <Images className="mx-auto size-5" />
-                            <div className="mt-2 text-xs">{error ? "生成失败" : "等待图片"}</div>
+                            <div className="mt-2 text-xs">{needsReview ? "等待核查" : error ? "生成失败" : "等待图片"}</div>
                         </div>
                     </div>
                 ) : null}
@@ -522,21 +560,25 @@ function ContactSheet({ label, asset, loading, error }: { label: string; asset?:
 
 function GenerationTag({ group }: { group: RemakeRangeGroup }) {
     const status = groupStatus(group);
-    const color = status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
-    const label = status === "completed" ? "已完成" : status === "error" ? "失败" : status === "queued" ? "排队中" : status === "running" ? "生成中" : "未生成";
+    const color = groupNeedsReview(group) ? "warning" : status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
+    const label = groupNeedsReview(group) ? "待核查" : status === "completed" ? "已完成" : status === "error" ? "失败" : status === "queued" ? "排队中" : status === "running" ? isGenerationActive(group.replacementGeneration) ? "去除原产品中" : "放入新产品中" : "未生成";
     return <Tag color={color} className="!m-0">{label}</Tag>;
 }
 
 function groupStatus(group: RemakeRangeGroup) {
     if (groupComplete(group)) return "completed";
     if (hasGenerationError(group)) return "error";
-    if (group.imageGeneration.status === "running") return "running";
-    if (group.imageGeneration.status === "queued") return "queued";
+    if (group.replacementGeneration.status === "running" || group.imageGeneration.status === "running") return "running";
+    if (group.replacementGeneration.status === "queued" || group.imageGeneration.status === "queued") return "queued";
     return "idle";
 }
 
-function stageGeneration(group: RemakeRangeGroup) {
-    return group.imageGeneration;
+function stageGeneration(group: RemakeRangeGroup, stage: ImageStage) {
+    return stage === "replacement" ? group.replacementGeneration : group.imageGeneration;
+}
+
+function stagePatch(stage: ImageStage, generation: Partial<RemakeRangeGroup["imageGeneration"]>): RemakeGroupPatch {
+    return stage === "replacement" ? { replacementGeneration: generation } : { imageGeneration: generation };
 }
 
 function stageKey(groupId: string, stage: ImageStage) {
@@ -544,19 +586,23 @@ function stageKey(groupId: string, stage: ImageStage) {
 }
 
 function isGenerationActive(generation: RemakeRangeGroup["imageGeneration"]) {
-    return generation.status === "queued" || generation.status === "running";
+    return !generation.needsReview && (generation.status === "queued" || generation.status === "running");
 }
 
 function activeGeneration(group: RemakeRangeGroup) {
-    return isGenerationActive(group.imageGeneration);
+    return isGenerationActive(group.replacementGeneration) || isGenerationActive(group.imageGeneration);
 }
 
 function groupComplete(group: RemakeRangeGroup) {
-    return group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result?.url);
+    return Boolean(completedAsset(group.replacementGeneration)?.url && completedAsset(group.imageGeneration)?.url);
 }
 
 function hasGenerationError(group: RemakeRangeGroup) {
-    return group.imageGeneration.status === "error";
+    return group.replacementGeneration.status === "error" || group.imageGeneration.status === "error";
+}
+
+function groupNeedsReview(group: RemakeRangeGroup) {
+    return Boolean(group.replacementGeneration.needsReview || group.imageGeneration.needsReview);
 }
 
 function completedAsset(generation: RemakeRangeGroup["imageGeneration"]) {

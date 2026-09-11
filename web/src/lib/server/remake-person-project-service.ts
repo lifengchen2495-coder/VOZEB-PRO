@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { remakeProductionInputSnapshot, type RemakeProductionInputProject } from "@/lib/remake-person-production-input";
 import { renderRemakeCopyReport } from "./remake-person-production-prompt";
 import { restoreRemakeCopyReport } from "./remake-copy-report-recovery";
+import { resolveRemakeActiveImageTaskState } from "./remake-image-task-state";
 
 import {
     buildRemakeCopyBlocks,
@@ -544,7 +545,7 @@ async function authoritativeRemakeImageGeneration(input: {
     if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references)) {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务输入与当前参考素材不一致`, 409);
     }
-    if (task.status === "pending" || task.status === "running") return { status: "running", taskId: task.id, model: taskModel, prompt, attemptNo };
+    if (task.status === "pending" || task.status === "running") return { ...resolveRemakeActiveImageTaskState({ taskId: task.id, requested: input.requested, execution: taskRecord || undefined }), taskId: task.id, model: taskModel, prompt, attemptNo };
     if (task.status === "error" || task.status === "cancelled") return { status: "error", taskId: task.id, model: taskModel, prompt, attemptNo, error: task.error || (task.status === "cancelled" ? "图片任务已取消" : "图片生成失败") };
     if (task.status !== "success") throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务状态无效`, 409);
     const result = authoritativeImageAsset(task, `${input.group.id}-${input.stage}`);

@@ -222,8 +222,8 @@ async function assertProductionReady(userId: string, project: Awaited<ReturnType
     }
     if (hasNarration && !project.references.audio) throw new RemakeProductionError("原视频音频尚未提取，请重新执行视频理解", 409);
     if (hasNarration && project.voice !== "female" && project.voice !== "male") throw new RemakeProductionError("请选择男性配音或女性配音", 409);
-    if (project.groups.length !== 4 || project.groups.some((group) => !group.sourceContactSheet || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
-        throw new RemakeProductionError("请先完成四组保留人物的换品十二宫格", 409);
+    if (project.groups.length !== 4 || project.groups.some((group) => !group.sourceContactSheet || group.replacementGeneration.status !== "completed" || !group.replacementGeneration.result || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
+        throw new RemakeProductionError("请先完成四组去产品图和保留人物的换品十二宫格", 409);
     }
     await assertRemakeImageGenerationsForUser(userId, project);
 }
