@@ -8,7 +8,7 @@ export function cleanBangbangMediaReferences(project: BangbangProject, keys: str
     const framesRemoved = removed(project.sourceFrames);
     const creationMode = bangbangCreationMode(project);
     // 产品原创保留的旧对标素材不参与当前剧本，删除它们无需重置原创结果。
-    if (creationMode === "product" && !removed(project.references) && !removed(project.groups)) return {
+    if (creationMode === "product" && !removed(project.references) && !removed(project.groups) && !removed(project.characters)) return {
         changed: true,
         value: { ...project, creationMode, revision: project.revision + 1, updatedAt: new Date(Math.max(Date.now(), Date.parse(project.updatedAt) + 1)).toISOString(), sourceVideo: sourceRemoved ? undefined : project.sourceVideo, sourceFrames: project.sourceFrames.filter((frame) => !removed(frame)) },
     };
@@ -35,7 +35,11 @@ export function cleanBangbangMediaReferences(project: BangbangProject, keys: str
             references, outputs, operation: undefined, videoSegments: [],
             directions: sourceAffectsStory || framesAffectStory || productRemoved ? [] : project.directions,
             selectedDirectionId: sourceAffectsStory || framesAffectStory || productRemoved ? "" : project.selectedDirectionId,
-            characters: sourceAffectsStory || framesAffectStory || productRemoved ? [] : project.characters.map((character) => ({ ...character, imageId: references.character.some((reference) => reference.id === character.imageId) ? character.imageId : undefined })),
+            characters: sourceAffectsStory || framesAffectStory || productRemoved ? [] : project.characters.map((character) => ({
+                ...character,
+                imageId: references.character.some((reference) => reference.id === character.imageId) ? character.imageId : undefined,
+                image: removed(character.image) ? { status: "idle", attemptNo: (character.image?.attemptNo || 0) + 1 } : character.image,
+            })),
             groups: resetPlan ? [] : project.groups.map((group, index) => firstRemovedGroup >= 0 && index >= firstRemovedGroup ? { ...group, image: { status: "idle", attemptNo: group.image.attemptNo + 1 } } : group),
             error: "项目素材已被删除，请重新准备对应环节",
         },

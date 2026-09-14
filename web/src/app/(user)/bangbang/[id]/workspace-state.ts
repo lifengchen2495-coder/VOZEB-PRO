@@ -8,7 +8,7 @@ export const BANGBANG_STAGES: Array<{ id: BangbangStage; label: string; hint: st
     { id: "frames", label: BANGBANG_STEP_LABELS.frames, hint: "提取关键画面并查看原片镜头" },
     { id: "directions", label: BANGBANG_STEP_LABELS.directions, hint: "选择一个方向，或填写自己的创意" },
     { id: "script", label: BANGBANG_STEP_LABELS.script, hint: "生成并编辑完整的新短剧脚本" },
-    { id: "characters", label: "人物需求与素材", hint: "生成人物清单，为每个人物绑定参考图" },
+    { id: "characters", label: "人物需求与素材", hint: "生成人物清单，再生成定妆照自动绑定，也可上传已有参考图" },
     { id: "storyboard", label: BANGBANG_STEP_LABELS.storyboard, hint: "规划场景、台词和分镜组，也支持导入已有规划" },
     { id: "expand", label: BANGBANG_STEP_LABELS.expand, hint: "将每个分镜组展开成恰好 9 帧" },
     { id: "optimize", label: BANGBANG_STEP_LABELS.optimize, hint: "优化并逐组编辑九宫格生图提示词" },
@@ -47,6 +47,7 @@ export function bangbangStageComplete(project: BangbangProject, id: BangbangStag
 }
 export function resumeBangbangStage(project: BangbangProject): BangbangStage {
     if (project.operation) return project.operation.step;
+    if (project.characters.some((character) => ["queued", "running", "error"].includes(character.image?.status || ""))) return "characters";
     if (project.groups.some((group) => ["queued", "running", "review", "error"].includes(group.image.status))) return "images";
     return bangbangWorkspaceStages(project).find((stage) => !bangbangStageComplete(project, stage.id))?.id || "video-prompts";
 }

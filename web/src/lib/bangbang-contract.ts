@@ -7,7 +7,7 @@ export const BANGBANG_STEP_LABELS: Record<BangbangStep, string> = {
 };
 export type BangbangMedia = { url: string; storageKey?: string; mimeType: string; originalName?: string; bytes?: number; duration?: number; width?: number; height?: number };
 export type BangbangReference = { id: string; label: string; media: BangbangMedia };
-export type BangbangCharacter = { id: string; name: string; gender: string; age: string; role: string; appearance: string; imageId?: string };
+export type BangbangCharacter = { id: string; name: string; gender: string; age: string; role: string; appearance: string; imageId?: string; image?: BangbangImageState };
 export type BangbangDirection = { id: string; title: string; description: string };
 export type BangbangFrame = { number: number; description: string; characterRatio: string; productPosition: string; reference: string };
 export type BangbangImageState = {
@@ -72,7 +72,17 @@ export function bangbangCreationMode(project: Pick<BangbangProject, "creationMod
 export function bangbangActiveSteps(project: BangbangProject): readonly BangbangStep[] {
     return bangbangCreationMode(project) === "product" ? BANGBANG_STEPS.filter((step) => !BANGBANG_REFERENCE_STEPS.includes(step)) : BANGBANG_STEPS;
 }
-export function bangbangBusy(project: BangbangProject) { return Boolean(project.operation || project.groups.some((group) => group.image.status === "queued" || group.image.status === "running")); }
+export function bangbangBusy(project: BangbangProject) { return Boolean(project.operation || project.groups.some((group) => group.image.status === "queued" || group.image.status === "running") || project.characters.some((character) => character.image?.status === "queued" || character.image?.status === "running")); }
+export function bangbangCharacterImageBlockReason(project: BangbangProject, characterId: string): string | undefined {
+    if (project.operation || project.groups.some((group) => ["queued", "running"].includes(group.image.status))) return "项目正在处理中，请等待当前任务完成";
+    const character = project.characters.find((item) => item.id === characterId);
+    if (!character || !project.outputs.characters?.text) return "请先生成人物清单";
+    if (!character.appearance.trim()) return "人物外观描述为空，请重新生成人物清单";
+    if (project.characters.some((item) => item.id !== characterId && ["queued", "running"].includes(item.image?.status || ""))) return "请等待当前人物图生成完成";
+    if (character.image?.status === "running") return "人物图正在生成，完成后自动绑定";
+    if (character.image?.status !== "queued" && project.references.character.length >= 8) return "人物参考图最多 8 张，请先移除不再使用的图片";
+    return undefined;
+}
 export function bangbangStepBlockReason(project: BangbangProject, step: BangbangStep): string | undefined {
     if (bangbangBusy(project)) return "项目正在处理中，请等待当前任务完成";
     const productMode = bangbangCreationMode(project) === "product";
@@ -102,6 +112,7 @@ export function bangbangSceneAnchor(project: BangbangProject, group: BangbangGro
 }
 export function bangbangImageBlockReason(project: BangbangProject, groupId: string): string | undefined {
     if (project.operation) return "项目正在处理中";
+    if (project.characters.some((character) => ["queued", "running"].includes(character.image?.status || ""))) return "请等待人物图生成完成";
     const index = project.groups.findIndex((group) => group.id === groupId);
     if (index < 0) return "分镜组不存在";
     const group = project.groups[index];
