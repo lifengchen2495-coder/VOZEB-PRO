@@ -287,6 +287,16 @@ export function BangbangWorkspace({ id }: { id: string }) {
         void action("检查并撤销未确认提交", async () => {
             accept(await bangbangRequest<BangbangProject>(`${bangbangProjectPath(id)}/groups/${encodeURIComponent(groupId)}/image`, undefined, "DELETE"));
         });
+    const characterImageAction = (characterId: string, method: "POST" | "DELETE" = "POST") =>
+        void action(method === "POST" ? "提交人物图" : "检查人物图提交", async () => {
+            const value = await save();
+            try {
+                accept(await bangbangRequest<BangbangProject>(`${bangbangProjectPath(id)}/characters/${encodeURIComponent(characterId)}/image`, method === "POST" ? { revision: value.revision } : undefined, method));
+            } catch (error) {
+                try { accept(await load()); } catch { /* 后续检查状态可恢复预留的请求。 */ }
+                throw error;
+            }
+        });
     const copy = (text: string) => {
         void navigator.clipboard
             .writeText(text)
@@ -421,7 +431,7 @@ export function BangbangWorkspace({ id }: { id: string }) {
                         {(busy || running || autoSteps.length > 0) && (
                             <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg bg-muted px-4 py-3 text-sm">
                                 <Loader2 className="size-4 animate-spin" />
-                                <span>{busy || (project.operation ? `${productMode && project.operation.step === "directions" ? "创作方向" : BANGBANG_STEP_LABELS[project.operation.step]}处理中` : "九宫格处理中")} · 完成后自动更新</span>
+                                <span>{busy || (project.operation ? `${productMode && project.operation.step === "directions" ? "创作方向" : BANGBANG_STEP_LABELS[project.operation.step]}处理中` : project.characters.some((character) => ["queued", "running"].includes(character.image?.status || "")) ? "人物图处理中" : "九宫格处理中")} · 完成后自动更新</span>
                                 {autoSteps.length > 0 && (
                                     <Button
                                         variant="ghost"
@@ -530,7 +540,7 @@ export function BangbangWorkspace({ id }: { id: string }) {
                                 <Textarea aria-label="完整剧本" className="min-h-96" value={view.outputs.script?.text || ""} disabled={disabled} onChange={(event) => change({ scriptText: event.target.value })} />
                             </Field>
                         )}
-                        {stage === "characters" && <CharactersPanel {...panel} />}
+                        {stage === "characters" && <CharactersPanel {...panel} actionsDisabled={Boolean(busy || autoSteps.length)} generate={(characterId) => characterImageAction(characterId)} cancel={(characterId) => characterImageAction(characterId, "DELETE")} />}
                         {stage === "storyboard" && (
                             <details open={!view.groups.length} className="rounded-lg border p-4">
                                 <summary className="cursor-pointer text-sm font-medium">导入已有分镜规划表</summary>

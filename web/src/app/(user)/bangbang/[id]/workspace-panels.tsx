@@ -2,7 +2,7 @@
 import { Copy, Upload, X } from "lucide-react";
 import { ModelPicker } from "@/components/model-picker";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { bangbangCreationMode, bangbangImageBlockReason, type BangbangGroup, type BangbangInputPatch, type BangbangProject } from "@/lib/bangbang-contract";
+import { bangbangCreationMode, bangbangCharacterImageBlockReason, bangbangImageBlockReason, type BangbangGroup, type BangbangInputPatch, type BangbangProject } from "@/lib/bangbang-contract";
 import { Button, Field, Input, Textarea } from "../controls";
 
 export type PanelProps = { project: BangbangProject; disabled: boolean; change: (patch: BangbangInputPatch) => void; upload: (file: File, category: "video" | "product" | "character" | "scene") => void };
@@ -62,7 +62,7 @@ export function ReferencePanel({ project, disabled, change, upload, category }: 
                 </div>
             ) : (
                 <p className="rounded-lg border border-dashed p-4 text-xs leading-5 text-muted-foreground">
-                    {category === "product" ? "上传清晰产品图，用于外观识别与产品出镜。" : category === "character" ? "上传人物定妆照，生成人物清单后绑定到对应角色。" : "可选。上传希望保持一致的场景参考。"}
+                    {category === "product" ? "上传清晰产品图，用于外观识别与产品出镜。" : category === "character" ? "可上传已有定妆照；没有人物图时，先生成人物清单，再点击角色旁的“生成人物图”。" : "可选。上传希望保持一致的场景参考。"}
                 </p>
             )}
         </section>
@@ -182,7 +182,7 @@ export function InputPanel(props: PanelProps) {
                     [
                         ["analysis", "视频分析模型", "text"],
                         ["prompt", "剧本与提示词模型", "text"],
-                        ["image", "九宫格生图模型", "image"],
+                        ["image", "人物与九宫格生图模型", "image"],
                     ] as const
                 )
                     .filter(([key]) => !productMode || key !== "analysis")
@@ -246,10 +246,17 @@ export function DirectionPanel({ project, disabled, change }: Pick<PanelProps, "
         </div>
     );
 }
-export function CharactersPanel(props: PanelProps) {
-    const { project, disabled, change } = props;
+export function CharactersPanel(props: PanelProps & { actionsDisabled: boolean; generate: (characterId: string) => void; cancel: (characterId: string) => void }) {
+    const { project, disabled, actionsDisabled, change, generate, cancel } = props;
+    const config = useEffectiveConfig();
+    const openConfig = useConfigStore((state) => state.openConfigDialog);
     return (
         <div className="space-y-6">
+            <fieldset disabled={disabled} className={`max-w-md space-y-2 ${disabled ? "pointer-events-none opacity-50" : ""}`}>
+                <p className="text-sm font-medium">人物与九宫格生图模型</p>
+                <ModelPicker config={config} capability="image" fullWidth value={project.modelSelection.image || ""} placeholder="使用平台默认模型" onChange={(value) => { if (!disabled) change({ modelSelection: { ...project.modelSelection, image: value } }); }} onMissingConfig={() => openConfig(true)} />
+                <p className="text-xs leading-5 text-muted-foreground">根据角色外观生成定妆照，完成后自动保存并绑定。重新生成并绑定后，后续分镜需重新生成。</p>
+            </fieldset>
             <ReferencePanel {...props} category="character" />
             {project.characters.length > 0 && (
                 <div className="divide-y rounded-lg border">
@@ -285,8 +292,17 @@ export function CharactersPanel(props: PanelProps) {
                                     ))}
                                 </select>
                                 {project.references.character.find((reference) => reference.id === character.imageId)?.media.url && (
-                                    <img className="h-24 w-24 rounded-lg border object-contain" src={project.references.character.find((reference) => reference.id === character.imageId)!.media.url} alt={`${character.name} 已绑定参考图`} />
+                                    <a href={project.references.character.find((reference) => reference.id === character.imageId)!.media.url} target="_blank" rel="noreferrer" className="block">
+                                        <img className="max-h-72 w-full rounded-lg border object-contain" src={project.references.character.find((reference) => reference.id === character.imageId)!.media.url} alt={`${character.name} 已绑定参考图`} />
+                                    </a>
                                 )}
+                                <Button className="w-full" aria-label={`${character.imageId ? "重新生成" : "生成"}${character.name}人物图`} disabled={actionsDisabled || Boolean(bangbangCharacterImageBlockReason(project, character.id))} onClick={() => generate(character.id)}>
+                                    {character.image?.status === "queued" ? "继续提交人物图" : character.image?.status === "running" ? "人物图生成中…" : character.imageId ? "重新生成人物图" : "生成人物图"}
+                                </Button>
+                                {character.image?.status === "queued" && <Button variant="ghost" disabled={actionsDisabled} onClick={() => cancel(character.id)}>撤销未确认提交</Button>}
+                                {character.image?.error && <p role="alert" className="text-xs leading-5 text-destructive">{character.image.error}</p>}
+                                {bangbangCharacterImageBlockReason(project, character.id) && <p className="text-xs leading-5 text-muted-foreground">{bangbangCharacterImageBlockReason(project, character.id)}</p>}
+                                {character.image?.status === "approved" && character.imageId && <p className="text-xs text-emerald-700 dark:text-emerald-400">已生成并自动绑定，可查看原图</p>}
                             </div>
                         </div>
                     ))}

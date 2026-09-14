@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-    BANGBANG_STEPS, bangbangBusy, bangbangCreationMode, bangbangImageBlockReason, bangbangSceneAnchor, bangbangStepBlockReason, createBangbangProject as newProject, isBangbangStep,
+    BANGBANG_STEPS, bangbangBusy, bangbangCreationMode, bangbangCharacterImageBlockReason, bangbangImageBlockReason, bangbangSceneAnchor, bangbangStepBlockReason, createBangbangProject as newProject, isBangbangStep,
     type BangbangGroup, type BangbangImageState, type BangbangInputPatch, type BangbangMedia, type BangbangProject, type BangbangStep, type BangbangStepResult,
 } from "@/lib/bangbang-contract";
 import { getAuthSettings } from "@/lib/auth/store";
@@ -15,6 +15,7 @@ import { fetchInternalApi } from "./internal-origin";
 import { toSafeGenerationErrorMessage } from "./generation-errors";
 import { bangbangGridPrompt } from "./bangbang-prompts";
 import { maintenanceWorkerContextHeaders } from "./maintenance-auth";
+import { bangbangCharacterPortraitPrompt } from "./bangbang-character-prompt";
 
 export class BangbangProjectError extends Error {
     constructor(message: string, readonly status = 400) { super(message); this.name = "BangbangProjectError"; }
@@ -64,6 +65,42 @@ export async function getBangbangProjectForUser(userId: string, id: string): Pro
         });
         return dirty ? changed({ ...current, groups }) : current;
     });
+    return refreshBangbangCharacterImages(userId, project);
+}
+
+async function refreshBangbangCharacterImages(userId: string, project: BangbangProject) {
+    for (const character of project.characters) {
+        const image = character.image;
+        if (!image?.clientRequestId || !["queued", "running"].includes(image.status)) continue;
+        const task = await getStoredGenerationTaskByRequest<ImageTask>("image", userId, image.clientRequestId, image.attemptNo);
+        if (!task || task.userId !== userId || task.projectId !== project.id || task.generationSlotId !== `bangbang-character:${character.id}` || task.prompt !== image.prompt || task.references.length) continue;
+        let update: BangbangImageState = { ...image, status: "running", taskId: task.id };
+        if (task.status === "success") {
+            try {
+                const media = await ownedBangbangMedia(userId, { url: task.result?.serverUrl || task.result?.dataUrl }, "image");
+                update = { ...update, status: "approved", result: { ...media, width: task.result?.width, height: task.result?.height }, approvedAt: new Date().toISOString(), error: undefined };
+            } catch (error) {
+                if (!(error instanceof BangbangProjectError)) throw error;
+                update = { ...update, status: "error", error: "人物图结果未能读取，请在生成任务中检查原任务" };
+            }
+        } else if (task.status === "error" || task.status === "cancelled") {
+            update = { ...update, status: "error", error: task.error || "人物图生成已取消" };
+        } else {
+            const record = await getStoredGenerationTaskRecord("image", task.id);
+            if (record?.executionPhase === "needs_review") update.error = "上游结果需要检查，请在生成任务中检查原任务";
+        }
+        if (JSON.stringify(update) === JSON.stringify(image)) continue;
+        project = await mutate(userId, project.id, (current) => {
+            const target = current.characters.find((item) => item.id === character.id);
+            if (!target?.image || target.image.clientRequestId !== image.clientRequestId || target.image.attemptNo !== image.attemptNo || !["queued", "running"].includes(target.image.status)) return current;
+            const referenceId = `character-${task.id}`;
+            const next = update.status === "approved" && update.result ? {
+                ...invalidateBangbangFrom(current, "storyboard"),
+                references: { ...current.references, character: [...current.references.character.filter((item) => item.id !== referenceId), { id: referenceId, label: `${target.name} 人物图`.slice(0, 160), media: update.result }] },
+            } : current;
+            return changed({ ...next, characters: current.characters.map((item) => item.id === character.id ? { ...item, image: update, ...(update.status === "approved" ? { imageId: referenceId } : {}) } : item) });
+        });
+    }
     return project;
 }
 
@@ -149,7 +186,11 @@ export function applyBangbangInputPatch(current: BangbangProject, patch: Bangban
     else if (next.storyboardImport !== current.storyboardImport || JSON.stringify(next.references.character) !== JSON.stringify(current.references.character) || JSON.stringify(next.references.scene) !== JSON.stringify(current.references.scene)) next = invalidateBangbangFrom(next, "storyboard");
     else if (next.maxSegmentSeconds !== current.maxSegmentSeconds) next = invalidateBangbangFrom(next, next.groups.some((group) => group.end - group.start > next.maxSegmentSeconds) ? "storyboard" : "video-prompts");
     if (next.selectedDirectionId && !next.directions.some((direction) => direction.id === next.selectedDirectionId)) throw new BangbangProjectError("所选裂变方向不存在");
-    next.characters = next.characters.map((character) => ({ ...character, imageId: next.references.character.some((ref) => ref.id === character.imageId) ? character.imageId : undefined }));
+    next.characters = next.characters.map((character) => ({
+        ...character,
+        imageId: next.references.character.some((ref) => ref.id === character.imageId) ? character.imageId : undefined,
+        image: character.image?.result && !next.references.character.some((ref) => ref.media.url === character.image?.result?.url) ? { status: "idle", attemptNo: character.image.attemptNo } : character.image,
+    }));
     if (transcriptText !== undefined) {
         if (bangbangCreationMode(next) === "product") throw new BangbangProjectError("产品原创不需要字幕，请在对标裂变模式导入");
         if (!transcriptText.trim()) throw new BangbangProjectError("导入字幕不能为空");
@@ -243,6 +284,68 @@ export function bangbangImageReferences(project: BangbangProject, group: Bangban
     if (group.productVisible) for (const reference of project.references.product) references.push({ name: `产品：${reference.label}`, url: reference.media.url });
     return references;
 }
+export async function reserveBangbangCharacterImage(userId: string, id: string, revision: number, characterId: string) {
+    const before = await getBangbangProjectForUser(userId, id);
+    const settings = await getAuthSettings();
+    const model = before.modelSelection.image || settings.defaultModels.imageModel;
+    if (!model || !resolveLogicalModelCandidates(settings, "image", model).length) throw new BangbangProjectError("请先选择可用的生图模型");
+    return mutate(userId, id, (current) => {
+        assertRevision(current, revision);
+        const reason = bangbangCharacterImageBlockReason(current, characterId);
+        if (reason) throw new BangbangProjectError(reason, 409);
+        const character = current.characters.find((item) => item.id === characterId)!;
+        if (character.image?.status === "queued") return current;
+        const image: BangbangImageState = {
+            status: "queued", attemptNo: (character.image?.attemptNo || 0) + 1,
+            clientRequestId: `bangbang-character:${randomUUID()}`,
+            prompt: bangbangCharacterPortraitPrompt(character), referenceUrls: [],
+        };
+        return changed({ ...current, modelSelection: { ...current.modelSelection, image: model }, characters: current.characters.map((item) => item.id === characterId ? { ...item, image } : item) });
+    });
+}
+export async function submitBangbangCharacterImage(input: { userId: string; projectId: string; revision: number; characterId: string; origin: string; credential: string }) {
+    const project = await reserveBangbangCharacterImage(input.userId, input.projectId, input.revision, input.characterId);
+    const character = project.characters.find((item) => item.id === input.characterId)!;
+    const image = character.image!;
+    let response: Response;
+    try {
+        response = await fetchInternalApi(`${input.origin}/api/image-tasks`, {
+            method: "POST", headers: { "Content-Type": "application/json", ...(maintenanceWorkerContextHeaders(input.credential) || { cookie: input.credential }), "x-vozeb-pro-client-request-id": image.clientRequestId!, "x-vozeb-pro-attempt-no": String(image.attemptNo) },
+            body: JSON.stringify({
+                kind: "generation", prompt: image.prompt, title: `${project.title} · ${character.name}人物图`, source: "drama",
+                config: { apiSource: "system", model: project.modelSelection.image, size: "9:16", quality: "2K" }, references: [],
+                context: { projectId: project.id, generationSlotId: `bangbang-character:${character.id}`, clientRequestId: image.clientRequestId, attemptNo: image.attemptNo },
+            }),
+        });
+    } catch {
+        throw new BangbangProjectError("网络中断，人物图提交尚未确认。请点击继续提交，将复用原请求", 502);
+    }
+    if (!response.ok) {
+        const payload = object(await response.json().catch(() => ({})));
+        const message = typeof payload.error === "string" ? payload.error : "人物图任务提交失败";
+        if (response.status >= 400 && response.status < 500) await mutate(input.userId, input.projectId, (current) => changed({ ...current, characters: current.characters.map((item) => item.id === character.id && item.image && item.image.clientRequestId === image.clientRequestId && item.image.status === "queued" ? { ...item, image: { ...item.image, status: "error", error: message } } : item) }));
+        throw new BangbangProjectError(message, response.status);
+    }
+    await response.body?.cancel();
+    return getBangbangProjectForUser(input.userId, project.id);
+}
+export async function abandonBangbangCharacterImage(userId: string, id: string, characterId: string) {
+    const project = await getBangbangProjectForUser(userId, id);
+    const image = project.characters.find((item) => item.id === characterId)?.image;
+    if (image?.status !== "queued" || !image.clientRequestId) throw new BangbangProjectError("当前没有待确认的人物图提交", 409);
+    const settings = await getAuthSettings();
+    const result = await withGenerationConcurrencyLimit(userId, "image", 10 * 60_000, settings.generationConcurrency.image, async () => {
+        const task = await getStoredGenerationTaskByRequest<ImageTask>("image", userId, image.clientRequestId!, image.attemptNo);
+        if (task) return getBangbangProjectForUser(userId, id);
+        return mutate(userId, id, (current) => {
+            const target = current.characters.find((item) => item.id === characterId);
+            if (target?.image?.clientRequestId !== image.clientRequestId || target?.image?.status !== "queued") throw new BangbangProjectError("人物图状态已变化，请刷新", 409);
+            return changed({ ...current, characters: current.characters.map((item) => item.id === characterId ? { ...item, image: { status: "idle", attemptNo: image.attemptNo } } : item) });
+        });
+    }, undefined, image.clientRequestId);
+    if (!result) throw new BangbangProjectError("人物图提交仍在处理中，请稍后检查", 409);
+    return result;
+}
 export async function reserveBangbangImage(userId: string, id: string, revision: number, groupId: string) {
     const before = await getBangbangProjectForUser(userId, id);
     const beforeGroup = before.groups.find((group) => group.id === groupId);
@@ -300,6 +403,15 @@ export async function submitBangbangImage(input: { userId: string; projectId: st
 }
 export async function validateBangbangImageRequest(input: { userId: string; projectId: string; slotId: string; clientRequestId?: string; attemptNo?: number; prompt: string; references: unknown; model?: string; size?: string }) {
     const project = await getBangbangProjectForUser(input.userId, input.projectId);
+    if (input.slotId.startsWith("bangbang-character:")) {
+        const character = project.characters.find((item) => `bangbang-character:${item.id}` === input.slotId);
+        const image = character?.image;
+        if (!character || !image || image.status !== "queued" || image.clientRequestId !== input.clientRequestId || image.attemptNo !== input.attemptNo) throw new BangbangProjectError("人物图提交已取消或状态已变化，请刷新项目", 409);
+        if (input.prompt !== image.prompt || input.model !== project.modelSelection.image || input.size !== "9:16" || !Array.isArray(input.references) || input.references.length) throw new BangbangProjectError("生图参数与当前人物不一致", 409);
+        const reason = bangbangCharacterImageBlockReason(project, character.id);
+        if (reason) throw new BangbangProjectError(reason, 409);
+        return;
+    }
     const group = project.groups.find((item) => `bangbang-image:${item.id}` === input.slotId);
     if (!group || project.operation || group.image.status !== "queued" || group.image.clientRequestId !== input.clientRequestId || group.image.attemptNo !== input.attemptNo) throw new BangbangProjectError("这次生图提交已取消或状态已变化，请刷新项目", 409);
     if (input.prompt !== group.image.prompt || input.model !== project.modelSelection.image || input.size !== "9:16") throw new BangbangProjectError("生图参数与当前分镜不一致", 409);
