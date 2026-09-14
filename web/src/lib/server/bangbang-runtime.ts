@@ -4,6 +4,7 @@ import { join } from "node:path";
 import sharp, { type OverlayOptions } from "sharp";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { bangbangCreationMode, type BangbangGroup, type BangbangMedia, type BangbangProject, type BangbangStep, type BangbangStepResult } from "@/lib/bangbang-contract";
+import { resolveLogicalModelCapabilityProfile } from "@/lib/model-routing-config";
 import { probeBangbangVideo, transcribeBangbangVideo } from "./bangbang-asr";
 import { bangbangResultShape, bangbangStageMessages } from "./bangbang-prompts";
 import { parseBangbangSourceFrameTimes, parseBangbangStepOutput } from "./bangbang-runtime-output";
@@ -15,6 +16,7 @@ import { deleteUserLocalMediaAssets } from "./local-media-storage";
 import { writePersistentMediaDataUrl } from "./reference-asset-store";
 import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "./logical-model-router";
 import { maintenanceWorkerContextHeaders } from "./maintenance-auth";
+import { resolveModelRequestTimeoutMs } from "./model-request-policy";
 import { rankTextPlanningCandidates, requestStructuredText } from "./text-planning-runtime";
 import { requestRemakeProductionVisionPrompt, resolveRemakeProductionVisionProtocol, RemakeProductionVisionError, type RemakeProductionVisualBoard } from "./remake15-production-vision-runtime";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "./system-ai-billing";
@@ -23,6 +25,7 @@ type OperationInput = { project: BangbangProject; userId: string; origin: string
 type Charge = { model: string; headers: Headers; refunded?: boolean };
 type VisualReference = { label: string; media: BangbangMedia; role: "character" | "product" | "redrawn-contact-sheet" };
 const OPERATION_TIMEOUT_MS = 25 * 60_000;
+const BANGBANG_TEXT_REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 export async function executeBangbangStep(input: OperationInput): Promise<{ result: BangbangStepResult; accept: () => Promise<void>; rollback: () => Promise<void> }> {
     const operation = input.project.operation;
@@ -198,7 +201,11 @@ async function resolveCandidate(project: BangbangProject, video: boolean, vision
     const candidates = rankTextPlanningCandidates(ids.flatMap((id) => resolveLogicalModelCandidates(settings, "text", id)));
     const selected = candidates.find((candidate) => video ? supportsBangbangFullVideo(candidate) : vision ? Boolean(resolveRemakeProductionVisionProtocol(candidate)) : true);
     if (!selected) throw new Error(video ? `请在后台配置支持完整视频文件理解的 ${BANGBANG_VIDEO_MODEL} 文本渠道，并选择对应分析模型` : vision ? "当前提示词模型没有可用的图片理解能力，请选择已配置参考图能力的文本模型" : "后台尚未配置可用的提示词文本模型");
-    return selected;
+    // 多模态创作包含长时间推理，使用环节专属默认值；管理员设置仍优先。
+    return video ? selected : {
+        ...selected,
+        capabilityProfile: resolveLogicalModelCapabilityProfile({ capabilityProfile: { ...selected.capabilityProfile, timeoutMs: resolveModelRequestTimeoutMs(selected, "text", BANGBANG_TEXT_REQUEST_TIMEOUT_MS) } }, "text", selected.channel, selected.upstreamModel),
+    };
 }
 function stepReferences(project: BangbangProject, step: BangbangStep): VisualReference[] {
     if (["traffic", "understanding", "frames"].includes(step)) return [];

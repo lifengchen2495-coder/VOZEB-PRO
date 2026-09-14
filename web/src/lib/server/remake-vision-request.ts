@@ -80,19 +80,27 @@ export async function requestRemakeVisionPrompt(input: {
     const workerHeaders = maintenanceWorkerContextHeaders(input.cookie);
     if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
     else if (input.cookie) headers.set("cookie", input.cookie);
-    const timeoutSignal = AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text"));
+    const timeoutMs = resolveModelRequestTimeoutMs(input.candidate, "text");
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
+    const localTimeoutError = (responseHeaders?: Headers) =>
+        signal.aborted && signal.reason === timeoutSignal.reason && timeoutSignal.aborted ? new RemakeProductionVisionError(`模型生成超过 ${timeoutMs / 1000} 秒等待上限，请联系管理员调整当前模型的请求超时，或稍后重试。`, 504, responseHeaders) : undefined;
     const stream = input.stream !== false && protocol.kind !== "gemini";
     const defaults = { ...buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.maxOutputTokens), ...(input.jsonMode && protocol.kind === "chat" ? { response_format: { type: "json_object" } } : {}) };
     const body = protocol.requestTemplate ? { ...defaults, ...buildProviderRequest(protocol.requestTemplate, defaults, { ...defaults, stream }), stream } : { ...defaults, ...(stream ? { stream: true } : {}) };
     if (stream) headers.set("accept", "text/event-stream");
-    const response = await fetchInternalApi(modelProxyUrl(input.origin, input.candidate.channelId, protocol.path), {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        cache: "no-store",
-        signal,
-    });
+    let response: Response;
+    try {
+        response = await fetchInternalApi(modelProxyUrl(input.origin, input.candidate.channelId, protocol.path), {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+            cache: "no-store",
+            signal,
+        });
+    } catch (error) {
+        throw localTimeoutError() || error;
+    }
     if (!response.ok) {
         const detail = await readResponseText(response, 64 * 1024).catch(() => "");
         throw new RemakeProductionVisionError(toSafeGenerationErrorMessage(detail, `生产视觉规划模型调用失败（HTTP ${response.status}）`, response.status), response.status, response.headers);
@@ -110,6 +118,8 @@ export async function requestRemakeVisionPrompt(input: {
             payload = parsed as Record<string, unknown>;
         }
     } catch (error) {
+        const timeoutError = localTimeoutError(responseHeaders);
+        if (timeoutError) throw timeoutError;
         const message = error instanceof SyntaxError ? "生产视觉规划模型返回了无效 JSON" : toSafeGenerationErrorMessage(error, "生产视觉规划模型响应读取失败");
         throw new RemakeProductionVisionError(message, error instanceof RemakeProductionVisionError ? error.status : toSafeGenerationTransportError(error, "response").status, responseHeaders);
     }

@@ -13,11 +13,12 @@ export const DEFAULT_MODEL_REQUEST_TIMEOUT_MS: Record<LogicalModelCapability, nu
 
 type ModelRequestPolicyConfig = { capabilityProfile?: Pick<LogicalModelCapabilityProfile, "timeoutMs">; advancedConfig?: { protocol?: SystemChannelProtocol } };
 
-export function resolveModelRequestTimeoutMs(config: ModelRequestPolicyConfig | undefined, capability: LogicalModelCapability) {
+export function resolveModelRequestTimeoutMs(config: ModelRequestPolicyConfig | undefined, capability: LogicalModelCapability, defaultTimeoutMs = DEFAULT_MODEL_REQUEST_TIMEOUT_MS[capability]) {
     // 文本模型也遵守绑定中的超时配置，未配置时才使用默认值。
     const configured = Math.floor(Number(config?.capabilityProfile?.timeoutMs));
-    if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_MODEL_REQUEST_TIMEOUT_MS[capability];
-    return Math.max(MIN_REQUEST_TIMEOUT_MS, Math.min(MAX_REQUEST_TIMEOUT_MS, configured));
+    const fallback = Number.isFinite(defaultTimeoutMs) && defaultTimeoutMs > 0 ? Math.floor(defaultTimeoutMs) : DEFAULT_MODEL_REQUEST_TIMEOUT_MS[capability];
+    const timeoutMs = Number.isFinite(configured) && configured > 0 ? configured : fallback;
+    return Math.max(MIN_REQUEST_TIMEOUT_MS, Math.min(MAX_REQUEST_TIMEOUT_MS, timeoutMs));
 }
 
 export function resolveModelPollingAttempts(config: ModelRequestPolicyConfig | undefined, capability: LogicalModelCapability, intervalMs: number, minimumAttempts: number) {
