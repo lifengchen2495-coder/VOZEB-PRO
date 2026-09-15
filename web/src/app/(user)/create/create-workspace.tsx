@@ -5,6 +5,7 @@ import type { TextAreaRef } from "antd/es/input/TextArea";
 import { ChevronsDown, Clapperboard, FolderOpen, History, Play, Plus, ScanFace, ShoppingBag, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import { CREATIVE_UPLOAD_ACCEPT, CREATIVE_UPLOAD_MAX_BYTES, isCreativeUploadMimeType } from "@/lib/creative-upload";
 import type { CreateOverviewAsset } from "@/lib/create-workbench-overview";
@@ -820,6 +821,7 @@ export function CreateWorkspace({ commerceImage = false }: { commerceImage?: boo
                                     {composer}
                                 </div>
                                 <div className="mt-2 flex w-full min-w-0 flex-wrap justify-center gap-1.5 sm:mt-3 sm:gap-2">
+                                    {!commerceImage && <Link href="/frame-remake" className="inline-flex h-9 items-center gap-2 rounded-full border border-[#e3e7eb] bg-white px-3 text-sm font-medium text-[#343b44] transition hover:bg-[#f7f8fa] dark:border-[#343a42] dark:bg-[#181b20] dark:text-[#dce1e7]">原时长视频复刻</Link>}
                                     {skillsLoading ? <span className="px-2 py-2 text-xs text-[#9aa2ad]">正在加载创作 Skill...</span> : null}
                                     {skills.map((skill, index) => {
                                         const visual = skillVisual(skill, index);

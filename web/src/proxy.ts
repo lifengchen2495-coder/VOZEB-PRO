@@ -29,7 +29,9 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-    matcher: "/((?!_next/static|_next/image|favicon.ico).*)",
+    // 原时长视频上传直接消费原始流，避免代理克隆请求体时的 32 MB 截断。
+    // 该路由自行执行登录、同源、文件类型和大小校验。
+    matcher: "/((?!api/frame-remake/uploads(?:/|$)|_next/static|_next/image|favicon.ico).*)",
 };
 
 function securedNextResponse(requestHeaders: Headers, contentSecurityPolicy: string) {

@@ -172,6 +172,15 @@ export async function POST(request: Request) {
                 throw error;
             }
         }
+        if (resolvedBody.context?.projectId?.startsWith("frame-remake-") || resolvedBody.context?.generationSlotId?.startsWith("frame-remake-image:") || resolvedBody.context?.generationSlotId?.startsWith("frame-remake-template:")) {
+            const { validateFrameRemakeGeneration, FrameRemakeError } = await import("@/lib/server/frame-remake-project-service");
+            try {
+                await validateFrameRemakeGeneration({ kind: "image", userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context?.generationSlotId || "", clientRequestId: resolvedBody.context?.clientRequestId, attemptNo: resolvedBody.context?.attemptNo, prompt: (resolvedBody.prompt || "").trim(), references: resolvedBody.references, model: resolvedBody.config?.model, size: resolvedBody.config?.size });
+            } catch (error) {
+                if (error instanceof FrameRemakeError) return NextResponse.json({ error: error.message }, { status: error.status });
+                throw error;
+            }
+        }
         const configs = sanitizeConfigs(resolvedBody.config, settings);
         const prompt = (resolvedBody.prompt || "").trim();
         const kind = resolvedBody.kind === "edit" ? "edit" : "generation";

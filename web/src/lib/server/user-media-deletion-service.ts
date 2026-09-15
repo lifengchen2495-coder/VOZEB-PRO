@@ -1,4 +1,5 @@
 import { cleanOmniWorkflowMediaReferences } from "@/lib/server/omni-workflow-media-cleanup";
+import { cleanFrameRemakeMediaReferences } from "@/lib/server/frame-remake-media-cleanup";
 import { cleanBangbangMediaReferences } from "@/lib/server/bangbang-media-cleanup";
 import type { CanvasProject } from "@/lib/canvas-project-contract";
 import { readJsonDataFile, withJsonDataFileLocks, writeJsonDataFile } from "@/lib/server/data-adapter";
@@ -38,6 +39,7 @@ const FILES = [
     "omni-clothing-projects.json",
     "omni-remake-projects.json",
     "bangbang-projects.json",
+    "frame-remake-projects.json",
     "generation-logs.json",
     "generation-tasks.json",
     "library-assets.json",
@@ -137,6 +139,7 @@ async function removePostgresReferences(client: QueryExecutor, userId: string, s
     removed += await cleanAdditionalWorkflowProjects<import("@/lib/omni-clothing-contract").OmniClothingProject>(client, "omni_clothing_projects", userId, storageKeys, cleanOmniWorkflowMediaReferences);
     removed += await cleanAdditionalWorkflowProjects<import("@/lib/omni-remake-contract").OmniProject>(client, "omni_remake_projects", userId, storageKeys, cleanOmniWorkflowMediaReferences);
     removed += await cleanAdditionalWorkflowProjects<import("@/lib/bangbang-contract").BangbangProject>(client, "bangbang_projects", userId, storageKeys, cleanBangbangMediaReferences);
+    removed += await cleanAdditionalWorkflowProjects<import("@/lib/frame-remake-contract").FrameRemakeProject>(client, "frame_remake_projects", userId, storageKeys, cleanFrameRemakeMediaReferences);
     removed += await cleanPostgresJsonProjects(client, "drama_project_versions", "snapshot", userId, storageKeys);
 
     const logAssets = await client.query<{ generation_log_id: string }>(
@@ -402,6 +405,13 @@ function cleanFileState(state: Awaited<ReturnType<typeof readFileState>>, userId
         removedReferences += 1;
         return { ...record, project: cleaned.value };
     }) };
+    const frameRemake = { ...state.frameRemake, projects: state.frameRemake.projects.map((record) => {
+        if (record.userId !== userId) return record;
+        const cleaned = cleanFrameRemakeMediaReferences(record.project, storageKeys);
+        if (!cleaned.changed) return record;
+        removedReferences += 1;
+        return { ...record, project: cleaned.value };
+    }) };
     const tasks = state.tasks.map((task) => {
         if (task.userId !== userId) return task;
         const inputDeleted = containsUserMediaReference(task.payload, storageKeys);
@@ -418,7 +428,7 @@ function cleanFileState(state: Awaited<ReturnType<typeof readFileState>>, userId
               return cleaned.value;
           })
         : state.auth.users;
-    return { state: { ...state, runtime, library, canvas, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, logs, tasks, auth: { ...state.auth, users } }, removedReferences };
+    return { state: { ...state, runtime, library, canvas, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, frameRemake, logs, tasks, auth: { ...state.auth, users } }, removedReferences };
 
     function cleanCounted<T>(value: T, keys: string[], ids: string[]) {
         const cleaned = cleanUserMediaReferences(value, keys, ids);
@@ -432,7 +442,7 @@ function ownedBy(value: unknown, userId: string) {
 }
 
 async function readFileState() {
-    const [auth, canvas, runtime, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, logs, tasks, library, media] = await Promise.all([
+    const [auth, canvas, runtime, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, frameRemake, logs, tasks, library, media] = await Promise.all([
         readJsonDataFile<Record<string, unknown>>("auth.json", {}),
         readJsonDataFile<CanvasProjectFile>("canvas-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<RuntimeFileDatabase>("creative-runtime.json", { version: 1, nextEventId: 1, conversations: [], messages: [], assets: [], events: [] }),
@@ -445,12 +455,13 @@ async function readFileState() {
         readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/omni-clothing-contract").OmniClothingProject }> }>("omni-clothing-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/omni-remake-contract").OmniProject }> }>("omni-remake-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/bangbang-contract").BangbangProject }> }>("bangbang-projects.json", { version: 1, projects: [] }),
+        readJsonDataFile<{ version: 1; projects: Array<{ userId: string; project: import("@/lib/frame-remake-contract").FrameRemakeProject }> }>("frame-remake-projects.json", { version: 1, projects: [] }),
         readJsonDataFile<GenerationLogDatabase>("generation-logs.json", { version: 1, logs: [] }),
         readJsonDataFile<StoredGenerationTaskRecord[]>("generation-tasks.json", []),
         readJsonDataFile<LibraryAssetFile>("library-assets.json", { version: 1, assets: [] }),
         readJsonDataFile<LocalMediaFile>("local-media-assets.json", { version: 1, assets: [] }),
     ]);
-    return { auth, canvas, runtime, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, logs, tasks, library, media };
+    return { auth, canvas, runtime, drama, remake, remake15, remake60, remakeProduct, remakePerson, omniClothing, omniRemake, bangbang, frameRemake, logs, tasks, library, media };
 }
 
 async function writeFileState(state: Awaited<ReturnType<typeof readFileState>>) {
@@ -471,6 +482,7 @@ function fileStateEntries(state: Awaited<ReturnType<typeof readFileState>>) {
         "omni-clothing-projects.json": state.omniClothing,
         "omni-remake-projects.json": state.omniRemake,
         "bangbang-projects.json": state.bangbang,
+        "frame-remake-projects.json": state.frameRemake,
         "generation-logs.json": state.logs,
         "generation-tasks.json": state.tasks,
         "library-assets.json": state.library,
@@ -977,7 +989,7 @@ function cleanRemakePersonProjectMediaReferences(project: RemakePersonProject, s
 }
 
 
-async function cleanAdditionalWorkflowProjects<T extends { updatedAt: string }>(client: QueryExecutor, table: "remake60_projects" | "remake_product_projects" | "remake_person_projects" | "omni_clothing_projects" | "omni_remake_projects" | "bangbang_projects", userId: string, storageKeys: string[], clean: (value: T, keys: string[]) => { value: T; changed: boolean }) {
+async function cleanAdditionalWorkflowProjects<T extends { updatedAt: string }>(client: QueryExecutor, table: "remake60_projects" | "remake_product_projects" | "remake_person_projects" | "omni_clothing_projects" | "omni_remake_projects" | "bangbang_projects" | "frame_remake_projects", userId: string, storageKeys: string[], clean: (value: T, keys: string[]) => { value: T; changed: boolean }) {
     const result = await client.query<{ id: string; project_json: T }>(`SELECT id, project_json FROM ${table} WHERE user_id = $1 AND ${matchesJsonColumns(table, ["project_json"])} FOR UPDATE`, [userId, storageKeys]);
     let changed = 0;
     for (const row of result.rows) {
