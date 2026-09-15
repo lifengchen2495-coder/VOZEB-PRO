@@ -1,0 +1,97 @@
+import { randomUUID } from "node:crypto";
+import { frameRemakeBusy, idleFrameRemakeTask, type FrameRemakeProject } from "@/lib/frame-remake-contract";
+import { changedFrameRemake, FrameRemakeError, assertFrameRemakeRevision, getFrameRemakeProjectForUser, mutateFrameRemake, startFrameRemakeOperation, submitFrameRemakeGeneration } from "./frame-remake-project-service";
+import { listRunnableFrameRemakeProjects } from "./frame-remake-project-store";
+import { runFrameRemakeOperation } from "./frame-remake-runtime";
+import { isWorkerTokenConfigured, maintenanceWorkerContext } from "./maintenance-auth";
+import { toSafeGenerationErrorMessage } from "./generation-errors";
+
+export function nextFrameRemakeStep(project: FrameRemakeProject) {
+    if (!project.sourceVideo) throw new Error("请先上传原视频");
+    if (!project.groups.length || project.groups.some((group) => !group.contactSheet || group.frames.some((frame) => !frame.media))) return { kind: "extract" as const, label: "读取原片时长并拆帧" };
+    if (project.groups.some((group) => !group.analysis || !group.imagePrompt || !group.videoPrompt)) return { kind: "analyze" as const, label: "分析画面并生成分镜脚本" };
+    for (const group of project.groups)
+        for (const kind of ["template", "image", "video"] as const) {
+            if (group[kind].status === "error") throw new Error(`第 ${group.number} 组：${group[kind].error || "生成失败"}`);
+            if (group[kind].status !== "completed") return { kind, groupId: group.id, label: `第 ${group.number} / ${project.groups.length} 组：${kind === "template" ? "还原模板与替换人物" : kind === "image" ? "融合产品与背景" : "生成视频"}` };
+        }
+    if (!project.mergedVideo) return { kind: "merge" as const, label: "按原片时长合成视频" };
+    return undefined;
+}
+
+export async function controlFrameRemakeAutomation(userId: string, id: string, revision: number, action: "start" | "pause") {
+    if (action === "start" && !isWorkerTokenConfigured()) throw new FrameRemakeError("请先配置生成 Worker，才能自动执行复刻流程", 503);
+    return mutateFrameRemake(userId, id, (project) => {
+        assertFrameRemakeRevision(project, revision);
+        if (action === "pause") return changedFrameRemake({ ...project, automation: project.automation ? { ...project.automation, status: "paused", updatedAt: new Date().toISOString(), progress: "已暂停后续步骤，当前已提交任务会继续完成" } : undefined });
+        if (!project.sourceVideo) throw new FrameRemakeError("请先上传原视频");
+        if (project.automation?.status === "running") return project;
+        // 继续由用户明确发起。仅重置失败步骤，已提交的未知结果继续复用原请求。
+        const groups = project.groups.map((group) => ({ ...group, ...Object.fromEntries((["template", "image", "video"] as const).map((kind) => [kind, group[kind].status === "error" ? idleFrameRemakeTask(group[kind].attemptNo) : group[kind]])) }));
+        const now = new Date().toISOString();
+        return changedFrameRemake({ ...project, groups, error: undefined, automation: { id: randomUUID(), status: "running", startedAt: project.automation?.startedAt || now, updatedAt: now, progress: "开始执行复刻流程" } });
+    });
+}
+
+export async function runFrameRemakeAutomationBatch(origin: string) {
+    if (!isWorkerTokenConfigured()) return { claimed: 0 };
+    const candidates = await listRunnableFrameRemakeProjects();
+    let claimed = 0;
+    for (const { userId, project: snapshot } of candidates) {
+        const leaseId = randomUUID();
+        const project = await mutateFrameRemake(userId, snapshot.id, (current) => {
+            if (current.automation?.id !== snapshot.automation?.id || current.automation?.status !== "running" || (current.automation.leaseUntil && Date.parse(current.automation.leaseUntil) > Date.now())) return current;
+            return changedFrameRemake({ ...current, automation: { ...current.automation, leaseId, leaseUntil: new Date(Date.now() + 30 * 60_000).toISOString() } });
+        }).catch(() => undefined);
+        if (project?.automation?.leaseId !== leaseId) continue;
+        claimed++;
+        const finish = (status: "running" | "error" | "completed", progress: string, error?: string) =>
+            mutateFrameRemake(userId, project.id, (current) => {
+                if (current.automation?.id !== project.automation?.id || current.automation?.leaseId !== leaseId) return current;
+                return changedFrameRemake({
+                    ...current,
+                    error: error || current.error,
+                    automation: { ...current.automation, status: current.automation.status === "paused" ? "paused" : status, leaseId: undefined, leaseUntil: undefined, updatedAt: new Date().toISOString(), progress },
+                });
+            });
+        try {
+            const current = await getFrameRemakeProjectForUser(userId, project.id);
+            if (current.automation?.status !== "running") {
+                await finish("running", "已暂停");
+                continue;
+            }
+            if (current.error) throw new Error(current.error);
+            const review = current.groups.flatMap((group) => [group.template, group.image, group.video]).find((task) => task.error && task.status === "running");
+            if (review) throw new Error(review.error);
+            if (frameRemakeBusy(current)) {
+                // 未确认提交复用同一个请求；后台已创建的任务只查询状态。
+                const queued = current.groups.flatMap((group) => (["template", "image", "video"] as const).map((kind) => ({ group, kind }))).find(({ group, kind }) => group[kind].status === "queued");
+                if (queued) await submitFrameRemakeGeneration({ userId, projectId: current.id, revision: current.revision, groupId: queued.group.id, kind: queued.kind, automationLeaseId: leaseId, origin, credential: maintenanceWorkerContext(userId) });
+                await finish("running", current.operation?.progress || current.automation!.progress);
+                continue;
+            }
+            const step = nextFrameRemakeStep(current);
+            if (!step) {
+                await finish("completed", "复刻完成，成片已保存");
+                continue;
+            }
+            const ready = await mutateFrameRemake(userId, current.id, (latest) => {
+                if (latest.automation?.status !== "running" || latest.automation.leaseId !== leaseId) throw new Error("后续步骤已暂停");
+                return changedFrameRemake({ ...latest, automation: { ...latest.automation, progress: step.label, updatedAt: new Date().toISOString() } });
+            });
+            if (step.kind === "extract" || step.kind === "analyze" || step.kind === "merge") {
+                const active = await startFrameRemakeOperation(userId, ready.id, ready.revision, step.kind, undefined, leaseId);
+                await runFrameRemakeOperation({ userId, project: active, origin, credential: maintenanceWorkerContext(userId) });
+            } else await submitFrameRemakeGeneration({ userId, projectId: ready.id, revision: ready.revision, groupId: step.groupId!, kind: step.kind, automationLeaseId: leaseId, origin, credential: maintenanceWorkerContext(userId) });
+            const latest = await getFrameRemakeProjectForUser(userId, ready.id);
+            if (latest.error) throw new Error(latest.error);
+            await finish(latest.mergedVideo ? "completed" : "running", latest.mergedVideo ? "复刻完成，成片已保存" : step.label);
+        } catch (error) {
+            const message = toSafeGenerationErrorMessage(error, "复刻已停止，请检查当前步骤");
+            await finish("error", message, message).catch(() => undefined);
+        }
+        // 一次只运行一个可执行项目，其他项目在下一轮领取，避免单次调用累积超时。
+        break;
+    }
+    return { claimed };
+}

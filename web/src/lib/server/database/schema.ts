@@ -682,6 +682,19 @@ CREATE TABLE IF NOT EXISTS bangbang_projects (
 
 CREATE INDEX IF NOT EXISTS bangbang_projects_user_updated_idx ON bangbang_projects (user_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS frame_remake_projects (
+    id text PRIMARY KEY,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    project_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT frame_remake_projects_status CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS frame_remake_projects_user_updated_idx ON frame_remake_projects (user_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS drama_project_versions (
     id text PRIMARY KEY,
     project_id text NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,

@@ -1,6 +1,7 @@
 import { Clapperboard, ImagePlus, Package, ScanSearch, Shirt, UserRound, WandSparkles } from "lucide-react";
 
 export const commerceVideoTools = [
+    { slug: "frame-remake", label: "原时长拆帧复刻", description: "按原片完整时长拆帧，逐组复刻并合成，可换品、换人和换背景。", icon: ScanSearch },
     { slug: "bangbang", label: "带货短剧裂变", description: "上传产品图原创剧本，或按对标视频裂变，逐张制作九宫格。", icon: Clapperboard },
     { slug: "remake15", label: "15 秒换品换人", description: "替换产品和人物，制作 12 分镜短视频。", icon: Clapperboard },
     { slug: "remake", label: "1 分钟换品换人", description: "替换产品并按需换人，制作 1 分钟复刻视频。", icon: ScanSearch },

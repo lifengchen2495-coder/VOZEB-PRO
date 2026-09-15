@@ -23,7 +23,7 @@ process.once("SIGINT", stop);
 console.log(`Generation worker started: ${workerId}`);
 void sendHeartbeat();
 const heartbeatTimer = setInterval(() => void sendHeartbeat(), heartbeatIntervalMs);
-await Promise.all([...Array.from({ length: lanes }, (_, index) => runLane(index + 1)), runRefundLane()]);
+await Promise.all([...Array.from({ length: lanes }, (_, index) => runLane(index + 1)), runRefundLane(), runFrameRemakeLane()]);
 clearInterval(heartbeatTimer);
 console.log("Generation worker stopped");
 
@@ -108,6 +108,21 @@ async function runRefundLane() {
 function boundedNumber(value, fallback, min, max) {
     const number = Number(value);
     return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.floor(number))) : fallback;
+}
+
+async function runFrameRemakeLane() {
+    while (!stopping) {
+        try {
+            const response = await fetch(`${origin}/api/maintenance/frame-remake/run`, { method: "POST", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(40 * 60_000) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            await response.body?.cancel();
+            await delay(4000);
+        } catch (error) {
+            if (stopping) break;
+            console.error("Frame remake worker failed", error instanceof Error ? error.message : error);
+            await delay(10000);
+        }
+    }
 }
 
 function delay(ms) {
