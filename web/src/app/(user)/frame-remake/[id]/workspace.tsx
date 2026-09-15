@@ -5,7 +5,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Download, RefreshCw, ScanSearch, Upload, X } from "lucide-react";
 import { ModelPicker } from "@/components/model-picker";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
-import { frameRemakeBusy, frameRemakeSeconds, frameRemakeTime, type FrameRemakeGenerationKind, type FrameRemakeGroup, type FrameRemakePatch, type FrameRemakeProject, type FrameRemakeTask } from "@/lib/frame-remake-contract";
+import {
+    FRAME_REMAKE_ANALYSIS_LABELS,
+    frameRemakeAnalysisResult,
+    nextFrameRemakeAnalysisStage,
+    type FrameRemakeAnalysisStage,
+    type FrameRemakeOperationKind,
+    frameRemakeBusy,
+    frameRemakeSeconds,
+    frameRemakeTime,
+    type FrameRemakeGenerationKind,
+    type FrameRemakeGroup,
+    type FrameRemakePatch,
+    type FrameRemakeProject,
+    type FrameRemakeTask,
+} from "@/lib/frame-remake-contract";
 import { frameRemakeImagePrompt, frameRemakeVideoPrompt } from "@/lib/frame-remake-prompts";
 import { frameRemakeProjectPath, frameRemakeRequest, uploadFrameRemakeMedia } from "../api";
 import { Button, Field, Input, Textarea } from "../../bangbang/controls";
@@ -84,8 +98,9 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
             accept(await frameRemakeRequest<FrameRemakeProject>(path, { ...draft, revision: current.current!.revision }, "PATCH"));
             setDraft({});
         });
-    const operation = (kind: "extract" | "analyze" | "merge", groupId?: string) => action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/operations`, { revision: current.current!.revision, kind, groupId })));
-    const control = (mode: "start" | "pause") =>
+    const operation = (kind: FrameRemakeOperationKind, groupId?: string, analysisStage?: FrameRemakeAnalysisStage) =>
+        action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/operations`, { revision: current.current!.revision, kind, groupId, analysisStage })));
+    const control = (mode: "start" | "step" | "pause") =>
         action(async () => {
             const latest = await refresh();
             accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/run`, { revision: latest.revision, action: mode }));
@@ -144,12 +159,13 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
     const selectedGroup = project.groups.find((group) => group.id === selected) || project.groups[0];
     const group = selectedGroup && draft.group?.id === selectedGroup.id ? { ...selectedGroup, ...draft.group } : selectedGroup;
     const extracted = project.groups.length > 0 && project.groups.every((group) => group.contactSheet && group.frames.every((frame) => frame.media));
-    const analyzed = extracted && project.groups.every((group) => group.analysis && group.imagePrompt && group.videoPrompt);
+    const analyzed = extracted && project.groups.every((group) => !nextFrameRemakeAnalysisStage(group));
     const templatesReady = analyzed && project.groups.every((group) => group.template.status === "completed");
     const imagesReady = templatesReady && project.groups.every((group) => group.image.status === "completed");
     const videosReady = imagesReady && project.groups.every((group) => group.video.status === "completed");
     const change = (patch: FrameRemakePatch) => setDraft((current) => ({ ...current, ...patch }));
-    const editGroup = (key: "analysis" | "imagePrompt" | "videoPrompt", value: string) => group && change({ group: { id: group.id, analysis: group.analysis, imagePrompt: group.imagePrompt, videoPrompt: group.videoPrompt, [key]: value } });
+    const editGroup = (key: FrameRemakeAnalysisStage, value: string) =>
+        group && change({ group: { id: group.id, analysis: group.analysis, productScript: frameRemakeAnalysisResult(group, "productScript"), imagePrompt: group.imagePrompt, videoPrompt: group.videoPrompt, [key]: value } });
     return (
         <main className="min-h-screen bg-background">
             <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b bg-background/95 px-5 py-3 backdrop-blur">
@@ -321,10 +337,10 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
                             </div>
                             <div className="flex flex-wrap gap-2">
                                 <Button variant="outline" disabled={disabled || !project.sourceVideo || extracted} onClick={() => void operation("extract")}>
-                                    {project.groups.length ? "继续拆帧" : "开始拆帧"}
+                                    {project.groups.length ? "拆下一组帧" : "读取视频信息"}
                                 </Button>
                                 <Button variant="outline" disabled={disabled || !extracted || analyzed} onClick={() => void operation("analyze")}>
-                                    解析全部分组
+                                    执行下一个分析步骤
                                 </Button>
                                 <Button variant="outline" disabled={disabled || !analyzed || templatesReady} onClick={() => void generateAll("template")}>
                                     生成全部模板图
@@ -399,19 +415,22 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
                                         <details className="rounded-lg border p-4">
                                             <summary className="cursor-pointer font-medium">查看和编辑本组解析、提示词</summary>
                                             <div className="mt-4 space-y-4">
-                                                <p className="text-xs leading-6 text-muted-foreground">提示词由原片抽帧解析与复刻模板组合。修改并保存生图提示词会重置本组图片和视频；修改视频提示词会重置本组视频。</p>
+                                                <p className="text-xs leading-6 text-muted-foreground">
+                                                    各步沿用既有模板，并读取前一步已保存结果。修改画面分析或产品脚本会清空依赖它的后续脚本、图片和视频；修改分镜脚本会清空视频提示词、图片和视频；修改视频提示词只重置视频。
+                                                </p>
                                                 <Button variant="outline" disabled={disabled || !group.contactSheet} onClick={() => void operation("analyze", group.id)}>
-                                                    重新解析本组
+                                                    {nextFrameRemakeAnalysisStage(group) ? `执行：${FRAME_REMAKE_ANALYSIS_LABELS[nextFrameRemakeAnalysisStage(group)!]}` : "从画面分析重新执行本组"}
                                                 </Button>
                                                 {(
                                                     [
                                                         ["analysis", "画面解析"],
+                                                        ["productScript", "产品脚本"],
                                                         ["imagePrompt", "分镜图提示词"],
                                                         ["videoPrompt", "视频提示词"],
                                                     ] as const
                                                 ).map(([key, label]) => (
                                                     <Field key={key} label={label}>
-                                                        <Textarea rows={6} value={group[key]} maxLength={30000} disabled={editingDisabled} onChange={(event) => editGroup(key, event.target.value)} />
+                                                        <Textarea rows={6} value={frameRemakeAnalysisResult(group, key)} maxLength={30000} disabled={editingDisabled} onChange={(event) => editGroup(key, event.target.value)} />
                                                     </Field>
                                                 ))}
                                                 <details>

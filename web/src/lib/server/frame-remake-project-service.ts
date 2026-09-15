@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { getAuthSettings } from "@/lib/auth/store";
 import {
     assertFrameRemakeTimeline,
+    FRAME_REMAKE_ANALYSIS_STAGES,
+    FRAME_REMAKE_ANALYSIS_LABELS,
+    frameRemakeAnalysisResult,
+    nextFrameRemakeAnalysisStage,
+    resetFrameRemakeAnalysisFrom,
+    type FrameRemakeAnalysisStage,
+    type FrameRemakeOperationKind,
     frameRemakeAspectRatio,
     frameRemakeBusy,
     frameRemakeImageReferences,
@@ -172,6 +179,8 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
                 groups: next.groups.map((group) => ({
                     ...group,
                     analysis: "",
+                    productScript: "",
+                    analysisSteps: undefined,
                     imagePrompt: "",
                     videoPrompt: "",
                     template: idleFrameRemakeTask(group.template.attemptNo),
@@ -189,26 +198,18 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
             const edit = object(value.group);
             const target = next.groups.find((group) => group.id === edit.id);
             if (!target) throw new FrameRemakeError("分组不存在", 404);
-            const analysis = requiredText(edit.analysis, 30000),
-                imagePrompt = requiredText(edit.imagePrompt, 30000),
-                videoPrompt = requiredText(edit.videoPrompt, 30000);
-            next = {
-                ...next,
-                mergedVideo: undefined,
-                groups: next.groups.map((group) =>
-                    group.id !== target.id
-                        ? group
-                        : {
-                              ...group,
-                              analysis,
-                              imagePrompt,
-                              videoPrompt,
-                              template: imagePrompt === group.imagePrompt ? group.template : idleFrameRemakeTask(group.template.attemptNo),
-                              image: imagePrompt === group.imagePrompt ? group.image : idleFrameRemakeTask(group.image.attemptNo),
-                              video: imagePrompt === group.imagePrompt && videoPrompt === group.videoPrompt ? group.video : idleFrameRemakeTask(group.video.attemptNo),
-                          },
-                ),
+            const values = {
+                analysis: requiredText(edit.analysis, 30000),
+                productScript: edit.productScript === undefined ? frameRemakeAnalysisResult(target, "productScript") : requiredText(edit.productScript, 30000),
+                imagePrompt: requiredText(edit.imagePrompt, 30000),
+                videoPrompt: requiredText(edit.videoPrompt, 30000),
             };
+            const changed = FRAME_REMAKE_ANALYSIS_STAGES.find((stage) => values[stage] !== frameRemakeAnalysisResult(target, stage));
+            if (changed) {
+                const reset = resetFrameRemakeAnalysisFrom(target, changed);
+                for (const stage of FRAME_REMAKE_ANALYSIS_STAGES) if (values[stage] !== frameRemakeAnalysisResult(target, stage)) reset[stage] = values[stage];
+                next = { ...next, mergedVideo: undefined, groups: next.groups.map((group) => (group.id === target.id ? reset : group)) };
+            }
         }
         return changedFrameRemake({ ...next, error: undefined });
     });
@@ -221,17 +222,45 @@ export async function deleteFrameRemakeProjectForUser(userId: string, id: string
     if (keys.length) await deleteUserLocalMediaAssets(userId, keys);
 }
 
-export async function startFrameRemakeOperation(userId: string, id: string, revision: number, kind: "extract" | "analyze" | "merge", groupId?: string, automationLeaseId?: string) {
+export async function startFrameRemakeOperation(userId: string, id: string, revision: number, kind: FrameRemakeOperationKind, groupId?: string, automationLeaseId?: string, analysisStage?: FrameRemakeAnalysisStage) {
     return mutateFrameRemake(userId, id, (current) => {
         assertFrameRemakeRevision(current, revision);
         assertFrameRemakeIdle(current, automationLeaseId);
         if (!current.sourceVideo) throw new FrameRemakeError("请先上传原视频");
-        if (kind !== "extract") assertFrameRemakeTimeline(current);
+        // 兼容旧页面的“拆帧”入口：首次只读取信息，后续调用每次只拆一组。
+        const resolvedKind = kind === "extract" && !current.groups.length ? "inspect" : kind;
+        if (resolvedKind !== "inspect") assertFrameRemakeTimeline(current);
         if (groupId && !current.groups.some((group) => group.id === groupId)) throw new FrameRemakeError("分组不存在", 404);
-        if (kind === "analyze" && current.groups.some((group) => (!groupId || group.id === groupId) && !group.contactSheet)) throw new FrameRemakeError("请先完成拆帧");
-        if (kind === "merge" && current.groups.some((group) => group.video.status !== "completed" || !group.video.result)) throw new FrameRemakeError("请先完成全部分组视频");
+        let group = groupId ? current.groups.find((group) => group.id === groupId) : undefined;
+        let stage: FrameRemakeAnalysisStage | undefined;
+        if (resolvedKind === "extract") {
+            group ??= current.groups.find((group) => !group.contactSheet || group.frames.some((frame) => !frame.media));
+            if (!group) throw new FrameRemakeError("全部分组已拆帧");
+        }
+        if (resolvedKind === "analyze") {
+            group ??= current.groups.find((group) => nextFrameRemakeAnalysisStage(group));
+            if (!group) throw new FrameRemakeError("全部分析步骤已完成");
+            if (!group.contactSheet || group.frames.some((frame) => !frame.media)) throw new FrameRemakeError("请先完成本组拆帧");
+            stage = analysisStage ?? nextFrameRemakeAnalysisStage(group) ?? "analysis";
+            if (FRAME_REMAKE_ANALYSIS_STAGES.slice(0, FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group!, key))) throw new FrameRemakeError("请先完成前序分析步骤");
+        }
+        if (resolvedKind === "merge" && current.groups.some((group) => group.video.status !== "completed" || !group.video.result)) throw new FrameRemakeError("请先完成全部分组视频");
         const now = new Date().toISOString();
-        return changedFrameRemake({ ...current, operation: { id: randomUUID(), kind, groupId, startedAt: now, updatedAt: now, progress: "准备处理" }, error: undefined });
+        return changedFrameRemake({
+            ...current,
+            groups: stage ? current.groups.map((item) => (item.id === group!.id ? resetFrameRemakeAnalysisFrom(item, stage!) : item)) : current.groups,
+            mergedVideo: resolvedKind === "analyze" ? undefined : current.mergedVideo,
+            operation: {
+                id: randomUUID(),
+                kind: resolvedKind,
+                groupId: group?.id,
+                analysisStage: stage,
+                startedAt: now,
+                updatedAt: now,
+                progress: stage ? `第 ${group!.number} 组：${FRAME_REMAKE_ANALYSIS_LABELS[stage]}` : resolvedKind === "extract" ? `第 ${group!.number} 组：准备拆帧` : "准备处理",
+            },
+            error: undefined,
+        });
     });
 }
 

@@ -3,13 +3,12 @@
 import copy from "copy-to-clipboard";
 import { Check, ChevronDown, Circle, CircleAlert, Copy, Download, LoaderCircle, Pause, Play, Sparkles } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { frameRemakeBusy, frameRemakeTime, type FrameRemakeMedia, type FrameRemakeProject, type FrameRemakeTask } from "@/lib/frame-remake-contract";
+import { FRAME_REMAKE_ANALYSIS_STAGES, FRAME_REMAKE_ANALYSIS_LABELS, frameRemakeAnalysisResult, frameRemakeBusy, frameRemakeTime, type FrameRemakeMedia, type FrameRemakeProject, type FrameRemakeTask } from "@/lib/frame-remake-contract";
 import { Button } from "../../bangbang/controls";
 
-export function FrameRemakeFlow({ project, disabled, control }: { project: FrameRemakeProject; disabled: boolean; control: (action: "start" | "pause") => Promise<void> }) {
+export function FrameRemakeFlow({ project, disabled, control }: { project: FrameRemakeProject; disabled: boolean; control: (action: "start" | "step" | "pause") => Promise<void> }) {
     const running = project.automation?.status === "running";
     const extracted = project.groups.length > 0 && project.groups.every((group) => group.contactSheet && group.frames.every((frame) => frame.media));
-    const analyzed = extracted && project.groups.every((group) => group.analysis && group.imagePrompt && group.videoPrompt);
     const frameCount = project.groups.reduce((sum, group) => sum + group.frames.length, 0);
     const savedFrameCount = project.groups.reduce((sum, group) => sum + group.frames.filter((frame) => frame.media).length, 0);
     const videosReady = project.groups.length > 0 && project.groups.every((group) => group.video.status === "completed");
@@ -32,7 +31,7 @@ export function FrameRemakeFlow({ project, disabled, control }: { project: Frame
                     <Sparkles className="size-5" />
                 </div>
                 <div className="min-w-0 flex-1 space-y-4">
-                    <p className="text-sm leading-7">我会读取原视频，按时间线拆帧和分析，再逐组制作模板图、复刻分镜图与视频，最后合成与原片等长的成片。每一步的文字、图片和视频都会在下方输出，完成一组就展示一组。</p>
+                    <p className="text-sm leading-7">我会读取原视频，按时间线拆帧和分析，再逐组制作模板图、复刻分镜图与视频，最后合成与原片等长的成片。每次只执行一个步骤，保存并输出结果后再继续。可以逐步查看，也可以自动依次执行。</p>
                     <div className="flex flex-wrap items-center gap-3">
                         {running ? (
                             <Button variant="outline" disabled={disabled} onClick={() => void control("pause")}>
@@ -40,20 +39,25 @@ export function FrameRemakeFlow({ project, disabled, control }: { project: Frame
                                 暂停后续步骤
                             </Button>
                         ) : (
-                            <Button disabled={disabled || !project.sourceVideo || frameRemakeBusy(project) || Boolean(project.mergedVideo)} onClick={() => void control("start")}>
-                                <Play className="size-4" />
-                                {project.mergedVideo ? "已完成" : project.automation ? "继续执行" : "开始自动复刻"}
-                            </Button>
+                            <>
+                                <Button disabled={disabled || !project.sourceVideo || frameRemakeBusy(project) || Boolean(project.mergedVideo)} onClick={() => void control("step")}>
+                                    <Play className="size-4" />
+                                    {project.mergedVideo ? "已完成" : "只执行下一步"}
+                                </Button>
+                                <Button variant="outline" disabled={disabled || !project.sourceVideo || frameRemakeBusy(project) || Boolean(project.mergedVideo)} onClick={() => void control("start")}>
+                                    自动逐步执行
+                                </Button>
+                            </>
                         )}
                         <span role="status" className="text-xs text-muted-foreground">
                             {project.operation?.progress || project.automation?.progress || "准备就绪后，点击开始"}
                         </span>
                     </div>
-                    <p className="text-xs leading-6 text-muted-foreground">后台执行，关闭页面也会继续。分析和生成按所选模型计费；失败时停止，不自动重新收费重试。</p>
+                    <p className="text-xs leading-6 text-muted-foreground">每一步在后台执行，关闭页面后当前任务仍会完成。单步模式完成后暂停，自动模式依次继续。分析和生成按所选模型计费；失败时停止，不自动重新收费重试。</p>
                 </div>
             </div>
             <div className="ml-4 space-y-5 border-l pl-7">
-                <Step title="1. 读取视频信息" done={project.durationMs > 0} active={project.operation?.kind === "extract" && !project.durationMs} error={!project.durationMs ? project.error : undefined}>
+                <Step title="1. 读取视频信息" done={project.durationMs > 0} active={(project.operation?.kind === "inspect" || project.operation?.kind === "extract") && !project.durationMs} error={!project.durationMs ? project.error : undefined}>
                     {project.durationMs > 0 ? (
                         <dl className="grid grid-cols-1 gap-3 rounded-lg border p-4 sm:grid-cols-2">
                             <VideoInfo label="原视频" value={project.sourceVideo?.originalName || "原视频"} />
@@ -103,27 +107,30 @@ export function FrameRemakeFlow({ project, disabled, control }: { project: Frame
                         <p>读取时长后输出分组时间线、每组总览图和全部单帧图片。</p>
                     )}
                 </Step>
-                <Step title="3. 分析画面与生成分镜脚本" done={analyzed} active={project.operation?.kind === "analyze"} error={extracted && !analyzed ? project.error : undefined}>
-                    <p>沿用已有复刻流程的解析、产品适配、分镜优化和视频提示词模板，按本组实际帧号及秒数执行。</p>
-                    <div className="mt-3 space-y-5">
-                        {project.groups.map((group) => (
-                            <div key={group.id} className="space-y-3">
-                                <h4 className="font-medium text-foreground">
-                                    第 {group.number} 组 · {group.startMs / 1000}–{group.endMs / 1000} 秒
-                                </h4>
-                                {group.analysis || group.imagePrompt || group.videoPrompt ? (
-                                    <>
-                                        {group.analysis && <TextOutput title="画面分析与产品脚本" text={group.analysis} name={`第${group.number}组-画面分析与产品脚本`} />}
-                                        {group.imagePrompt && <TextOutput title="分镜脚本与生图提示词" text={group.imagePrompt} name={`第${group.number}组-分镜脚本`} />}
-                                        {group.videoPrompt && <TextOutput title="视频生成提示词" text={group.videoPrompt} name={`第${group.number}组-视频生成提示词`} />}
-                                    </>
-                                ) : (
-                                    <p className="rounded-lg border border-dashed p-4">等待本组分析，完成后输出完整画面解析、分镜脚本和视频提示词。</p>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                </Step>
+                {project.groups.flatMap((group, groupIndex) =>
+                    FRAME_REMAKE_ANALYSIS_STAGES.map((stage, stageIndex) => {
+                        const result = frameRemakeAnalysisResult(group, stage);
+                        const record = group.analysisSteps?.[stage];
+                        const active = project.operation?.kind === "analyze" && project.operation.groupId === group.id && project.operation.analysisStage === stage;
+                        const title = `第 ${group.number} 组 · ${FRAME_REMAKE_ANALYSIS_LABELS[stage]}`;
+                        return (
+                            <Step key={`${group.id}-${stage}`} title={`${3 + groupIndex * 4 + stageIndex}. ${title}`} done={Boolean(result)} active={active} error={record?.error}>
+                                <div className="space-y-3">
+                                    <p>
+                                        原片区间 {group.startMs / 1000}–{group.endMs / 1000} 秒。沿用已有流程模板，独立执行本步并保存结果。
+                                    </p>
+                                    {result ? (
+                                        <TextOutput title={stage === "productScript" && group.productScript === undefined ? "既有画面分析中的产品脚本" : "本步完整结果"} text={result} name={title} />
+                                    ) : (
+                                        <p className="rounded-lg border border-dashed p-4">{active ? "正在执行本步，完成后在这里输出结果…" : "等待执行本步。前序已完成结果会保留。"}</p>
+                                    )}
+                                    {record?.elapsedMs !== undefined && <p>本次模型耗时：{(record.elapsedMs / 1000).toFixed(1)} 秒。</p>}
+                                    {record?.prompt && <TextOutput title="本步实际发送的提示词" text={record.prompt} name={`${title}-实际发送提示词`} />}
+                                </div>
+                            </Step>
+                        );
+                    }),
+                )}
                 {project.groups.flatMap((group, groupIndex) =>
                     (
                         [
@@ -132,12 +139,12 @@ export function FrameRemakeFlow({ project, disabled, control }: { project: Frame
                             ["video", "生成本组视频", "分段视频"],
                         ] as const
                     ).map(([kind, label, resultLabel], index) => (
-                        <GenerationStep key={`${group.id}-${kind}`} title={`${4 + groupIndex * 3 + index}. 第 ${group.number} 组 · ${label}`} label={`第 ${group.number} 组${resultLabel}`} task={group[kind]}>
+                        <GenerationStep key={`${group.id}-${kind}`} title={`${3 + project.groups.length * 4 + groupIndex * 3 + index}. 第 ${group.number} 组 · ${label}`} label={`第 ${group.number} 组${resultLabel}`} task={group[kind]}>
                             原片区间 {group.startMs / 1000}–{group.endMs / 1000} 秒，本组采用 {frameRemakeTime(group.endMs - group.startMs)}。
                         </GenerationStep>
                     )),
                 )}
-                <Step title={`${4 + project.groups.length * 3}. 合成原时长成片`} done={Boolean(project.mergedVideo)} active={project.operation?.kind === "merge"} error={videosReady && !project.mergedVideo ? project.error : undefined}>
+                <Step title={`${3 + project.groups.length * 7}. 合成原时长成片`} done={Boolean(project.mergedVideo)} active={project.operation?.kind === "merge"} error={videosReady && !project.mergedVideo ? project.error : undefined}>
                     {project.mergedVideo ? (
                         <div className="space-y-3">
                             <Media media={project.mergedVideo} label="复刻成片" downloadLabel="下载成片" />

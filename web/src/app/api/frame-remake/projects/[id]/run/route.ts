@@ -14,11 +14,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (blocked) return blocked;
     const body = await readJsonBodyResult<{ revision?: number; action?: string }>(request, 4096);
     if (!body.ok) return frameRemakeResponse(null, body.message, body.status);
-    if (!isFrameRemakeRevision(body.data?.revision) || (body.data?.action !== "start" && body.data?.action !== "pause")) return frameRemakeResponse(null, "操作或项目版本不正确", 400);
+    if (!isFrameRemakeRevision(body.data?.revision) || (body.data?.action !== "step" && body.data?.action !== "start" && body.data?.action !== "pause")) return frameRemakeResponse(null, "操作或项目版本不正确", 400);
     try {
         const project = await controlFrameRemakeAutomation(user.id, (await context.params).id, body.data.revision, body.data.action);
-        if (body.data.action === "start") after(() => runFrameRemakeAutomationBatch(resolveInternalOrigin(new URL(request.url).origin)).then(() => undefined));
-        return frameRemakeResponse(project, body.data.action === "start" ? "已开始自动复刻" : "已暂停后续步骤");
+        if (body.data.action !== "pause") after(() => runFrameRemakeAutomationBatch(resolveInternalOrigin(new URL(request.url).origin)).then(() => undefined));
+        return frameRemakeResponse(project, body.data.action === "pause" ? "已暂停后续步骤" : body.data.action === "step" ? "已开始执行下一步" : "已开始自动逐步复刻");
     } catch (error) {
         return frameRemakeError(error);
     }
