@@ -102,7 +102,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             timeoutMs: 10 * 60_000,
         });
         const probe = await probeSourceVideo(sourcePath);
-        const models = await resolveAnalysisModels();
+        const models = await resolveRemakeSourceAnalysisModels();
 
         await updateRemakeAnalysisTaskProgress(task, { stage: "transcoding", progress: 12 });
         const inlineVideo = await transcodeAnalysisVideo({ sourcePath, workDirectory, probe });
@@ -229,15 +229,10 @@ async function probeSourceVideo(sourcePath: string): Promise<ProbeResult> {
     return { durationMs: Math.max(1, Math.round(durationSeconds * 1_000)), width, height, ratio: aspectRatio(width, height) };
 }
 
-async function resolveAnalysisModels() {
+export async function resolveRemakeSourceAnalysisModels() {
     const settings = await getAuthSettings();
     const doubaoLogicalIds = settings.logicalModels
-        .filter(
-            (logical) =>
-                logical.enabled &&
-                logical.capability === "text" &&
-                logical.bindings.some((binding) => binding.enabled && normalizedModelId(binding.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL),
-        )
+        .filter((logical) => logical.enabled && logical.capability === "text" && logical.bindings.some((binding) => binding.enabled && normalizedModelId(binding.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL))
         .map((logical) => logical.id);
     const requestedVideoModels = Array.from(new Set([settings.defaultModels.textModel, ...doubaoLogicalIds, DOUBAO_VIDEO_UNDERSTANDING_MODEL].filter(Boolean)));
     const videoCandidates = rankTextPlanningCandidates(
@@ -382,7 +377,7 @@ async function understandVideo(input: {
         try {
             const call = await requestDoubaoVideoUnderstanding({ ...input, candidate, idempotencyKey });
             try {
-                const understanding = parseVideoUnderstanding(call.arguments, input.durationMs);
+                const understanding = parseRemakeSourceVideoUnderstanding(call.arguments, input.durationMs);
                 input.onCharge(call.headers);
                 return understanding;
             } catch (error) {
@@ -397,11 +392,24 @@ async function understandVideo(input: {
 }
 
 async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string }) {
+    return requestRemakeSourceVideoUnderstanding({ ...input, prompt: buildDoubaoVideoUnderstandingPrompt(input.durationMs), onInvalidResponse: (headers) => refundInvalidResponse(input.task.userId, input.model, headers) });
+}
+
+// Fixed-duration and original-duration remakes share the video upload, readiness, Responses stream and cleanup path.
+export async function requestRemakeSourceVideoUnderstanding(input: {
+    bytes: Buffer;
+    candidate: ResolvedLogicalModel;
+    model: string;
+    origin: string;
+    credential: string;
+    idempotencyKey: string;
+    prompt: string;
+    onInvalidResponse: (headers: Headers) => Promise<void>;
+}) {
     if (normalizedModelId(input.candidate.upstreamModel) !== DOUBAO_VIDEO_UNDERSTANDING_MODEL) throw new Error("当前候选模型不是 Doubao Seed 2.0 Pro");
     const fileId = await uploadDoubaoVideo(input.candidate, input.bytes);
     try {
         await waitForDoubaoFile(input.candidate, fileId);
-        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs);
         const body = {
             model: input.candidate.upstreamModel,
             input: [
@@ -409,7 +417,7 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
                     role: "user",
                     content: [
                         { type: "input_video", file_id: fileId },
-                        { type: "input_text", text: prompt },
+                        { type: "input_text", text: input.prompt },
                     ],
                 },
             ],
@@ -423,7 +431,7 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
             credential: input.credential,
             idempotencyKey: input.idempotencyKey,
             body,
-            onInvalidResponse: (headers) => refundInvalidResponse(input.task.userId, input.model, headers),
+            onInvalidResponse: input.onInvalidResponse,
         });
     } finally {
         await deleteDoubaoFile(input.candidate, fileId).catch(() => undefined);
@@ -506,7 +514,10 @@ function doubaoEndpoint(candidate: ResolvedLogicalModel, path: string) {
 }
 
 function normalizedModelId(value: string) {
-    return value.trim().replace(/^models\//i, "").toLowerCase();
+    return value
+        .trim()
+        .replace(/^models\//i, "")
+        .toLowerCase();
 }
 
 function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
@@ -519,7 +530,7 @@ function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
     });
 }
 
-function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
+export function parseRemakeSourceVideoUnderstanding(argumentsText: string, durationMs: number, frameCount = REMAKE_FRAME_COUNT): VideoUnderstandingResult {
     let payload: Record<string, unknown>;
     try {
         payload = JSON.parse(argumentsText) as Record<string, unknown>;
@@ -529,11 +540,11 @@ function parseVideoUnderstanding(argumentsText: string, durationMs: number): Vid
     if (typeof payload.sourceCopy !== "string" || payload.sourceCopy.length > 200_000) throw new Error("视频理解模型缺少完整 sourceCopy");
     const sourceCopy = payload.sourceCopy.trim();
     const items = records(payload.frames);
-    if (items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`);
+    if (items.length !== frameCount) throw new Error(`视频理解模型必须返回完整的 ${frameCount} 条镜头分析`);
     const durationSeconds = roundedSeconds(durationMs / 1_000);
     const byOrdinal = new Map<number, VideoFrameAnalysis>();
     for (const item of items) {
-        const ordinal = strictOrdinal(item.ordinal, REMAKE_FRAME_COUNT);
+        const ordinal = strictOrdinal(item.ordinal, frameCount);
         if (!ordinal || byOrdinal.has(ordinal)) throw new Error("视频理解模型返回了重复或无效的镜头编号");
         const rawStart = parseTimestamp(item.startTime);
         const rawEnd = parseTimestamp(item.endTime);
@@ -548,14 +559,15 @@ function parseVideoUnderstanding(argumentsText: string, durationMs: number): Vid
         }
         const time = roundedSeconds(rawStart);
         const endTime = roundedSeconds(rawEnd);
+        if (endTime <= time) throw new Error(`镜头 ${ordinal} 的时间区间小于有效精度`);
         byOrdinal.set(ordinal, { ordinal, time, endTime, subtitle, sellingPoint, shotType, description, subjectRatio, hasFace: item.hasFace });
     }
     const frames = Array.from(byOrdinal.values()).sort((left, right) => left.ordinal - right.ordinal);
-    if (frames.some((frame, index) => frame.ordinal !== index + 1)) throw new Error("视频理解模型没有覆盖完整的 1-12 镜头编号");
+    if (frames.some((frame, index) => frame.ordinal !== index + 1)) throw new Error("视频理解模型没有覆盖完整的镜头编号");
     if (frames[0]?.time !== 0) throw new Error("视频理解模型的第一段必须从视频开头开始");
     for (const [index, frame] of frames.entries()) {
         const previous = frames[index - 1];
-        if (previous && frame.time !== previous.endTime) throw new Error("视频理解模型的 12 段时间线必须连续且无重叠");
+        if (previous && frame.time !== previous.endTime) throw new Error("视频理解模型的分镜时间线必须连续且无重叠");
     }
     if (frames.at(-1)?.endTime !== durationSeconds) throw new Error("视频理解模型的最后一段必须精确结束于视频结尾");
     return { frames, sourceCopy };

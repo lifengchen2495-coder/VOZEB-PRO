@@ -1,8 +1,8 @@
 export type FrameRemakeMedia = { url: string; storageKey?: string; mimeType: string; originalName?: string; bytes?: number; width?: number; height?: number; duration?: number };
 export type FrameRemakeGenerationKind = "template" | "image" | "video";
-export const FRAME_REMAKE_ANALYSIS_STAGES = ["analysis", "productScript", "imagePrompt", "videoPrompt"] as const;
+export const FRAME_REMAKE_ANALYSIS_STAGES = ["analysis", "copy", "productScript", "imagePrompt", "videoPrompt"] as const;
 export type FrameRemakeAnalysisStage = (typeof FRAME_REMAKE_ANALYSIS_STAGES)[number];
-export const FRAME_REMAKE_ANALYSIS_LABELS: Record<FrameRemakeAnalysisStage, string> = { analysis: "分析原片画面", productScript: "适配产品脚本", imagePrompt: "优化分镜脚本", videoPrompt: "生成视频提示词" };
+export const FRAME_REMAKE_ANALYSIS_LABELS: Record<FrameRemakeAnalysisStage, string> = { analysis: "理解来源视频", copy: "文案预处理", productScript: "适配产品脚本", imagePrompt: "优化分镜脚本", videoPrompt: "生成视频提示词" };
 export type FrameRemakeWorkflowStage = "analysis" | "images" | "production";
 export type FrameRemakeOperationKind = "inspect" | "extract" | "analyze" | "merge";
 export type FrameRemakeTask = {
@@ -17,7 +17,9 @@ export type FrameRemakeTask = {
     result?: FrameRemakeMedia;
     error?: string;
 };
-export type FrameRemakeFrame = { number: number; startMs: number; endMs: number; sampleMs: number; media?: FrameRemakeMedia };
+export type FrameRemakeFrameAnalysis = { subtitle: string; sellingPoint: string; shotType: string; description: string; subjectRatio: string; hasFace: boolean };
+export type FrameRemakeCopyBlock = { number: number; frameNumbers: number[]; startMs: number; endMs: number; sourceText: string; text: string };
+export type FrameRemakeFrame = { detail?: FrameRemakeFrameAnalysis; number: number; startMs: number; endMs: number; sampleMs: number; media?: FrameRemakeMedia };
 export type FrameRemakeGroup = {
     id: string;
     number: number;
@@ -26,6 +28,10 @@ export type FrameRemakeGroup = {
     frames: FrameRemakeFrame[];
     contactSheet?: FrameRemakeMedia;
     analysis: string;
+    sourceAnalysisMode?: "video";
+    sourceCopy?: string;
+    copy?: string;
+    copyBlocks?: FrameRemakeCopyBlock[];
     // 旧项目的 analysis 同时包含产品脚本；新项目从空字符串开始独立执行。
     productScript?: string;
     analysisSteps?: Partial<Record<FrameRemakeAnalysisStage, { prompt: string; model: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string }>>;
@@ -46,6 +52,8 @@ export type FrameRemakeProject = {
     durationMs: number;
     maxSegmentSeconds: number;
     references: { product: FrameRemakeMedia[]; character: FrameRemakeMedia[]; background: FrameRemakeMedia[] };
+    sourceCopy?: string;
+    productInfo?: string;
     instructions: string;
     audioMode: "source" | "generated" | "silent";
     modelSelection: { analysis: string; image: string; video: string };
@@ -56,6 +64,7 @@ export type FrameRemakeProject = {
         status: "running" | "paused" | "error" | "completed";
         mode?: "auto" | "step";
         stageScope?: FrameRemakeWorkflowStage;
+        stopAfterPrompts?: boolean;
         pendingGeneration?: { groupId: string; kind: FrameRemakeGenerationKind };
         startedAt: string;
         updatedAt: string;
@@ -67,9 +76,11 @@ export type FrameRemakeProject = {
     error?: string;
 };
 export type FrameRemakeProjectList = { items: FrameRemakeProject[]; total: number; page: number; pageSize: number };
-export type FrameRemakePatch = Partial<Pick<FrameRemakeProject, "title" | "instructions" | "audioMode" | "maxSegmentSeconds" | "references" | "modelSelection">> & {
+export type FrameRemakePatch = Partial<Pick<FrameRemakeProject, "title" | "sourceCopy" | "productInfo" | "instructions" | "audioMode" | "maxSegmentSeconds" | "references" | "modelSelection">> & {
     sourceVideo?: FrameRemakeMedia | null;
-    group?: { id: string; analysis: string; productScript?: string; imagePrompt: string; videoPrompt: string };
+    group?: { id: string; analysis?: string; copy?: string; productScript?: string; imagePrompt?: string; videoPrompt?: string };
+    frame?: { groupId: string; number: number; detail: FrameRemakeFrameAnalysis };
+    copyBlock?: { groupId: string; number: number; text: string };
 };
 
 export const idleFrameRemakeTask = (attemptNo = 0): FrameRemakeTask => ({ status: "idle", attemptNo });
@@ -114,6 +125,7 @@ export function planFrameRemakeTimeline(durationMs: number, maxSegmentSeconds = 
             endMs,
             frames,
             analysis: "",
+            copy: "",
             productScript: "",
             imagePrompt: "",
             videoPrompt: "",
@@ -125,7 +137,7 @@ export function planFrameRemakeTimeline(durationMs: number, maxSegmentSeconds = 
     return groups;
 }
 export function frameRemakeAnalysisResult(group: FrameRemakeGroup, stage: FrameRemakeAnalysisStage) {
-    return stage === "productScript" ? (group.productScript ?? group.analysis) : group[stage];
+    return stage === "productScript" ? (group.productScript ?? group.analysis) : stage === "copy" ? (group.copy ?? (group.sourceAnalysisMode === "video" ? "" : group.analysis)) : group[stage];
 }
 export function nextFrameRemakeAnalysisStage(group: FrameRemakeGroup) {
     return FRAME_REMAKE_ANALYSIS_STAGES.find((stage) => !frameRemakeAnalysisResult(group, stage));
@@ -137,6 +149,12 @@ export function resetFrameRemakeAnalysisFrom(group: FrameRemakeGroup, stage: Fra
         next.template = idleFrameRemakeTask(group.template.attemptNo);
         next.image = idleFrameRemakeTask(group.image.attemptNo);
     }
+    if (stage === "analysis") {
+        next.sourceCopy = undefined;
+        next.sourceAnalysisMode = undefined;
+        next.frames = next.frames.map(({ detail: _detail, ...frame }) => frame);
+    }
+    if (stage === "analysis" || stage === "copy") next.copyBlocks = undefined;
     for (const key of FRAME_REMAKE_ANALYSIS_STAGES.slice(FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage))) {
         next[key] = "";
         delete next.analysisSteps[key];
@@ -176,7 +194,20 @@ export function assertFrameRemakeTimeline(project: FrameRemakeProject) {
                 group.id !== target.id ||
                 group.startMs !== target.startMs ||
                 group.endMs !== target.endMs ||
-                JSON.stringify(group.frames.map(({ number, startMs, endMs, sampleMs }) => ({ number, startMs, endMs, sampleMs }))) !== JSON.stringify(target.frames)
+                group.frames.length !== target.frames.length ||
+                group.frames.some(
+                    (frame, i) =>
+                        frame.number !== target.frames[i].number ||
+                        !Number.isSafeInteger(frame.startMs) ||
+                        !Number.isSafeInteger(frame.endMs) ||
+                        !Number.isSafeInteger(frame.sampleMs) ||
+                        frame.startMs !== (i ? group.frames[i - 1].endMs : group.startMs) ||
+                        frame.endMs <= frame.startMs ||
+                        frame.endMs > group.endMs ||
+                        frame.sampleMs < frame.startMs ||
+                        frame.sampleMs >= frame.endMs,
+                ) ||
+                group.frames.at(-1)?.endMs !== group.endMs
             );
         })
     )

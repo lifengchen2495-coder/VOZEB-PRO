@@ -3,16 +3,7 @@ import Link from "next/link";
 import { FrameRemakeWorkflow } from "./workflow";
 import { recoveredFrameRemakeWorkflowStage } from "@/lib/frame-remake-steps";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-    frameRemakeBusy,
-    frameRemakeAnalysisResult,
-    type FrameRemakeWorkflowStage,
-    type FrameRemakeAnalysisStage,
-    type FrameRemakeOperationKind,
-    type FrameRemakeGenerationKind,
-    type FrameRemakePatch,
-    type FrameRemakeProject,
-} from "@/lib/frame-remake-contract";
+import { frameRemakeBusy, type FrameRemakeWorkflowStage, type FrameRemakeAnalysisStage, type FrameRemakeOperationKind, type FrameRemakeGenerationKind, type FrameRemakePatch, type FrameRemakeProject } from "@/lib/frame-remake-contract";
 import { frameRemakeProjectPath, frameRemakeRequest, uploadFrameRemakeMedia } from "../api";
 import { Button } from "../../bangbang/controls";
 
@@ -87,11 +78,11 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
         });
     const operation = (kind: FrameRemakeOperationKind, groupId?: string, analysisStage?: FrameRemakeAnalysisStage) =>
         action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/operations`, { revision: current.current!.revision, kind, groupId, analysisStage })));
-    const control = (mode: "start" | "step" | "pause", stageScope: FrameRemakeWorkflowStage) =>
+    const control = (mode: "start" | "step" | "pause", stageScope: FrameRemakeWorkflowStage, stopAfterPrompts = false) =>
         action(async () => {
             setStage(stageScope);
             const latest = await refresh();
-            accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/run`, { revision: latest.revision, action: mode, stageScope }));
+            accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/run`, { revision: latest.revision, action: mode, stageScope, stopAfterPrompts }));
         });
     const generate = (groupId: string, kind: FrameRemakeGenerationKind) => action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/groups/${groupId}/${kind}`, { revision: current.current!.revision })));
     const abandon = (groupId: string, kind: FrameRemakeGenerationKind) => action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/groups/${groupId}/${kind}`, undefined, "DELETE")));
@@ -118,13 +109,43 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
         );
     const busy = frameRemakeBusy(project);
     const editingDisabled = working || busy || project.automation?.status === "running";
-    const display = { ...project, ...draft } as FrameRemakeProject;
-    const selectedGroup = project.groups.find((group) => group.id === selected) || project.groups[0];
-    const group = selectedGroup && draft.group?.id === selectedGroup.id ? { ...selectedGroup, ...draft.group } : selectedGroup;
+    const display: FrameRemakeProject = {
+        ...project,
+        ...draft,
+        sourceVideo: draft.sourceVideo === null ? undefined : (draft.sourceVideo ?? project.sourceVideo),
+        groups: project.groups.map((group) => {
+            const edited = draft.group?.id === group.id ? { ...group, ...draft.group } : group;
+            return {
+                ...edited,
+                frames: edited.frames.map((frame) => (draft.frame?.groupId === group.id && draft.frame.number === frame.number ? { ...frame, detail: draft.frame.detail } : frame)),
+                copyBlocks: edited.copyBlocks?.map((block) => (draft.copyBlock?.groupId === group.id && draft.copyBlock.number === block.number ? { ...block, text: draft.copyBlock.text } : block)),
+            };
+        }),
+    };
+    const lockedGroupId = draft.group?.id || draft.frame?.groupId || draft.copyBlock?.groupId;
+    const group = display.groups.find((group) => group.id === (lockedGroupId || selected)) || display.groups[0];
     const activeStage = stage ?? recoveredFrameRemakeWorkflowStage(project);
-    const change = (patch: FrameRemakePatch) => setDraft((current) => ({ ...current, ...patch }));
-    const editGroup = (key: FrameRemakeAnalysisStage, value: string) =>
-        group && change({ group: { id: group.id, analysis: group.analysis, productScript: frameRemakeAnalysisResult(group, "productScript"), imagePrompt: group.imagePrompt, videoPrompt: group.videoPrompt, [key]: value } });
+    const change = (patch: FrameRemakePatch) => {
+        const unit = draft.frame || draft.copyBlock;
+        const incomingUnit = patch.frame || patch.copyBlock;
+        const scopeFields = ["references", "instructions", "sourceCopy", "productInfo", "maxSegmentSeconds"] as const;
+        const conflicts =
+            (unit && (scopeFields.some((key) => patch[key] !== undefined) || patch.group)) ||
+            (incomingUnit && (draft.group || scopeFields.some((key) => draft[key] !== undefined))) ||
+            (incomingUnit && unit && (incomingUnit.groupId !== unit.groupId || incomingUnit.number !== unit.number || Boolean(patch.frame) !== Boolean(draft.frame)));
+        if (conflicts) {
+            setError("请先保存当前修改，再编辑其他单元或素材。");
+            return;
+        }
+        setDraft((current) => ({ ...current, ...patch }));
+    };
+    const editGroup = (key: FrameRemakeAnalysisStage, value: string, groupId = group?.id) => {
+        if (draft.frame || draft.copyBlock) {
+            setError("请先保存当前校对单元。");
+            return;
+        }
+        if (groupId && (!draft.group || draft.group.id === groupId)) change({ group: { ...draft.group, id: groupId, [key]: value } });
+    };
     return (
         <FrameRemakeWorkflow
             project={project}
@@ -138,15 +159,15 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
             error={error}
             onStage={setStage}
             onGroup={(id) => {
-                if (!draft.group) setSelected(id);
+                if (!lockedGroupId) setSelected(id);
             }}
-            groupLocked={Boolean(draft.group)}
+            groupLocked={Boolean(lockedGroupId)}
             onChange={change}
             onEditGroup={editGroup}
             onSave={save}
             onDiscard={() => setDraft({})}
             onRefresh={() => action(refresh)}
-            onControl={(mode) => control(mode, activeStage)}
+            onControl={(mode, stopAfterPrompts) => control(mode, activeStage, stopAfterPrompts)}
             onOperation={operation}
             onGenerate={generate}
             onAbandon={abandon}

@@ -8,7 +8,7 @@ import { runFrameRemakeOperation } from "./frame-remake-runtime";
 import { isWorkerTokenConfigured, maintenanceWorkerContext } from "./maintenance-auth";
 import { toSafeGenerationErrorMessage } from "./generation-errors";
 
-export async function controlFrameRemakeAutomation(userId: string, id: string, revision: number, action: "start" | "step" | "pause", stageScope?: FrameRemakeWorkflowStage) {
+export async function controlFrameRemakeAutomation(userId: string, id: string, revision: number, action: "start" | "step" | "pause", stageScope?: FrameRemakeWorkflowStage, stopAfterPrompts = false) {
     if (action !== "pause" && !isWorkerTokenConfigured()) throw new FrameRemakeError("请先配置生成 Worker，才能自动执行复刻流程", 503);
     return mutateFrameRemake(userId, id, (project) => {
         assertFrameRemakeRevision(project, revision);
@@ -32,7 +32,7 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
             ...project,
             groups,
             error: undefined,
-            automation: { id: randomUUID(), status: "running", mode: action === "step" ? "step" : "auto", stageScope, startedAt: project.automation?.startedAt || now, updatedAt: now, progress: "开始执行复刻流程" },
+            automation: { id: randomUUID(), status: "running", mode: action === "step" ? "step" : "auto", stageScope, stopAfterPrompts, startedAt: project.automation?.startedAt || now, updatedAt: now, progress: "开始执行复刻流程" },
         });
     });
 }
@@ -101,6 +101,10 @@ export async function runFrameRemakeAutomationBatch(origin: string) {
             if (current.automation.stageScope && step.workflowStage !== current.automation.stageScope) {
                 if (!frameRemakeWorkflowReadiness(current)[current.automation.stageScope]) throw new Error("前序阶段尚未完成，请先检查前序结果");
                 await finish("paused", "本阶段已完成，请检查结果后进入下一阶段");
+                continue;
+            }
+            if (current.automation.stopAfterPrompts && ["template", "image", "video", "merge"].includes(step.kind)) {
+                await finish("paused", "脚本已保存，请审阅后单独开始生成");
                 continue;
             }
             const ready = await mutateFrameRemake(userId, current.id, (latest) => {

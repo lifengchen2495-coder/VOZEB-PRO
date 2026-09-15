@@ -5,7 +5,7 @@ import { SlidersHorizontal } from "lucide-react";
 import Image from "next/image";
 
 import { formatFrameTime, type RemakeCopyBlock, type RemakeCopyStrategy, type RemakeFrame } from "../remake-contract";
-import type { RemakeWorkspaceTab } from "./remake-analysis-board";
+import type { RemakeCopyBlockView, RemakeWorkspaceTab } from "./remake-analysis-board";
 
 export function RemakeUnitEditor({
     activeTab,
@@ -19,7 +19,7 @@ export function RemakeUnitEditor({
     activeTab: RemakeWorkspaceTab;
     copyStrategy: RemakeCopyStrategy;
     frame?: RemakeFrame;
-    block?: RemakeCopyBlock;
+    block?: RemakeCopyBlockView;
     disabled: boolean;
     onUpdateFrame: (patch: Partial<RemakeFrame>) => void;
     onUpdateBlock: (patch: Partial<RemakeCopyBlock>) => void;
@@ -74,7 +74,7 @@ function FrameEditor({ frame, disabled, onUpdate }: { frame?: RemakeFrame; disab
     );
 }
 
-function CopyBlockEditor({ block, copyStrategy, disabled, onUpdate }: { block?: RemakeCopyBlock; copyStrategy: RemakeCopyStrategy; disabled: boolean; onUpdate: (patch: Partial<RemakeCopyBlock>) => void }) {
+function CopyBlockEditor({ block, copyStrategy, disabled, onUpdate }: { block?: RemakeCopyBlockView; copyStrategy: RemakeCopyStrategy; disabled: boolean; onUpdate: (patch: Partial<RemakeCopyBlock>) => void }) {
     if (!block) return <EditorEmpty text="选择一个文案区间" />;
     return (
         <div className="grid gap-4">

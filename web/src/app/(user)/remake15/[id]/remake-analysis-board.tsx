@@ -6,6 +6,7 @@ import Image from "next/image";
 
 import { formatFrameTime, type RemakeCopyBlock, type RemakeFrame, type RemakeProject, type RemakeTask } from "../remake-contract";
 
+export type RemakeCopyBlockView = Pick<RemakeCopyBlock, "id" | "ordinal" | "startTime" | "endTime" | "sourceText" | "text"> & { frameOrdinals: number[] };
 export type RemakeWorkspaceTab = "frames" | "analysis" | "copy";
 
 export function RemakeAnalysisBoard({
@@ -60,7 +61,7 @@ export function RemakeAnalysisBoard({
 
             <Tabs
                 activeKey={activeTab}
-                className="remake-workspace-tabs min-h-0 flex-1 [&>.ant-tabs-content-holder]:min-h-0 [&>.ant-tabs-content-holder]:overflow-hidden [&>.ant-tabs-content-holder>.ant-tabs-content]:h-full [&>.ant-tabs-content-holder>.ant-tabs-content>.ant-tabs-tabpane]:h-full [&>.ant-tabs-nav]:!mb-0 [&>.ant-tabs-nav]:shrink-0 [&>.ant-tabs-nav]:px-3 sm:[&>.ant-tabs-nav]:px-4"
+                className="remake-workspace-tabs min-h-0 flex-1 [&>.ant-tabs-body-holder]:min-h-0 [&>.ant-tabs-body-holder]:flex-1 [&>.ant-tabs-body-holder]:overflow-hidden [&>.ant-tabs-body-holder>.ant-tabs-body]:h-full [&>.ant-tabs-body-holder>.ant-tabs-body>.ant-tabs-content]:h-full [&>.ant-tabs-content-holder]:min-h-0 [&>.ant-tabs-content-holder]:overflow-hidden [&>.ant-tabs-content-holder>.ant-tabs-content]:h-full [&>.ant-tabs-content-holder>.ant-tabs-content>.ant-tabs-tabpane]:h-full [&>.ant-tabs-nav]:!mb-0 [&>.ant-tabs-nav]:shrink-0 [&>.ant-tabs-nav]:px-3 sm:[&>.ant-tabs-nav]:px-4"
                 onChange={(value) => onTabChange(value as RemakeWorkspaceTab)}
                 items={[
                     {
@@ -105,7 +106,7 @@ function TabLabel({ icon, text, count }: { icon: React.ReactNode; text: string; 
     );
 }
 
-function FrameGrid({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; selectedId?: string; onSelect: (id: string) => void }) {
+export function FrameGrid({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; selectedId?: string; onSelect: (id: string) => void }) {
     if (!frames.length) return <WorkspaceEmpty icon={<Images className="size-5" />} title="还没有抽帧" detail="上传来源视频后启动分析。" />;
     return (
         <div className="h-full overflow-y-auto p-2 sm:p-4">
@@ -141,7 +142,7 @@ function FrameGrid({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; se
     );
 }
 
-function AnalysisRows({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; selectedId?: string; onSelect: (id: string) => void }) {
+export function AnalysisRows({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; selectedId?: string; onSelect: (id: string) => void }) {
     if (!frames.length) return <WorkspaceEmpty icon={<ScanSearch className="size-5" />} title="没有分析结果" detail="完成抽帧后会显示逐单元结果。" />;
     return (
         <div className="h-full overflow-y-auto">
@@ -170,7 +171,7 @@ function AnalysisRows({ frames, selectedId, onSelect }: { frames: RemakeFrame[];
     );
 }
 
-function CopyBlockRows({ blocks, selectedId, onSelect }: { blocks: RemakeCopyBlock[]; selectedId?: string; onSelect: (id: string) => void }) {
+export function CopyBlockRows({ blocks, selectedId, onSelect }: { blocks: RemakeCopyBlockView[]; selectedId?: string; onSelect: (id: string) => void }) {
     if (!blocks.length) return <WorkspaceEmpty icon={<FileText className="size-5" />} title="还没有文案区间" detail="分析完成后会按时间线形成文案区间。" />;
     return (
         <div className="h-full overflow-y-auto">
@@ -188,7 +189,7 @@ function CopyBlockRows({ blocks, selectedId, onSelect }: { blocks: RemakeCopyBlo
                         {block.sourceText && block.text && block.sourceText !== block.text ? <span className="mt-1 block truncate text-[11px] text-muted-foreground">原文：{block.sourceText}</span> : null}
                     </span>
                     <span className="hidden text-right text-xs tabular-nums text-muted-foreground sm:block">
-                        单元 {block.frameOrdinals[0]}–{block.frameOrdinals[2]}
+                        单元 {block.frameOrdinals[0]}–{block.frameOrdinals.at(-1)}
                     </span>
                 </button>
             ))}

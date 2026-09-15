@@ -31,8 +31,13 @@ export function cleanFrameRemakeMediaReferences(project: FrameRemakeProject, key
                           frames: framesRemoved ? group.frames.map(({ media: _media, ...frame }) => frame) : group.frames,
                           contactSheet: framesRemoved ? undefined : group.contactSheet,
                           productScript: targetsRemoved || framesRemoved ? "" : group.productScript,
-                          analysisSteps: framesRemoved ? undefined : targetsRemoved ? { analysis: group.analysisSteps?.analysis } : resetImage ? { ...group.analysisSteps, videoPrompt: undefined } : group.analysisSteps,
-                          analysis: framesRemoved ? "" : group.analysis,
+                          analysisSteps:
+                              targetsRemoved || framesRemoved
+                                  ? { analysis: group.sourceAnalysisMode === "video" || !framesRemoved ? group.analysisSteps?.analysis : undefined, copy: group.analysisSteps?.copy }
+                                  : resetImage
+                                    ? { ...group.analysisSteps, videoPrompt: undefined }
+                                    : group.analysisSteps,
+                          analysis: framesRemoved && group.sourceAnalysisMode !== "video" ? "" : group.analysis,
                           imagePrompt: targetsRemoved || framesRemoved ? "" : group.imagePrompt,
                           videoPrompt: resetImage ? "" : group.videoPrompt,
                           template: resetTemplate ? idleFrameRemakeTask(group.template.attemptNo + 1) : group.template,
