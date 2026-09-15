@@ -1,22 +1,24 @@
-import { frameRemakeGrid, frameRemakeSeconds, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
+import { frameRemakeGrid, frameRemakeSeconds, frameRemakeAnalysisResult, FRAME_REMAKE_ANALYSIS_LABELS, type FrameRemakeAnalysisStage, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
 import { frameRemakeTemplates } from "./frame-remake-prompt-templates";
 
-export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-15.2";
-export function frameRemakeAnalysisPrompt(project: FrameRemakeProject, group: FrameRemakeGroup) {
+export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-15.3";
+export function frameRemakeAnalysisPrompt(project: FrameRemakeProject, group: FrameRemakeGroup, stage: FrameRemakeAnalysisStage) {
     const templates = frameRemakeTemplates(project, group);
+    const task = {
+        analysis: [templates.analysis],
+        productScript: [templates.productScript, `已保存的原片画面分析：\n${group.analysis}`],
+        imagePrompt: [templates.storyboardScript, `已保存的产品脚本：\n${frameRemakeAnalysisResult(group, "productScript")}`],
+        videoPrompt: [templates.video, `已保存的分镜脚本：\n${group.imagePrompt}`, "最终分镜图将在后续步骤生成；当前只规划视频动作，实际人物、产品和构图以后续最终图为准。"],
+    }[stage];
     return [
-        "按以下现有复刻流程模板完成本组原帧解析、新产品脚本适配、分镜优化和视频提示词。实际素材与时间线如下，文中所有模板均用于本组。",
+        `本次只执行“${FRAME_REMAKE_ANALYSIS_LABELS[stage]}”。完成本步即结束，不执行后续步骤。`,
         `全片 ${project.durationMs / 1000} 秒；本组为第 ${group.number} 组，原片 ${group.startMs / 1000}–${group.endMs / 1000} 秒，实际 ${frameRemakeSeconds(group)} 秒。不得把整片压缩到本组时长。`,
         `原帧编号及全片时间：${JSON.stringify(group.frames.map(({ number, startMs, endMs }) => ({ number, start: startMs / 1000, end: endMs / 1000 })))}`,
-        `附图：第1张为原片实际抽帧，随后依次为 ${project.references.product.length} 张产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。未提供替换图的对象沿用原片，不引用不存在的素材。`,
+        `附图：第1张为本组原片实际抽帧，随后依次为 ${project.references.product.length} 张产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。未提供替换图的对象沿用原片，不引用不存在的素材。`,
         "静态抽帧只能证明可见画面及相邻变化，不声称听过音频、不编造台词或看不到的动作。产品功能只采用用户已确认信息。原片有人脸或只有手部的分布逐帧判断。",
-        templates.analysis,
-        templates.productScript,
-        templates.storyboardScript,
-        "本次尚未生成最终分镜图；先依据上述分镜脚本规划视频动作，后续实际人物、产品及构图以最终图为准。",
-        templates.video,
+        ...task,
         `补充要求：${project.instructions || "无"}`,
-        '输出为 JSON：{"analysis":"完整原帧解析及适配后的产品脚本，保留上述模板要求的全部分镜字段及汇总","imagePrompt":"完整分镜优化正文，逐帧包含画面、人物占比、人脸有无、产品有无和产品位置","videoPrompt":"依照上述视频模板的完整视频提示词，覆盖本组全部真实相对时间"}。三个字段非空。不另输出 JSON 之外的正文。',
+        `输出为 JSON：${JSON.stringify({ [stage]: `本步完整正文，覆盖本组全部 ${group.frames.length} 帧，保留模板所需字段及汇总` })}。只返回这一个非空字段，不输出其他步骤。`,
     ].join("\n\n");
 }
 export function frameRemakeImagePrompt(project: FrameRemakeProject, group: FrameRemakeGroup, kind: "template" | "image" = "image") {
@@ -50,16 +52,12 @@ export function frameRemakeVideoPrompt(project: FrameRemakeProject, group: Frame
         .filter(Boolean)
         .join("\n\n");
 }
-export function parseFrameRemakeAnalysis(raw: string) {
+export function parseFrameRemakeAnalysis(raw: string, stage: FrameRemakeAnalysisStage) {
     const text = raw
         .trim()
         .replace(/^```(?:json)?\s*/, "")
         .replace(/\s*```$/, "");
     const value = JSON.parse(text) as Record<string, unknown>;
-    const result = { analysis: "", imagePrompt: "", videoPrompt: "" };
-    for (const key of Object.keys(result) as Array<keyof typeof result>) {
-        if (!value || typeof value[key] !== "string" || !value[key].trim() || value[key].length > 30000) throw new Error("模型未返回完整的画面解析和提示词");
-        result[key] = value[key].trim();
-    }
-    return result;
+    if (!value || Array.isArray(value) || typeof value[stage] !== "string" || !value[stage].trim() || value[stage].length > 30000) throw new Error(`模型未返回完整的${FRAME_REMAKE_ANALYSIS_LABELS[stage]}结果`);
+    return value[stage].trim();
 }
