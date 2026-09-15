@@ -85,6 +85,11 @@ export async function countLocalMediaReferences(storageKeys: string[]) {
                 UNION ALL
                 SELECT r.storage_key, count(*)::int
                 FROM requested r
+                JOIN frame_remake_projects p ON position(r.storage_key in COALESCE(p.project_json::text, '')) > 0
+                GROUP BY r.storage_key
+                UNION ALL
+                SELECT r.storage_key, count(*)::int
+                FROM requested r
                 JOIN drama_project_versions v ON position(r.storage_key in COALESCE(v.snapshot::text, '')) > 0
                 GROUP BY r.storage_key
                 UNION ALL
@@ -138,6 +143,7 @@ export async function countLocalMediaReferences(storageKeys: string[]) {
         readJsonDataFile<unknown>("omni-clothing-projects.json", {}),
         readJsonDataFile<unknown>("omni-remake-projects.json", {}),
         readJsonDataFile<unknown>("bangbang-projects.json", {}),
+        readJsonDataFile<unknown>("frame-remake-projects.json", {}),
         readJsonDataFile<unknown>("generation-logs.json", {}),
         readJsonDataFile<unknown>("generation-tasks.json", []),
         readJsonDataFile<unknown>("auth.json", {}),
