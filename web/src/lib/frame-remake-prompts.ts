@@ -1,20 +1,22 @@
 import { frameRemakeGrid, frameRemakeSeconds, frameRemakeAnalysisResult, FRAME_REMAKE_ANALYSIS_LABELS, type FrameRemakeAnalysisStage, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
 import { frameRemakeTemplates } from "./frame-remake-prompt-templates";
 
-export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-15.3";
+export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-15.4";
 export function frameRemakeAnalysisPrompt(project: FrameRemakeProject, group: FrameRemakeGroup, stage: FrameRemakeAnalysisStage) {
     const templates = frameRemakeTemplates(project, group);
     const task = {
         analysis: [templates.analysis],
         productScript: [templates.productScript, `已保存的原片画面分析：\n${group.analysis}`],
         imagePrompt: [templates.storyboardScript, `已保存的产品脚本：\n${frameRemakeAnalysisResult(group, "productScript")}`],
-        videoPrompt: [templates.video, `已保存的分镜脚本：\n${group.imagePrompt}`, "最终分镜图将在后续步骤生成；当前只规划视频动作，实际人物、产品和构图以后续最终图为准。"],
+        videoPrompt: [templates.video, `已保存的分镜脚本：\n${group.imagePrompt}`, group.image.result ? "依据附图中的最终分镜图编写视频动作，人物、产品和构图以该图为准。" : "最终分镜图尚未生成；当前只规划视频动作，实际人物、产品和构图以后续最终图为准。"],
     }[stage];
     return [
         `本次只执行“${FRAME_REMAKE_ANALYSIS_LABELS[stage]}”。完成本步即结束，不执行后续步骤。`,
         `全片 ${project.durationMs / 1000} 秒；本组为第 ${group.number} 组，原片 ${group.startMs / 1000}–${group.endMs / 1000} 秒，实际 ${frameRemakeSeconds(group)} 秒。不得把整片压缩到本组时长。`,
         `原帧编号及全片时间：${JSON.stringify(group.frames.map(({ number, startMs, endMs }) => ({ number, start: startMs / 1000, end: endMs / 1000 })))}`,
-        `附图：第1张为本组原片实际抽帧，随后依次为 ${project.references.product.length} 张产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。未提供替换图的对象沿用原片，不引用不存在的素材。`,
+        stage === "analysis"
+            ? "附图仅为本组原片实际抽帧。只分析原片可见内容，产品、人物和背景的替换要求留到后续产品脚本阶段。"
+            : `附图：第1张为${stage === "videoPrompt" && group.image.result ? "本组已完成的最终分镜图" : "本组原片实际抽帧"}，随后依次为 ${project.references.product.length} 张产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。未提供替换图的对象沿用原片，不引用不存在的素材。`,
         "静态抽帧只能证明可见画面及相邻变化，不声称听过音频、不编造台词或看不到的动作。产品功能只采用用户已确认信息。原片有人脸或只有手部的分布逐帧判断。",
         ...task,
         `补充要求：${project.instructions || "无"}`,

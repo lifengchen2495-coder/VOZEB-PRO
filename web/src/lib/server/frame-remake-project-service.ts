@@ -129,7 +129,9 @@ export async function getFrameRemakeProjectForUser(userId: string, id: string) {
                             : {
                                   ...item,
                                   [kind]: next,
-                                  ...(kind !== "video" && next.status === "completed" ? { ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) } : {}),
+                                  ...(kind !== "video" && next.status === "completed"
+                                      ? { ...resetFrameRemakeAnalysisFrom(item, "videoPrompt"), [kind]: next, ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) }
+                                      : {}),
                               },
                     ),
                 });
@@ -171,27 +173,19 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
         let next = { ...current, ...patch };
         if (patch.sourceVideo && patch.sourceVideo.url === current.sourceVideo?.url) next.sourceVideo = { ...current.sourceVideo, ...patch.sourceVideo };
         const sourceChanged = (value.sourceVideo !== undefined && current.sourceVideo?.url !== next.sourceVideo?.url) || current.maxSegmentSeconds !== next.maxSegmentSeconds;
-        const targetsChanged = JSON.stringify(current.references) !== JSON.stringify(next.references) || current.instructions !== next.instructions;
+        const referencesChanged = JSON.stringify(current.references) !== JSON.stringify(next.references);
+        const instructionsChanged = current.instructions !== next.instructions;
+        const targetsChanged = referencesChanged || instructionsChanged;
         if (sourceChanged) next = { ...next, sourceVideo: patch.sourceVideo ?? (value.sourceVideo === null ? undefined : current.sourceVideo), durationMs: 0, groups: [], mergedVideo: undefined };
         else if (targetsChanged)
             next = {
                 ...next,
-                groups: next.groups.map((group) => ({
-                    ...group,
-                    analysis: "",
-                    productScript: "",
-                    analysisSteps: undefined,
-                    imagePrompt: "",
-                    videoPrompt: "",
-                    template: idleFrameRemakeTask(group.template.attemptNo),
-                    image: idleFrameRemakeTask(group.image.attemptNo),
-                    video: idleFrameRemakeTask(group.video.attemptNo),
-                })),
+                groups: next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, instructionsChanged ? "analysis" : "productScript")),
                 mergedVideo: undefined,
             };
         else if (current.audioMode !== next.audioMode) {
             next.mergedVideo = undefined;
-            if (next.audioMode === "generated" || current.audioMode === "generated") next.groups = next.groups.map((group) => ({ ...group, video: idleFrameRemakeTask(group.video.attemptNo) }));
+            if (next.audioMode === "generated" || current.audioMode === "generated") next.groups = next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, "videoPrompt"));
         }
         if (value.group !== undefined) {
             if (sourceChanged || targetsChanged) throw new FrameRemakeError("请先保存素材变化，再编辑分组", 409);
@@ -325,7 +319,15 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
             modelSelection: { ...current.modelSelection, [kind === "template" ? "image" : kind]: model },
             mergedVideo: undefined,
             groups: current.groups.map((item) =>
-                item.id === groupId ? { ...item, [kind]: pending, ...(kind !== "video" ? { ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) } : {}) } : item,
+                item.id === groupId
+                    ? {
+                          ...item,
+                          [kind]: pending,
+                          ...(kind !== "video"
+                              ? { ...resetFrameRemakeAnalysisFrom(item, "videoPrompt"), [kind]: pending, ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) }
+                              : {}),
+                      }
+                    : item,
             ),
         });
     });

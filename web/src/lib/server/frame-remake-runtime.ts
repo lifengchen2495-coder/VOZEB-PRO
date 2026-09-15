@@ -101,7 +101,8 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
             const stage = operation.analysisStage ?? nextFrameRemakeAnalysisStage(group) ?? "analysis";
             const settings = await getAuthSettings();
             const model = input.project.modelSelection.analysis || settings.defaultModels.textModel;
-            const referenceCount = 1 + Object.values(input.project.references).reduce((sum, items) => sum + items.length, 0);
+            const references = stage === "analysis" ? [] : [...input.project.references.product, ...input.project.references.character, ...input.project.references.background];
+            const referenceCount = 1 + references.length;
             const candidate = resolveLogicalModelCandidates(settings, "text", model).find((item) => resolveRemakeProductionVisionProtocol(item) && (item.capabilityProfile?.maxReferenceImages ?? 8) >= referenceCount);
             if (!candidate) throw new Error("请选择支持图片理解的分析模型");
             const prompt = frameRemakeAnalysisPrompt(input.project, group, stage);
@@ -112,14 +113,25 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                 groups: current.groups.map((item) => (item.id === group.id ? { ...item, analysisSteps: { ...item.analysisSteps, [stage]: step } } : item)),
             }));
             const source = join(directory, `${group.id}-grid`);
-            await downloadOwned(group.contactSheet!, source, input);
+            await downloadOwned(stage === "videoPrompt" && group.image.result ? group.image.result : group.contactSheet!, source, input);
             const bytes = await sharp(await readFile(source))
                 .resize({ width: 1080, height: 1920, fit: "inside", withoutEnlargement: true })
                 .jpeg({ quality: 85 })
                 .toBuffer();
             const meta = await sharp(bytes).metadata();
-            const boards: RemakeProductionVisualBoard[] = [{ id: "redrawn-contact-sheets-board", ordinal: 1, mimeType: "image/jpeg", width: meta.width!, height: meta.height!, bytes, description: `原片第${group.number}组抽帧`, layout: [] }];
-            for (const [index, media] of [...input.project.references.product, ...input.project.references.character, ...input.project.references.background].entries()) {
+            const boards: RemakeProductionVisualBoard[] = [
+                {
+                    id: "redrawn-contact-sheets-board",
+                    ordinal: 1,
+                    mimeType: "image/jpeg",
+                    width: meta.width!,
+                    height: meta.height!,
+                    bytes,
+                    description: stage === "videoPrompt" && group.image.result ? `第${group.number}组最终分镜图` : `原片第${group.number}组抽帧`,
+                    layout: [],
+                },
+            ];
+            for (const [index, media] of references.entries()) {
                 const path = join(directory, `reference-${index}`);
                 await downloadOwned(media, path, input);
                 const bytes = await sharp(await readFile(path))

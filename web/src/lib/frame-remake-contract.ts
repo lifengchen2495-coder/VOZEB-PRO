@@ -3,6 +3,7 @@ export type FrameRemakeGenerationKind = "template" | "image" | "video";
 export const FRAME_REMAKE_ANALYSIS_STAGES = ["analysis", "productScript", "imagePrompt", "videoPrompt"] as const;
 export type FrameRemakeAnalysisStage = (typeof FRAME_REMAKE_ANALYSIS_STAGES)[number];
 export const FRAME_REMAKE_ANALYSIS_LABELS: Record<FrameRemakeAnalysisStage, string> = { analysis: "分析原片画面", productScript: "适配产品脚本", imagePrompt: "优化分镜脚本", videoPrompt: "生成视频提示词" };
+export type FrameRemakeWorkflowStage = "analysis" | "images" | "production";
 export type FrameRemakeOperationKind = "inspect" | "extract" | "analyze" | "merge";
 export type FrameRemakeTask = {
     status: "idle" | "queued" | "running" | "completed" | "error";
@@ -54,6 +55,7 @@ export type FrameRemakeProject = {
         id: string;
         status: "running" | "paused" | "error" | "completed";
         mode?: "auto" | "step";
+        stageScope?: FrameRemakeWorkflowStage;
         pendingGeneration?: { groupId: string; kind: FrameRemakeGenerationKind };
         startedAt: string;
         updatedAt: string;
