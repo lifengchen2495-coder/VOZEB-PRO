@@ -69,6 +69,7 @@ export async function requestRemakeVisionPrompt(input: {
     signal?: AbortSignal;
     allowTextOnly?: boolean;
     maxOutputTokens?: number;
+    defaultTimeoutMs?: number;
     stream?: boolean;
     jsonMode?: boolean;
 }): Promise<RemakeProductionVisionCall> {
@@ -80,7 +81,7 @@ export async function requestRemakeVisionPrompt(input: {
     const workerHeaders = maintenanceWorkerContextHeaders(input.cookie);
     if (workerHeaders) Object.entries(workerHeaders).forEach(([key, value]) => headers.set(key, value));
     else if (input.cookie) headers.set("cookie", input.cookie);
-    const timeoutMs = resolveModelRequestTimeoutMs(input.candidate, "text");
+    const timeoutMs = resolveModelRequestTimeoutMs(input.candidate, "text", input.defaultTimeoutMs);
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
     const localTimeoutError = (responseHeaders?: Headers) =>

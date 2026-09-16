@@ -1,4 +1,4 @@
-import { frameRemakeGrid, frameRemakeSeconds, frameRemakeAnalysisResult, FRAME_REMAKE_ANALYSIS_LABELS, type FrameRemakeAnalysisStage, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
+import { frameRemakeHasNarration, frameRemakeGrid, frameRemakeSeconds, frameRemakeAnalysisResult, FRAME_REMAKE_ANALYSIS_LABELS, type FrameRemakeAnalysisStage, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
 import { frameRemakeTemplates } from "./frame-remake-prompt-templates";
 
 export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-15.5";
@@ -9,7 +9,11 @@ export function frameRemakeAnalysisPrompt(project: FrameRemakeProject, group: Fr
         copy: [group.copy || ""],
         productScript: [templates.productScript, `已保存的原片画面分析：\n${group.analysis}`],
         imagePrompt: [templates.storyboardScript, `已保存的产品脚本：\n${frameRemakeAnalysisResult(group, "productScript")}`],
-        videoPrompt: [templates.video, `已保存的分镜脚本：\n${group.imagePrompt}`, group.image.result ? "依据附图中的最终分镜图编写视频动作，人物、产品和构图以该图为准。" : "最终分镜图尚未生成；当前只规划视频动作，实际人物、产品和构图以后续最终图为准。"],
+        videoPrompt: [
+            group.videoPromptInstructions?.trim() || templates.video,
+            `已保存的分镜脚本：\n${group.imagePrompt}`,
+            group.image.result ? "依据附图中的最终分镜图编写视频动作，人物、产品和构图以该图为准。" : "最终分镜图尚未生成；当前只规划视频动作，实际人物、产品和构图以后续最终图为准。",
+        ],
     }[stage];
     return [
         `本次只执行“${FRAME_REMAKE_ANALYSIS_LABELS[stage]}”。完成本步即结束，不执行后续步骤。`,
@@ -17,7 +21,11 @@ export function frameRemakeAnalysisPrompt(project: FrameRemakeProject, group: Fr
         `原帧编号及全片时间：${JSON.stringify(group.frames.map(({ number, startMs, endMs }) => ({ number, start: startMs / 1000, end: endMs / 1000 })))}`,
         stage === "analysis"
             ? "附图仅为本组原片实际抽帧。只分析原片可见内容，产品、人物和背景的替换要求留到后续产品脚本阶段。"
-            : `附图：第1张为${stage === "videoPrompt" && group.image.result ? "本组已完成的最终分镜图" : "本组原片实际抽帧"}，随后依次为 ${project.references.product.length} 张产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。未提供替换图的对象沿用原片，不引用不存在的素材。`,
+            : stage === "productScript"
+              ? `附图依次为 ${project.references.product.length} 张新产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。原片镜头解析见下文。`
+              : stage === "imagePrompt"
+                ? "附图为原视频分镜图，结合已保存的新产品脚本优化各分镜。"
+                : `附图：第1张为${stage === "videoPrompt" && group.image.result ? "本组已完成的最终分镜图" : "本组原片实际抽帧"}，随后依次为 ${project.references.product.length} 张产品图、${project.references.character.length} 张人物图、${project.references.background.length} 张背景图。未提供替换图的对象沿用原片，不引用不存在的素材。`,
         "静态抽帧只能证明可见画面及相邻变化，不声称听过音频、不编造台词或看不到的动作。产品功能只采用用户已确认信息。原片有人脸或只有手部的分布逐帧判断。",
         ...task,
         `已校对文案与实际时间区间：\n${group.copy || "无口播"}`,
@@ -50,7 +58,9 @@ export function frameRemakeVideoPrompt(project: FrameRemakeProject, group: Frame
         `前${seconds}秒严格覆盖原片${group.startMs / 1000}–${group.endMs / 1000}秒的完整动作及节奏。${generationSeconds > seconds ? `在${seconds}秒之后只保持结束画面；系统仅采用前${seconds}秒。` : "不得延长或压缩这段时间线。"}`,
         group.videoPrompt,
         `实际附图：图1为最终分镜图，随后依次为${project.references.product.length}张产品图、${project.references.character.length}张人物图。按此顺序对应提示词中的素材标签。没有人物图则沿用最终图人物；原片只有手部的镜头不新增人脸。`,
-        project.audioMode === "generated" ? "按画面生成自然同步声音，不虚构台词。" : "输出静音，不添加对白、音乐或音效。",
+        project.audioMode === "generated" && frameRemakeHasNarration(project, group)
+            ? `使用${project.voice === "male" ? "男性" : "女性"}配音。参考音频仅用于语速、节奏及语气；严格采用已校对文案：${group.copyBlocks?.map((b) => b.text).join("") || group.sourceCopy || ""}。不新增台词。`
+            : "输出静音，不添加对白、音乐或音效。",
         project.instructions,
     ]
         .filter(Boolean)

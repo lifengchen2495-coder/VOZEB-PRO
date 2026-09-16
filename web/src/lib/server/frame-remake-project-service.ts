@@ -1,3 +1,5 @@
+import { frameRemakeHasNarration } from "@/lib/frame-remake-contract";
+import { normalizeRemakeVideoPromptInstructions } from "@/lib/remake15-video-prompt-instructions";
 import { randomUUID } from "node:crypto";
 import { getAuthSettings } from "@/lib/auth/store";
 import {
@@ -70,7 +72,7 @@ export function assertFrameRemakeIdle(project: FrameRemakeProject, automationLea
     )
         throw new FrameRemakeError("请等待当前处理完成，或暂停自动流程", 409);
 }
-export async function ownedFrameRemakeMedia(userId: string, value: unknown, type: "image" | "video"): Promise<FrameRemakeMedia> {
+export async function ownedFrameRemakeMedia(userId: string, value: unknown, type: "image" | "video" | "audio"): Promise<FrameRemakeMedia> {
     const url = text(object(value).url, 3000);
     const key = localMediaStorageKeyFromValue(url);
     const media = key ? await getLocalMediaRegistration(key) : null;
@@ -147,6 +149,10 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
     assertFrameRemakeIdle(before);
     const patch: Partial<FrameRemakeProject> = {};
     for (const key of ["title", "instructions", "sourceCopy", "productInfo"] as const) if (value[key] !== undefined) patch[key] = requiredText(value[key], key === "title" ? 160 : 20000);
+    if (value.voice !== undefined) {
+        if (value.voice !== "female" && value.voice !== "male") throw new FrameRemakeError("配音声线不正确");
+        patch.voice = value.voice;
+    }
     if (value.audioMode !== undefined) {
         if (!["source", "generated", "silent"].includes(String(value.audioMode))) throw new FrameRemakeError("音频方式不正确");
         patch.audioMode = value.audioMode as FrameRemakeProject["audioMode"];
@@ -184,15 +190,24 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
                 groups: next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, instructionsChanged ? "analysis" : "productScript")),
                 mergedVideo: undefined,
             };
-        else if (current.audioMode !== next.audioMode) {
+        else if (current.audioMode !== next.audioMode || current.voice !== next.voice) {
             next.mergedVideo = undefined;
-            if (next.audioMode === "generated" || current.audioMode === "generated") next.groups = next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, "videoPrompt"));
+            if (next.audioMode === "generated" || current.audioMode === "generated" || current.voice !== next.voice) next.groups = next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, "videoPrompt"));
+        }
+        if (!sourceChanged && !targetsChanged && current.modelSelection.image !== next.modelSelection.image) {
+            next = { ...next, mergedVideo: undefined, groups: next.groups.map((g) => ({ ...resetFrameRemakeAnalysisFrom(g, "videoPrompt"), template: idleFrameRemakeTask(g.template.attemptNo), image: idleFrameRemakeTask(g.image.attemptNo) })) };
+        } else if (current.modelSelection.video !== next.modelSelection.video) {
+            next = { ...next, mergedVideo: undefined, groups: next.groups.map((g) => ({ ...g, video: idleFrameRemakeTask(g.video.attemptNo) })) };
         }
         if (value.group !== undefined) {
             if (sourceChanged || targetsChanged) throw new FrameRemakeError("请先保存素材变化，再编辑分组", 409);
             const edit = object(value.group);
             const target = next.groups.find((group) => group.id === edit.id);
             if (!target) throw new FrameRemakeError("分组不存在", 404);
+            const instructions = edit.videoPromptInstructions === undefined ? target.videoPromptInstructions : normalizeRemakeVideoPromptInstructions(edit.videoPromptInstructions);
+            if (instructions !== target.videoPromptInstructions) {
+                next = { ...next, mergedVideo: undefined, groups: next.groups.map((g) => (g.id === target.id ? { ...resetFrameRemakeAnalysisFrom(g, "videoPrompt"), videoPromptInstructions: instructions } : g)) };
+            }
             const values = {
                 analysis: edit.analysis === undefined ? target.analysis : requiredText(edit.analysis, 30000),
                 copy: edit.copy === undefined ? frameRemakeAnalysisResult(target, "copy") : requiredText(edit.copy, 30000),
@@ -202,7 +217,7 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
             };
             const changed = FRAME_REMAKE_ANALYSIS_STAGES.find((stage) => values[stage] !== frameRemakeAnalysisResult(target, stage));
             if (changed) {
-                const reset = resetFrameRemakeAnalysisFrom(target, changed);
+                const reset = { ...resetFrameRemakeAnalysisFrom(target, changed), videoPromptInstructions: instructions };
                 for (const stage of FRAME_REMAKE_ANALYSIS_STAGES) if (values[stage] !== frameRemakeAnalysisResult(target, stage)) reset[stage] = values[stage];
                 next = { ...next, mergedVideo: undefined, groups: next.groups.map((group) => (group.id === target.id ? reset : group)) };
             }
@@ -265,6 +280,7 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
             group ??= current.groups.find((group) => nextFrameRemakeAnalysisStage(group));
             if (!group) throw new FrameRemakeError("全部分析步骤已完成");
             stage = analysisStage ?? nextFrameRemakeAnalysisStage(group) ?? "analysis";
+            if ((stage === "productScript" || stage === "imagePrompt") && (!current.references.product.length || !current.productInfo?.trim())) throw new FrameRemakeError("请先填写新产品信息并上传产品图");
             if (stage === "videoPrompt" && (group.image.status !== "completed" || !group.image.result)) throw new FrameRemakeError("请先完成本组最终分镜图");
             if (stage !== "analysis" && (!group.contactSheet || group.frames.some((frame) => !frame.media))) throw new FrameRemakeError("请先完成本组拆帧");
             if (FRAME_REMAKE_ANALYSIS_STAGES.slice(0, FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group!, key))) throw new FrameRemakeError("请先完成前序分析步骤");
@@ -308,10 +324,14 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
     if (!model || !candidates.length) throw new FrameRemakeError(`请选择可用的${kind === "image" ? "生图" : "视频"}模型`);
     const references = kind !== "video" ? frameRemakeImageReferences(before, target, kind) : frameRemakeVideoReferences(before, target);
     for (const media of references) await ownedFrameRemakeMedia(userId, media, "image");
+    const audio = kind === "video" && before.audioMode === "generated" && frameRemakeHasNarration(before, target) ? target.sourceAudio : undefined;
+    if (kind === "video" && before.audioMode === "generated" && frameRemakeHasNarration(before, target) && !audio) throw new FrameRemakeError("请重新生成视频 Prompt，以提取本组参考音频");
+    if (audio) await ownedFrameRemakeMedia(userId, audio, "audio");
     let seconds: number | undefined;
     if (kind === "video") {
         for (const candidate of candidates) {
             const channel = toSystemGenerationChannel(candidate);
+            if (audio && channel.capabilityProfile?.supportsReferenceAudio !== true) continue;
             const requested = Math.ceil(frameRemakeSeconds(target));
             const duration =
                 channel.apiFormat === "gemini" && !["globalaiopc", "huifeng"].includes(channel.advancedConfig?.protocol || "")
@@ -342,6 +362,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
             error: undefined,
             model,
             seconds,
+            audioReferenceUrl: audio?.url,
             referenceUrls: references.map((media) => media.url),
             prompt: kind !== "video" ? frameRemakeImagePrompt(current, group, kind) : frameRemakeVideoPrompt(current, group, seconds!),
         };
@@ -369,6 +390,7 @@ export async function submitFrameRemakeGeneration(input: { userId: string; proje
     const pending = group[input.kind];
     const context = { projectId: project.id, generationSlotId: `frame-remake-${input.kind}:${group.id}`, clientRequestId: pending.clientRequestId, attemptNo: pending.attemptNo };
     const references = pending.referenceUrls!.map((url, index) => (input.kind !== "video" ? { url, name: `图${index + 1}` } : { type: "image", role: "reference", url }));
+    if (input.kind === "video" && pending.audioReferenceUrl) references.push({ type: "audio", role: "reference", url: pending.audioReferenceUrl });
     let response: Response;
     try {
         response = await fetchInternalApi(`${input.origin}/api/${input.kind !== "video" ? "image-tasks" : "video-generation-tasks"}`, {
@@ -384,7 +406,12 @@ export async function submitFrameRemakeGeneration(input: { userId: string; proje
                 prompt: pending.prompt,
                 title: `${project.title} · 第${group.number}组`,
                 source: "drama",
-                config: { apiSource: "system", model: pending.model, size: input.kind !== "video" ? "9:16" : frameRemakeAspectRatio(project), ...(input.kind !== "video" ? { quality: "2K" } : { videoSeconds: pending.seconds, vquality: "720p" }) },
+                config: {
+                    apiSource: "system",
+                    model: pending.model,
+                    size: input.kind !== "video" ? "9:16" : frameRemakeAspectRatio(project),
+                    ...(input.kind !== "video" ? { quality: "2K" } : { videoSeconds: pending.seconds, vquality: "720p", videoGenerateAudio: project.audioMode === "generated" && frameRemakeHasNarration(project, group) }),
+                },
                 references,
                 context,
             }),
@@ -467,13 +494,13 @@ export async function validateFrameRemakeGeneration(input: {
     )
         throw new FrameRemakeError("生成参数与当前分组预留不一致，请刷新后重试", 409);
     const urls = Array.isArray(input.references)
-        ? input.references.map((item) => {
+        ? input.references.map((item, index) => {
               const reference = object(item);
-              if (input.kind === "video" && (reference.type !== "image" || reference.role !== "reference")) throw new FrameRemakeError("视频参考素材类型不正确");
+              if (input.kind === "video" && (reference.type !== (pending.audioReferenceUrl && index === pending.referenceUrls?.length ? "audio" : "image") || reference.role !== "reference")) throw new FrameRemakeError("视频参考素材类型不正确");
               return reference.url || reference.serverUrl || reference.dataUrl;
           })
         : [];
-    if (JSON.stringify(urls) !== JSON.stringify(pending.referenceUrls)) throw new FrameRemakeError("生成参考素材与当前分组不一致", 409);
+    if (JSON.stringify(urls) !== JSON.stringify([...(pending.referenceUrls || []), ...(pending.audioReferenceUrl ? [pending.audioReferenceUrl] : [])])) throw new FrameRemakeError("生成参考素材与当前分组不一致", 409);
     return { prompt: pending.prompt!, durationSeconds: pending.seconds! };
 }
 function object(value: unknown): Record<string, unknown> {

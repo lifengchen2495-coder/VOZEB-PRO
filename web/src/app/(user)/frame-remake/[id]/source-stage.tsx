@@ -1,13 +1,14 @@
 "use client";
-import { Button, Drawer, Input, Tabs, Tag } from "antd";
+import { Button, Drawer, Tabs, Tag } from "antd";
 import { useState } from "react";
-import { FileText, FileVideo2, Images, ScanSearch } from "lucide-react";
+import { FileText, Images, ScanSearch } from "lucide-react";
 import { FrameGrid, AnalysisRows, CopyBlockRows, type RemakeCopyBlockView, type RemakeWorkspaceTab } from "../../remake15/[id]/remake-analysis-board";
 import { RemakeUnitEditor } from "../../remake15/[id]/remake-unit-editor";
+import { RemakeSourcePanel } from "../../remake15/[id]/remake-source-panel";
 import type { RemakeFrame } from "../../remake15/remake-contract";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
-import { frameRemakeTime, type FrameRemakeFrameAnalysis } from "@/lib/frame-remake-contract";
-import { Field, ModelControl, UploadControl, type WorkflowProps } from "./workflow-controls";
+import { type FrameRemakeFrameAnalysis } from "@/lib/frame-remake-contract";
+import { type WorkflowProps } from "./workflow-controls";
 import { TextOutput } from "./outputs";
 const emptyDetail: FrameRemakeFrameAnalysis = { subtitle: "", sellingPoint: "", shotType: "", description: "", subjectRatio: "", hasFace: false };
 export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; editorOpen: boolean; onSourceClose: () => void; onEditorClose: () => void }) {
@@ -69,82 +70,15 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
     const video = project.sourceVideo,
         ready = frameRemakeWorkflowReadiness(project).analysis;
     const source = (
-        <aside className="flex h-full min-h-0 flex-col bg-card" aria-label="来源视频与原文案">
-            <div className="flex h-12 shrink-0 items-center justify-between border-b px-3">
-                <h2 className="flex items-center gap-2 text-sm font-semibold">
-                    <FileVideo2 className="size-4" />
-                    来源
-                </h2>
-                <Tag className="!m-0">{video ? "已上传" : "待上传"}</Tag>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto">
-                <section className="border-b p-3">
-                    <div className="relative aspect-video overflow-hidden rounded-md border bg-[#111418]">
-                        {video ? (
-                            <video key={video.url} src={video.url} className="size-full object-contain" controls preload="metadata" aria-label="来源视频" />
-                        ) : (
-                            <div className="grid size-full place-items-center text-xs text-white/60">等待来源视频</div>
-                        )}
-                    </div>
-                    <div className="mt-2.5 flex min-w-0 items-center justify-between gap-2">
-                        <div className="min-w-0">
-                            <p className="truncate text-xs font-medium">{video?.originalName || "MP4 / MOV / WebM"}</p>
-                            <p className="mt-0.5 text-[11px] text-muted-foreground">{project.durationMs ? `${frameRemakeTime(project.durationMs)} · ${video?.width} × ${video?.height}` : "最大 200 MB"}</p>
-                        </div>
-                        <UploadControl label={video ? "替换视频" : "上传视频"} accept="video/mp4,video/quicktime,video/webm" disabled={props.disabled} onFile={(file) => void props.onUpload(file, "video")} />
-                    </div>
-                </section>
-                <section className="border-b p-3">
-                    <Field label="原文案">
-                        <Input.TextArea
-                            rows={7}
-                            maxLength={20000}
-                            value={display.sourceCopy ?? display.groups.map((g) => g.sourceCopy || "").join("")}
-                            disabled={props.editingDisabled}
-                            placeholder="可粘贴原文案；留空时由视频理解识别真实口播。"
-                            onChange={(e) => props.onChange({ sourceCopy: e.target.value })}
-                        />
-                    </Field>
-                    <p className="mt-2 text-[11px] leading-5 text-muted-foreground">按原顺序分配到每 3 个分镜对应的文案区间；无口播时保留空白。</p>
-                </section>
-                <section className="space-y-4 p-3">
-                    <Field label="复刻要求">
-                        <Input.TextArea rows={3} value={display.instructions} disabled={props.editingDisabled} maxLength={20000} onChange={(e) => props.onChange({ instructions: e.target.value })} />
-                    </Field>
-                    <div className="text-xs">
-                        <p className="font-medium">视频理解</p>
-                        <p className="mt-1 text-muted-foreground">沿用原复刻的 Doubao 视频理解模型</p>
-                    </div>
-                    <ModelControl props={props} kind="analysis" label="文案与脚本模型" />
-                    <Field label="每组最长秒数">
-                        <select value={display.maxSegmentSeconds} disabled={props.editingDisabled} className="rounded-md border bg-background p-2" onChange={(e) => props.onChange({ maxSegmentSeconds: Number(e.target.value) })}>
-                            {Array.from({ length: 12 }, (_, i) => (
-                                <option key={i} value={i + 4}>
-                                    {i + 4} 秒
-                                </option>
-                            ))}
-                        </select>
-                    </Field>
-                    <p className="text-[11px] leading-5 text-muted-foreground">总时长跟随原片，尾组保留实际余量。</p>
-                    <div className="space-y-2 border-t pt-3" aria-label="分组分析进度">
-                        {project.groups.map((g) => (
-                            <section key={g.id} className="space-y-1 rounded border p-2">
-                                <p className="text-xs font-medium">
-                                    第 {g.number} 组 · {g.startMs / 1000}–{g.endMs / 1000} 秒
-                                </p>
-                                <p className="text-[11px] text-muted-foreground">
-                                    {g.analysis ? "视频分析已保存" : "等待视频理解"} · {g.frames.filter((f) => f.media).length}/{g.frames.length} 帧
-                                </p>
-                                {g.analysisSteps?.analysis?.error && <p className="text-xs text-destructive">{g.analysisSteps.analysis.error}</p>}
-                                <Button size="small" disabled={props.disabled} onClick={() => void props.onOperation("analyze", g.id, "analysis")}>
-                                    {g.analysis ? "重新分析本组" : "分析本组"}
-                                </Button>
-                            </section>
-                        ))}
-                    </div>
-                </section>
-            </div>
-        </aside>
+        <RemakeSourcePanel
+            project={{ sourceVideo: video ? { ...video, durationMs: project.durationMs } : undefined, sourceCopy: display.sourceCopy ?? display.groups.map((g) => g.sourceCopy || "").join(""), copy: { optionRaw: "" } }}
+            copyRangeLabel={`${blocks.length || "若干"} 个三帧区间`}
+            uploading={props.working && !project.operation}
+            uploadProgress={0}
+            disabled={props.editingDisabled}
+            onUpload={(file) => void props.onUpload(file, "video")}
+            onPatch={(patch) => props.onChange({ sourceCopy: patch.sourceCopy })}
+        />
     );
     return (
         <section className="flex h-full min-h-0 flex-col">
@@ -161,11 +95,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                         <Button size="small" onClick={() => props.onStage("images")}>
                             进入分镜重绘
                         </Button>
-                    ) : (
-                        <Button size="small" disabled={props.disabled || !project.sourceVideo} onClick={() => void props.onControl("step")}>
-                            只执行下一步
-                        </Button>
-                    )}
+                    ) : null}
                 </div>
             </div>
             <div className="grid min-h-0 flex-1 grid-cols-1 min-[1200px]:grid-cols-[300px_minmax(0,1fr)_340px]" data-remake-desktop-grid>

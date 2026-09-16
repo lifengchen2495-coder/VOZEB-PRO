@@ -8,6 +8,7 @@ import sharp, { type OverlayOptions } from "sharp";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import {
     assertFrameRemakeTimeline,
+    frameRemakeHasNarration,
     frameRemakeGrid,
     frameRemakeSeconds,
     planFrameRemakeTimeline,
@@ -97,7 +98,9 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
             }
             const contactSheet = await persistImage(extracted.contactSheet, `${group.id}-source-grid.jpg`, input, uncommitted);
             keys.push(contactSheet.storageKey!);
-            await apply((current) => ({ ...current, groups: current.groups.map((item) => (item.id === group.id ? { ...item, frames, contactSheet } : item)) }), keys);
+            const sourceAudio = await extractFrameRemakeAudio(source, directory, group, input, uncommitted);
+            if (sourceAudio?.storageKey) keys.push(sourceAudio.storageKey);
+            await apply((current) => ({ ...current, groups: current.groups.map((item) => (item.id === group.id ? { ...item, frames, contactSheet, sourceAudio } : item)) }), keys);
         } else if (operation.kind === "analyze") {
             const group = operation.groupId ? input.project.groups.find((item) => item.id === operation.groupId) : input.project.groups.find((item) => nextFrameRemakeAnalysisStage(item));
             if (!group) throw new Error("没有待分析的分组");
@@ -193,7 +196,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                                       frames,
                                       contactSheet: undefined,
                                       sourceAnalysisMode: "video",
-                                      sourceCopy: understanding.sourceCopy,
+                                      sourceCopy: input.project.sourceCopy?.trim() === "不需要人物口播" ? "" : understanding.sourceCopy,
                                       analysis: renderFrameRemakeSourceAnalysis(frames),
                                       copy: "",
                                       copyBlocks: undefined,
@@ -276,10 +279,17 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                         groups: current.groups.map((g) => (g.id === group.id ? { ...g, ...result, analysisSteps: { ...g.analysisSteps, copy: { ...step, completedAt: new Date().toISOString(), elapsedMs: Date.now() - started } } } : g)),
                     }));
             } else {
+                if (stage === "videoPrompt" && input.project.audioMode === "generated" && frameRemakeHasNarration(input.project, group) && !group.sourceAudio) {
+                    const source = join(directory, "source-video");
+                    await downloadOwned(input.project.sourceVideo!, source, input);
+                    const sourceAudio = await extractFrameRemakeAudio(source, directory, group, input, uncommitted);
+                    if (!sourceAudio) throw new Error("原片没有可读取音轨；请选择不需要人物口播或保留原声");
+                    await apply((current) => ({ ...current, groups: current.groups.map((g) => (g.id === group.id ? { ...g, sourceAudio } : g)) }), [sourceAudio.storageKey!]);
+                }
                 const settings = await getAuthSettings();
                 const model = input.project.modelSelection.analysis || settings.defaultModels.textModel;
-                const references = [...input.project.references.product, ...input.project.references.character, ...input.project.references.background];
-                const referenceCount = 1 + references.length;
+                const references = stage === "imagePrompt" ? [] : [...input.project.references.product, ...input.project.references.character, ...input.project.references.background];
+                const referenceCount = (stage === "productScript" ? 0 : 1) + references.length;
                 const candidate = resolveLogicalModelCandidates(settings, "text", model).find((item) => resolveRemakeProductionVisionProtocol(item) && (item.capabilityProfile?.maxReferenceImages ?? 8) >= referenceCount);
                 if (!candidate) throw new Error("请选择支持图片理解的分析模型");
                 const prompt = frameRemakeAnalysisPrompt(input.project, group, stage);
@@ -289,25 +299,26 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                     operation: { ...current.operation!, groupId: group.id, analysisStage: stage, progress: `第 ${group.number} / ${input.project.groups.length} 组：${FRAME_REMAKE_ANALYSIS_LABELS[stage]}` },
                     groups: current.groups.map((item) => (item.id === group.id ? { ...item, analysisSteps: { ...item.analysisSteps, [stage]: step } } : item)),
                 }));
-                const source = join(directory, `${group.id}-grid`);
-                await downloadOwned(stage === "videoPrompt" && group.image.result ? group.image.result : group.contactSheet!, source, input);
-                const bytes = await sharp(await readFile(source))
-                    .resize({ width: 1080, height: 1920, fit: "inside", withoutEnlargement: true })
-                    .jpeg({ quality: 85 })
-                    .toBuffer();
-                const meta = await sharp(bytes).metadata();
-                const boards: RemakeProductionVisualBoard[] = [
-                    {
+                const boards: RemakeProductionVisualBoard[] = [];
+                if (stage !== "productScript") {
+                    const source = join(directory, `${group.id}-grid`);
+                    await downloadOwned(stage === "videoPrompt" && group.image.result ? group.image.result : group.contactSheet!, source, input);
+                    const bytes = await sharp(await readFile(source))
+                        .resize({ width: 1080, height: 1920, fit: "inside", withoutEnlargement: true })
+                        .jpeg({ quality: 85 })
+                        .toBuffer();
+                    const meta = await sharp(bytes).metadata();
+                    boards.push({
                         id: "redrawn-contact-sheets-board",
                         ordinal: 1,
                         mimeType: "image/jpeg",
                         width: meta.width!,
                         height: meta.height!,
                         bytes,
-                        description: stage === "videoPrompt" && group.image.result ? `第${group.number}组最终分镜图` : `原片第${group.number}组抽帧`,
+                        description: stage === "videoPrompt" ? `第${group.number}组最终分镜图` : `原片第${group.number}组抽帧`,
                         layout: [],
-                    },
-                ];
+                    });
+                }
                 for (const [index, media] of references.entries()) {
                     const path = join(directory, `reference-${index}`);
                     await downloadOwned(media, path, input);
@@ -326,7 +337,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                 let saved = false;
                 let chargedHeaders: Headers | undefined;
                 try {
-                    // 一次请求仅输出一个阶段；超时沿用模型策略（默认 180 秒）。
+                    // 后台单步脚本默认等待 10 分钟；管理员显式配置仍优先。
                     const call = await requestRemakeProductionVisionPrompt({
                         origin: input.origin,
                         cookie: input.credential,
@@ -336,7 +347,8 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                             { role: "user", content: prompt },
                         ],
                         boards,
-                        maxOutputTokens: 5000,
+                        maxOutputTokens: 10000,
+                        defaultTimeoutMs: 10 * 60_000,
                         stream: true,
                         jsonMode: true,
                         headers: systemAiBillingHeaders(model, systemAiIdempotencyKey("frame-remake-analysis", input.userId, input.project.id, operation.id, group.id, stage), candidate.upstreamModel),
@@ -541,6 +553,16 @@ async function mergeFrameRemakeVideos(input: FrameRemakeRuntimeInput, directory:
     const originalName = `${input.project.title}-${input.project.durationMs / 1000}s.mp4`;
     const stored = await writeReferenceMediaFile(result.path, "video", "video/mp4", true, { ownerUserId: input.userId, projectId: input.project.id, source: "frame-remake-merge", originalName });
     return { url: `/api/reference-assets/${stored.token}`, storageKey: stored.token, mimeType: "video/mp4", bytes: stored.bytes, duration: result.duration, width: result.width, height: result.height, originalName };
+}
+export async function extractFrameRemakeAudio(source: string, directory: string, group: FrameRemakeGroup, input: FrameRemakeRuntimeInput, uncommitted: Set<string>) {
+    const probe = await runFfprobe(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "json", source], { timeoutMs: 30000 });
+    if (!JSON.parse(probe.stdout).streams?.length) return undefined;
+    const path = join(directory, `${group.id}-audio.m4a`);
+    await runFfmpeg(["-y", "-hide_banner", "-loglevel", "error", "-ss", String(group.startMs / 1000), "-i", source, "-t", String(frameRemakeSeconds(group)), "-vn", "-c:a", "aac", "-b:a", "128k", path], { timeoutMs: 60000 });
+    const originalName = `${group.id}-原视频音频.m4a`;
+    const stored = await writeReferenceMediaFile(path, "audio", "audio/mp4", true, { ownerUserId: input.userId, projectId: input.project.id, source: "frame-remake-audio", originalName });
+    uncommitted.add(stored.token);
+    return { url: `/api/reference-assets/${stored.token}`, storageKey: stored.token, mimeType: "audio/mp4", bytes: stored.bytes, originalName, duration: frameRemakeSeconds(group) };
 }
 async function persistImage(bytes: Buffer, originalName: string, input: FrameRemakeRuntimeInput, uncommitted: Set<string>): Promise<FrameRemakeMedia> {
     const stored = await writePersistentMediaDataUrl(`data:image/jpeg;base64,${bytes.toString("base64")}`, "image", { ownerUserId: input.userId, projectId: input.project.id, source: "frame-remake-extract", originalName });

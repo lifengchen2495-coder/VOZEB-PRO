@@ -142,6 +142,7 @@ export async function requestRemakeProductionVisionPrompt(input: {
     signal?: AbortSignal;
     allowTextOnly?: boolean;
     maxOutputTokens?: number;
+    defaultTimeoutMs?: number;
     stream?: boolean;
     jsonMode?: boolean;
 }): Promise<RemakeProductionVisionCall> {

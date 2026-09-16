@@ -468,7 +468,9 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, building, promptDisabled, disabled, instructionsDisabled, instructionsDirty, onInstructionsChange, onSaveInstructions, onBuild, onGenerate, onCopy }: { group: RemakeRangeGroup; building: boolean; promptDisabled: boolean; disabled: boolean; instructionsDisabled: boolean; instructionsDirty: boolean; onInstructionsChange: (value: string) => void; onSaveInstructions: () => Promise<void>; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
+export type RemakeVideoGroupView = Pick<RemakeRangeGroup, "ordinal" | "imageGeneration" | "videoGeneration" | "videoPrompt" | "videoPromptInstructions"> & { id: string };
+
+export function VideoGroupCard({ defaultInstructions, description, group, building, promptDisabled, disabled, instructionsDisabled, instructionsDirty, onInstructionsChange, onSaveInstructions, onBuild, onGenerate, onCopy }: { defaultInstructions?: string; description?: string; group: RemakeVideoGroupView; building: boolean; promptDisabled: boolean; disabled: boolean; instructionsDisabled: boolean; instructionsDirty: boolean; onInstructionsChange: (value: string) => void; onSaveInstructions: () => Promise<void>; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
     const generation = group.videoGeneration;
     const active = isVideoActive(group) && !generation.needsReview;
     const videoUrl = generation.result?.url ? browserReadableMediaUrl(generation.result.url) : "";
@@ -477,7 +479,7 @@ function VideoGroupCard({ group, building, promptDisabled, disabled, instruction
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">第 {group.ordinal} 条 · 分镜 {group.id}</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">15 秒 · 12 个连续镜头 · 9:16 · 独立文件</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{description || "15 秒 · 12 个连续镜头 · 9:16 · 独立文件"}</p>
                 </div>
                 <div className="flex max-w-full flex-wrap items-center gap-1.5">
                     <VideoGenerationTag generation={generation} />
@@ -497,7 +499,7 @@ function VideoGroupCard({ group, building, promptDisabled, disabled, instruction
             <div className="border-b border-border p-3">
                 <VideoPromptInstructionEditor
                     label={`分镜 ${group.id} · 视频提示词生成指令`}
-                    defaultText={remakeEffectiveVideoPromptInstructions({ id: group.id })}
+                    defaultText={defaultInstructions ?? remakeEffectiveVideoPromptInstructions({ id: group.id })}
                     value={group.videoPromptInstructions}
                     disabled={instructionsDisabled}
                     dirty={instructionsDirty}
@@ -512,14 +514,14 @@ function VideoGroupCard({ group, building, promptDisabled, disabled, instruction
                 <div className="relative aspect-[9/16] w-[110px] overflow-hidden rounded-md border border-border bg-[#15181c]">
                     {group.imageGeneration.result?.url ? <Image className="!size-full !object-contain" src={imagePreviewUrl(group.imageGeneration.result.url, 700)} alt={`分镜 ${group.id} 最终十二宫格`} preview={{ src: imagePreviewUrl(group.imageGeneration.result.url, 1800) }} /> : null}
                 </div>
-                {building && !group.videoPrompt ? <ProductionLoading text={`正在生成分镜 ${group.id} Prompt`} /> : <Input.TextArea readOnly value={group.videoPrompt} placeholder="生成后显示完整的 15 秒视频提示词。" autoSize={{ minRows: 9, maxRows: 20 }} />}
+                {building && !group.videoPrompt ? <ProductionLoading text={`正在生成分镜 ${group.id} Prompt`} /> : <Input.TextArea readOnly value={group.videoPrompt} placeholder="生成后显示完整的视频提示词。" autoSize={{ minRows: 9, maxRows: 20 }} />}
             </div>
             {generation.error ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{generation.error}</div> : null}
             {active ? <div className="border-t border-border px-3 py-3"><ProductionLoading text="视频正在后台生成，刷新页面会继续恢复原任务" /></div> : null}
             {videoUrl ? (
                 <div className="border-t border-border p-3">
                     <video className="max-h-[520px] w-full rounded-md bg-black" src={videoUrl} controls playsInline preload="metadata" />
-                    <a className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:underline dark:text-cyan-300" href={originalMediaDownloadUrl(generation.result!.url)} download={mediaDownloadFileName(`remake-${group.id}-15s`, generation.result?.mimeType || "video/mp4", generation.result!.url)}>
+                    <a className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:underline dark:text-cyan-300" href={originalMediaDownloadUrl(generation.result!.url)} download={mediaDownloadFileName(`remake-${group.id}`, generation.result?.mimeType || "video/mp4", generation.result!.url)}>
                         <Download className="size-4" />下载第 {group.ordinal} 条视频
                     </a>
                 </div>
@@ -556,7 +558,7 @@ function productionPrerequisites(project: RemakeProject) {
     return { ready: missing.length === 0, missing };
 }
 
-function isVideoActive(group: RemakeRangeGroup) {
+function isVideoActive(group: Pick<RemakeRangeGroup, "videoGeneration">) {
     return group.videoGeneration.status === "queued" || group.videoGeneration.status === "running" || Boolean(group.videoGeneration.needsReview);
 }
 

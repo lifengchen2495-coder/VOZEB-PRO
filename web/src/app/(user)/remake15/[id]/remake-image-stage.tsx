@@ -431,7 +431,7 @@ export function RemakeImageStage({
     );
 }
 
-function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; children: React.ReactNode }) {
+export function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; children: React.ReactNode }) {
     return (
         <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card p-2.5">
             <div className="relative aspect-square w-20 shrink-0 overflow-hidden rounded-md border border-border bg-muted/30">
@@ -457,19 +457,23 @@ function ReferenceSlot({ label, detail, required, asset, loading, disabled, onCh
     );
 }
 
-function RemakeGroupCard({ project, group, references, disabled, onGenerate }: { project: RemakeProject; group: RemakeRangeGroup; references: RemakeReferenceAssets; disabled: boolean; onGenerate: () => void }) {
+export type RemakeImageGroupView = Pick<RemakeRangeGroup, "replacementGeneration" | "imageGeneration" | "sourceContactSheet"> & { id: string };
+export function RemakeGroupCard({ project, group, disabled, onGenerate, prompts, title, description, sourceLabel = "来源十二宫格" }: {
+    project?: RemakeProject; group: RemakeImageGroupView; references?: RemakeReferenceAssets; disabled: boolean; onGenerate: () => void;
+    prompts?: { replacement: string; storyboard: string }; title?: string; description?: string; sourceLabel?: string;
+}) {
     const { message } = App.useApp();
     const active = activeGeneration(group);
     const replacementError = group.replacementGeneration.error ? friendlyAgentError(group.replacementGeneration.error, "图片生成失败，请稍后重试") : "";
     const imageError = group.imageGeneration.error ? friendlyAgentError(group.imageGeneration.error, "图片生成失败，请稍后重试") : "";
-    const replacementPrompt = group.replacementGeneration.prompt || buildRemakeReplacementPrompt(project, group);
-    const storyboardPrompt = group.imageGeneration.prompt || buildRemakeImagePrompt(project, group);
+    const replacementPrompt = prompts?.replacement ?? (group.replacementGeneration.prompt || (project ? buildRemakeReplacementPrompt(project, group as RemakeRangeGroup) : ""));
+    const storyboardPrompt = prompts?.storyboard ?? (group.imageGeneration.prompt || (project ? buildRemakeImagePrompt(project, group as RemakeRangeGroup) : ""));
     return (
-        <article className="min-w-0 overflow-hidden rounded-lg border border-border bg-card" aria-label={`分镜 ${group.id} 十二宫格`}>
+        <article className="min-w-0 overflow-hidden rounded-lg border border-border bg-card" aria-label={title || `分镜 ${group.id} 十二宫格`}>
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
-                    <h3 className="truncate text-sm font-semibold">分镜 {group.id} · 十二宫格</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">3 列 × 4 行 · 两步生成 · 9:16</p>
+                    <h3 className="truncate text-sm font-semibold">{title || `分镜 ${group.id} · 十二宫格`}</h3>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{description || "3 列 × 4 行 · 两步生成 · 9:16"}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                     <GenerationTag group={group} />
@@ -487,7 +491,7 @@ function RemakeGroupCard({ project, group, references, disabled, onGenerate }: {
             </div>
 
             <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
-                <ContactSheet label="来源十二宫格" asset={group.sourceContactSheet} />
+                <ContactSheet label={sourceLabel} asset={group.sourceContactSheet} />
                 <ContactSheet label="第一步：清理 / 换人 / 去旧产品" asset={completedAsset(group.replacementGeneration)} loading={isGenerationActive(group.replacementGeneration)} error={replacementError || undefined} />
                 <ContactSheet label="第二步：放入新产品" asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} error={imageError || undefined} />
             </div>
@@ -554,14 +558,14 @@ function ContactSheet({ label, asset, loading, error }: { label: string; asset?:
     );
 }
 
-function GenerationTag({ group }: { group: RemakeRangeGroup }) {
+function GenerationTag({ group }: { group: RemakeImageGroupView }) {
     const status = groupStatus(group);
     const color = status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
     const label = status === "completed" ? "已完成" : status === "error" ? "失败" : status === "queued" ? "排队中" : status === "running" ? "生成中" : "未生成";
     return <Tag color={color} className="!m-0">{label}</Tag>;
 }
 
-function groupStatus(group: RemakeRangeGroup) {
+function groupStatus(group: RemakeImageGroupView) {
     if (groupComplete(group)) return "completed";
     if (hasGenerationError(group)) return "error";
     if (group.replacementGeneration.status === "running" || group.imageGeneration.status === "running") return "running";
@@ -581,15 +585,15 @@ function isGenerationActive(generation: RemakeRangeGroup["imageGeneration"]) {
     return generation.status === "queued" || generation.status === "running";
 }
 
-function activeGeneration(group: RemakeRangeGroup) {
+function activeGeneration(group: RemakeImageGroupView) {
     return isGenerationActive(group.replacementGeneration) || isGenerationActive(group.imageGeneration);
 }
 
-function groupComplete(group: RemakeRangeGroup) {
+function groupComplete(group: RemakeImageGroupView) {
     return group.replacementGeneration.status === "completed" && Boolean(group.replacementGeneration.result?.url) && group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result?.url);
 }
 
-function hasGenerationError(group: RemakeRangeGroup) {
+function hasGenerationError(group: RemakeImageGroupView) {
     return group.replacementGeneration.status === "error" || group.imageGeneration.status === "error";
 }
 

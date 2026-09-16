@@ -1,5 +1,5 @@
 import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_PRODUCT_SCRIPT_PROMPT, REMAKE_FEISHU_STORYBOARD_SCRIPT_PROMPT, REMAKE_FEISHU_IMAGE_PROMPTS, REMAKE_FEISHU_VIDEO_PROMPTS } from "./remake15-feishu-prompts";
-import { frameRemakeAspectRatio, frameRemakeGrid, frameRemakeSeconds, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
+import { frameRemakeHasNarration, frameRemakeAspectRatio, frameRemakeGrid, frameRemakeSeconds, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
 
 // 直接读取既有流程模板，适配本组帧数、时长、素材顺序与结构化输出。既有流程保持原样。
 export const FRAME_REMAKE_PROMPT_SOURCE = "remake15-feishu-prompts.ts";
@@ -43,7 +43,7 @@ export function frameRemakeTemplates(project: FrameRemakeProject, group: FrameRe
         adapt(videoSource.slice(0, audioStart)).replaceAll("9:16 竖屏", `${frameRemakeAspectRatio(project)} 画面`) +
         `
 ## 声音
-${project.audioMode === "generated" ? "按可见动作生成自然同步声音，不虚构台词。" : "不生成口播、音乐或音效，合成时使用项目选择的原片声音或静音。"}
+${project.audioMode === "generated" && frameRemakeHasNarration(project, group) ? `使用${project.voice === "male" ? "男性" : "女性"}配音，原片音频作为节奏、语气参考。逐字采用本组已校对文案及其时间区间：\n${group.copy || group.sourceCopy || ""}，不新增台词。` : "不生成口播、音乐或音效，合成时使用项目选择的原片声音或静音。"}
 ## 输出结构
 以“${seconds}秒”开始，写明风格、${frameRemakeAspectRatio(project)}、场景、产品及实际出镜人物。
 正在执行本组分镜图的动作，依次呈现 ${count} 个连续分镜，使用如下本组相对时间，逐项写出具体动作与运镜：

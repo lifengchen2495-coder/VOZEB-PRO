@@ -12,6 +12,7 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
     const { project, display, stage, dirty } = props,
         ready = frameRemakeWorkflowReadiness(project),
         running = project.automation?.status === "running";
+    const queued = project.groups.some((g) => [g.template, g.image, g.video].some((t) => t.status === "queued"));
     const [sourceOpen, setSourceOpen] = useState(false),
         [editorOpen, setEditorOpen] = useState(false);
     const tabs = [
@@ -42,7 +43,7 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                         aria-label="项目名称"
                         onChange={(e) => props.onChange({ title: e.target.value })}
                     />
-                    <span className="hidden text-[11px] text-muted-foreground sm:inline">{dirty ? "未保存" : "已保存"}</span>
+                    <span className="hidden text-[11px] text-muted-foreground sm:inline">{props.saving ? "正在保存…" : dirty ? "等待自动保存" : "已保存"}</span>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                     {stage === "analysis" && (
@@ -52,7 +53,7 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                         </>
                     )}
                     <Button type="text" shape="circle" icon={<RefreshCw className="size-4" />} aria-label="刷新项目" disabled={props.working} onClick={() => void props.onRefresh()} />
-                    {dirty && (
+                    {dirty && props.error && (
                         <Button icon={<Save className="size-4" />} disabled={props.editingDisabled} onClick={() => void props.onSave()}>
                             保存
                         </Button>
@@ -66,11 +67,11 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                             type="primary"
                             className="!h-9 !px-2.5 sm:!px-3"
                             icon={<WandSparkles className="size-4" />}
-                            disabled={props.disabled || !project.sourceVideo || ready.analysis}
-                            onClick={() => void props.onControl("start")}
-                            aria-label={project.error ? "重试分析" : "开始分析"}
+                            disabled={props.disabled || !project.sourceVideo}
+                            onClick={() => void props.onControl("start", false, ready.analysis ? { restartFrom: "analysis" } : undefined)}
+                            aria-label={project.error ? "重试分析" : ready.analysis ? "重新分析" : "开始分析"}
                         >
-                            <span className="hidden sm:inline">{project.error ? "重试分析" : "开始分析"}</span>
+                            <span className="hidden sm:inline">{project.error ? "重试分析" : ready.analysis ? "重新分析" : "开始分析"}</span>
                         </Button>
                     ) : null}
                 </div>
@@ -100,22 +101,19 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     );
                 })}
             </nav>
-            {(props.error || project.error || dirty || running || project.operation) && (
+            {(props.error || project.error || queued || running || project.operation) && (
                 <div className="max-h-24 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5">
                     {(props.error || project.error) && (
                         <p role="alert" className="text-destructive">
                             {props.error || project.error}
                         </p>
                     )}
-                    {(running || project.operation) && <p role="status">{project.operation?.progress || project.automation?.progress}</p>}
-                    {dirty && (
-                        <div className="flex items-center justify-between">
-                            <span>保存后可继续执行。</span>
-                            <Button type="text" size="small" onClick={props.onDiscard}>
-                                放弃修改
-                            </Button>
-                        </div>
+                    {queued && !running && (
+                        <Button size="small" disabled={props.working} onClick={() => void props.onControl("start")}>
+                            检查并继续原任务
+                        </Button>
                     )}
+                    {(running || project.operation) && <p role="status">{project.operation?.progress || project.automation?.progress}</p>}
                 </div>
             )}
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">

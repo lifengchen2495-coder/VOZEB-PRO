@@ -25,9 +25,11 @@ export function cleanFrameRemakeMediaReferences(project: FrameRemakeProject, key
                       const framesRemoved = removed(group.frames) || removed(group.contactSheet);
                       const resetTemplate = targetsRemoved || framesRemoved || removed(group.template);
                       const resetImage = resetTemplate || removed(group.image);
-                      const resetVideo = resetImage || removed(group.video);
+                      const audioRemoved = removed(group.sourceAudio);
+                      const resetVideo = resetImage || audioRemoved || removed(group.video);
                       return {
                           ...group,
+                          sourceAudio: audioRemoved ? undefined : group.sourceAudio,
                           frames: framesRemoved ? group.frames.map(({ media: _media, ...frame }) => frame) : group.frames,
                           contactSheet: framesRemoved ? undefined : group.contactSheet,
                           productScript: targetsRemoved || framesRemoved ? "" : group.productScript,

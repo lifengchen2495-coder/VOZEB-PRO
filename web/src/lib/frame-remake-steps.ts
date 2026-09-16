@@ -14,7 +14,11 @@ export function recoveredFrameRemakeWorkflowStage(project: FrameRemakeProject) {
 }
 
 // 沿用来源分析 → 分镜重绘 → 生产内容，每轮只执行一组的一项工作。
+export function frameRemakeAutomationView(project: FrameRemakeProject) {
+    return project.automation?.groupId ? { ...project, groups: project.groups.filter((g) => g.id === project.automation!.groupId) } : project;
+}
 export function nextFrameRemakeStep(project: FrameRemakeProject) {
+    project = frameRemakeAutomationView(project);
     if (!project.sourceVideo) throw new Error("请先上传原视频");
     if (!project.durationMs || !project.groups.length) return { kind: "inspect" as const, workflowStage: "analysis" as const, label: "读取原片信息与时间线" };
     for (const group of project.groups) {

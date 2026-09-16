@@ -9,6 +9,7 @@ import {
     FRAME_REMAKE_ANALYSIS_LABELS,
     frameRemakeAnalysisResult,
     type FrameRemakeAnalysisStage,
+    type FrameRemakeRunOptions,
     type FrameRemakeGenerationKind,
     type FrameRemakeGroup,
     type FrameRemakeOperationKind,
@@ -23,6 +24,7 @@ export type WorkflowProps = {
     group?: FrameRemakeGroup;
     stage: FrameRemakeWorkflowStage;
     dirty: boolean;
+    saving?: boolean;
     working: boolean;
     editingDisabled: boolean;
     disabled: boolean;
@@ -35,7 +37,7 @@ export type WorkflowProps = {
     onSave: () => Promise<void>;
     onDiscard: () => void;
     onRefresh: () => Promise<void>;
-    onControl: (mode: "start" | "step" | "pause", stopAfterPrompts?: boolean) => Promise<void>;
+    onControl: (mode: "start" | "step" | "pause", stopAfterPrompts?: boolean, options?: FrameRemakeRunOptions) => Promise<void>;
     onOperation: (kind: FrameRemakeOperationKind, groupId?: string, stage?: FrameRemakeAnalysisStage) => Promise<void>;
     onGenerate: (id: string, kind: FrameRemakeGenerationKind) => Promise<void>;
     onAbandon: (id: string, kind: FrameRemakeGenerationKind) => Promise<void>;

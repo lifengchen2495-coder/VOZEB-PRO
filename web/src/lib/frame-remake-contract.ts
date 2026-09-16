@@ -14,6 +14,7 @@ export type FrameRemakeTask = {
     model?: string;
     referenceUrls?: string[];
     seconds?: number;
+    audioReferenceUrl?: string;
     result?: FrameRemakeMedia;
     error?: string;
 };
@@ -30,6 +31,7 @@ export type FrameRemakeGroup = {
     analysis: string;
     sourceAnalysisMode?: "video";
     sourceCopy?: string;
+    sourceAudio?: FrameRemakeMedia;
     copy?: string;
     copyBlocks?: FrameRemakeCopyBlock[];
     // 旧项目的 analysis 同时包含产品脚本；新项目从空字符串开始独立执行。
@@ -37,6 +39,7 @@ export type FrameRemakeGroup = {
     analysisSteps?: Partial<Record<FrameRemakeAnalysisStage, { prompt: string; model: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string }>>;
     imagePrompt: string;
     videoPrompt: string;
+    videoPromptInstructions?: string;
     template: FrameRemakeTask;
     image: FrameRemakeTask;
     video: FrameRemakeTask;
@@ -56,6 +59,7 @@ export type FrameRemakeProject = {
     productInfo?: string;
     instructions: string;
     audioMode: "source" | "generated" | "silent";
+    voice?: "female" | "male";
     modelSelection: { analysis: string; image: string; video: string };
     groups: FrameRemakeGroup[];
     mergedVideo?: FrameRemakeMedia;
@@ -65,6 +69,7 @@ export type FrameRemakeProject = {
         mode?: "auto" | "step";
         stageScope?: FrameRemakeWorkflowStage;
         stopAfterPrompts?: boolean;
+        groupId?: string;
         pendingGeneration?: { groupId: string; kind: FrameRemakeGenerationKind };
         startedAt: string;
         updatedAt: string;
@@ -75,10 +80,14 @@ export type FrameRemakeProject = {
     operation?: { id: string; kind: FrameRemakeOperationKind; groupId?: string; analysisStage?: FrameRemakeAnalysisStage; startedAt: string; updatedAt: string; progress: string };
     error?: string;
 };
+export type FrameRemakeRunOptions = {
+    groupId?: string;
+    restartFrom?: "analysis" | "productScript" | "videoPrompt" | "images";
+};
 export type FrameRemakeProjectList = { items: FrameRemakeProject[]; total: number; page: number; pageSize: number };
-export type FrameRemakePatch = Partial<Pick<FrameRemakeProject, "title" | "sourceCopy" | "productInfo" | "instructions" | "audioMode" | "maxSegmentSeconds" | "references" | "modelSelection">> & {
+export type FrameRemakePatch = Partial<Pick<FrameRemakeProject, "voice" | "title" | "sourceCopy" | "productInfo" | "instructions" | "audioMode" | "maxSegmentSeconds" | "references" | "modelSelection">> & {
     sourceVideo?: FrameRemakeMedia | null;
-    group?: { id: string; analysis?: string; copy?: string; productScript?: string; imagePrompt?: string; videoPrompt?: string };
+    group?: { id: string; analysis?: string; copy?: string; productScript?: string; imagePrompt?: string; videoPrompt?: string; videoPromptInstructions?: string };
     frame?: { groupId: string; number: number; detail: FrameRemakeFrameAnalysis };
     copyBlock?: { groupId: string; number: number; text: string };
 };
@@ -97,7 +106,8 @@ export function newFrameRemakeProject(id: string, title: string): FrameRemakePro
         maxSegmentSeconds: 15,
         references: { product: [], character: [], background: [] },
         instructions: "",
-        audioMode: "source",
+        audioMode: "generated",
+        voice: "female",
         modelSelection: { analysis: "", image: "", video: "" },
         groups: [],
     };
@@ -212,4 +222,9 @@ export function assertFrameRemakeTimeline(project: FrameRemakeProject) {
         })
     )
         throw new Error("拆帧时间线与原片不一致，请重新拆帧");
+}
+
+export function frameRemakeHasNarration(project: FrameRemakeProject, group?: FrameRemakeGroup) {
+    if (project.sourceCopy?.trim() === "不需要人物口播") return false;
+    return (group ? [group] : project.groups).some((g) => g.copyBlocks?.some((b) => b.text.trim()) || g.sourceCopy?.trim());
 }

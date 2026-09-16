@@ -13,8 +13,10 @@ export function RemakeSourcePanel({
     disabled,
     onUpload,
     onPatch,
+    copyRangeLabel = "4 个三帧区间",
 }: {
-    project: RemakeProject;
+    project: Pick<RemakeProject, "sourceVideo" | "sourceCopy"> & { copy: Pick<RemakeProject["copy"], "optionRaw"> };
+    copyRangeLabel?: string;
     uploading: boolean;
     uploadProgress: number;
     disabled: boolean;
@@ -96,7 +98,7 @@ export function RemakeSourcePanel({
                         <span className="font-semibold">文案处理方式</span>
                         <Tag className="!m-0">{sourceCopy.trim() === REMAKE_NO_NARRATION_TEXT ? REMAKE_NO_NARRATION_TEXT : "保持原文案，可校对"}</Tag>
                     </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">有口播时按原顺序分配到 4 个三帧区间并完成补全校对；无口播时只保留分镜描述。</p>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">有口播时按原顺序分配到 {copyRangeLabel}并完成补全校对；无口播时只保留分镜描述。</p>
                 </section>
             </div>
         </aside>
