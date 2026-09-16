@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { FrameRemakePromptSourceError } from "@/lib/frame-remake-feishu-workflow";
 
 import { FrameRemakeError } from "@/lib/server/frame-remake-project-service";
 import { FrameRemakeProjectStoreError } from "@/lib/server/frame-remake-project-store";
@@ -9,6 +10,7 @@ export function frameRemakeResponse(data: unknown, message = "OK", status = 200)
 }
 
 export function frameRemakeError(error: unknown) {
+    if (error instanceof FrameRemakePromptSourceError) return frameRemakeResponse(null, error.message, 422);
     if (error instanceof FrameRemakeError || error instanceof FrameRemakeProjectStoreError) return frameRemakeResponse(null, error.message, error.status);
     console.error("拆帧复刻请求失败", error);
     return frameRemakeResponse(null, "处理失败，请稍后重试", 500);

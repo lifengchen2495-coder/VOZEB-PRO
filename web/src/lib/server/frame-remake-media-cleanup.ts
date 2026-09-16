@@ -32,6 +32,7 @@ export function cleanFrameRemakeMediaReferences(project: FrameRemakeProject, key
                           sourceAudio: audioRemoved ? undefined : group.sourceAudio,
                           frames: framesRemoved ? group.frames.map(({ media: _media, ...frame }) => frame) : group.frames,
                           contactSheet: framesRemoved ? undefined : group.contactSheet,
+                          materialAnalysis: targetsRemoved || framesRemoved ? "" : group.materialAnalysis,
                           productScript: targetsRemoved || framesRemoved ? "" : group.productScript,
                           analysisSteps:
                               targetsRemoved || framesRemoved

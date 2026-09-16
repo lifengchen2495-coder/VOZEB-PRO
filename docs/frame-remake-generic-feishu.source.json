@@ -1,0 +1,139 @@
+{
+  "verifiedAt": "2026-09-16",
+  "scope": "Only the workflow tables above the documentation section in the user-provided Feishu base.",
+  "baseToken": "ZxmYbuEfeaY97GsdjZtcv96Bnt0",
+  "sourcePolicy": "Copy the selected table as a complete workflow. Preserve original prompt bodies, field dependencies, and image order. Do not reconstruct missing macro bodies or mix different workflows.",
+  "excludedSources": [
+    "The lower tutorial documents",
+    "ecom-15s-video-public-package.zip",
+    "The six prompt shells previously imported from that package"
+  ],
+  "verifiedTables": [
+    {
+      "tableId": "tblcffp0kFxgkDy4",
+      "name": "Codex+Seedance_ 全品类 (换品_换人) -15秒-实操版",
+      "field": "12镜头解析",
+      "visibleModuleReference": "{{短视频12分镜解析Skill}}",
+      "verification": "All six field editors were read and cancelled in the current table. Every field contains a module reference whose body is not visible in its configuration.",
+      "fieldsVerifiedAt": "2026-09-16",
+      "visiblePrompts": {
+        "analysis": "# 抖音短视频全量拆解（12分镜版 - 混合导向 - V4 - 画面内容优先版）\n\n## 【任务目标】\n\n针对抖音短视频，深度分析视频内容，拆解视频中的**所有镜头**，精准控制为**12个分镜**。\n\n{{短视频12分镜解析Skill}}",
+        "new_script": "# 步骤2：根据原12分镜脚本适配新产品 - 完整版提示词\n\n# 任务说明\n\n你是一个专业的电商视频分镜脚本适配专家。你需要根据【\n\n12镜头解析\n\n】和【\n\n产品信息\n\n】，输出适配后的12分镜脚本。\n\n---\n{{短视频12分镜新产品脚本Skill}}",
+        "shot_prompts": "# TikTok短视频十二宫格分镜优化提示词（V12 - 12分镜版）\n\n## 【任务目标】\n\n根据**12分镜脚本\n\n新产品-12分镜脚本\n\n**直接优化12个分镜，生成**十二宫格提示词**。\n\n{{短视频12分镜提示词Skill}}",
+        "template_image": "# 十二宫格分镜图 （一比一还原版）\n\n## 【任务目标】\n\n根据**原图十二宫格分镜图**进行处理，实现**一比一还原原图画面**：\n1. **直接读取原图分镜画面**：以原图实际画面为准，不依赖脚本描述\n2. **清理画面**：去除每个分镜中的字幕、水印、平台UI元素\n3. **去除产品**：根据脚本{{\n\n1-12分镜提示词\n\n}}\"是否有产品\"判断，完全移除产品但保留产品位置状态\n{{12分镜模板图Skill}}",
+        "final_image": "# 案例40：电商视频十二宫格分镜生成（产品+人物融合版 - V10）\n\n## 【任务目标】\n\n根据**12分镜场景图**、**产品多宫格图**、**人物六宫格图**（选填）、**12分镜脚本\n\n1-12分镜提示词\n\n**四个输入，生成**单张9:16竖屏图片，画面内部采用4×3网格布局，包含12个分镜区域**，禁止生成有白底图的分镜，必须是真实场景的背景。\n\n{{12分镜最终生成图Skill}}",
+        "video_prompt": "# 步骤14：视频提示词生成（十二宫格转视频 V37.4 - 抖音版本）\n\n## 【任务目标】\n\n根据**人物六宫格图（可选）**、**十二宫格提示词\n\n1-12分镜提示词\n\n**、**十二宫格图**、**产品图**、**文案\n\n原文案\n\n（可选）**五个输入，生成**15秒抖音短视频提示词**，用于Seedance视频生成。\n\n{{12分镜视频生成提示词Skill}}"
+      },
+      "fieldMappings": {
+        "analysis": "12镜头解析",
+        "new_script": "新产品-12分镜脚本",
+        "shot_prompts": "1-12分镜提示词",
+        "template_image": "1-12 第一步模板图",
+        "final_image": "1-12 最终分镜图",
+        "video_prompt": "1-12视频提示词"
+      },
+      "imageInputOrder": {
+        "analysis": [],
+        "new_script": [
+          "人物图",
+          "产品图"
+        ],
+        "shot_prompts": [
+          "1-12拼图"
+        ],
+        "template_image": [
+          "1-12拼图",
+          "人物图"
+        ],
+        "final_image": [
+          "1-12 第一步模板图",
+          "产品图"
+        ],
+        "video_prompt": [
+          "1-12 最终分镜图",
+          "人物图"
+        ]
+      },
+      "normalization": "Remove U+200B and trim. Preserve visible field labels and paragraph breaks. Only bind observed field chips; do not append authored rules."
+    },
+    {
+      "tableId": "tblKoEJS0NZWsSlh",
+      "name": "Codex+Seedance_ 全品类 (换品_换人) -1分钟",
+      "field": "48镜头解析",
+      "visibleInstruction": "# 抖音长视频全量拆解（60秒版 - 混合导向 - V4 - 画面内容优先版）\n\n## 【任务目标】\n\n针对60秒抖音长视频，深度分析视频内容，拆解视频中的**所有镜头**，精准控制为**48个分镜**。\n\n{{Codex60秒长视频全量拆解}}"
+    },
+    {
+      "tableId": "tblOIhfW3pO5kdCB",
+      "name": "Codex+Seedance_ 全品类 (换品_换人) -1分钟-实操版",
+      "field": "48镜头解析",
+      "sameInstructionAs": "tblKoEJS0NZWsSlh",
+      "model": "Doubao Seed 2.0 Pro",
+      "videoInput": "原始视频",
+      "thinking": "medium",
+      "webSearch": false
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "name": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "fields": [
+        {
+          "name": "48镜头解析",
+          "title": "抖音长视频全量拆解（60秒版 - 混合导向 - V2 - 时长精准版）",
+          "completeBody": true,
+          "normalizedUtf16Length": 4551,
+          "normalizedFnv1a": 1482948663,
+          "matchingLocalConstant": "web/src/lib/remake-feishu-prompts.ts#REMAKE_FEISHU_ANALYSIS_PROMPT",
+          "normalization": "Remove U+200B and trim; hash with JavaScript for...of/charCodeAt(0).",
+          "model": "Doubao Seed 1.8",
+          "videoInput": "原始视频",
+          "frames": 48
+        },
+        {
+          "name": "1-12 生图",
+          "title": "电商视频分镜图生成（跟品版）",
+          "completeBody": true,
+          "normalizedUtf16Length": 4627,
+          "normalizedFnv1a": 2422252088,
+          "imageInputs": [
+            "1-12拼图",
+            "人物图",
+            "背景图"
+          ],
+          "ratio": "9:16",
+          "resolution": "2K",
+          "comparison": "Text matches web/src/lib/remake-image-prompt.ts#REMAKE_IMAGE_PROMPT after whitespace removal. The visible editor shifts indentation between lines; this is not a byte-for-byte equality claim.",
+          "nonWhitespaceLength": 3808,
+          "nonWhitespaceFnv1a": 202189720
+        }
+      ],
+      "workflowScope": "Preserve the product; optional person replacement; required background. One generated image per group. It cannot represent every replacement combination."
+    },
+    {
+      "tableId": "tblBlQu3fCuvFSCP",
+      "name": "Codex+Omni_ 全品类 (换品_换人) - 不限时长-实操版",
+      "completeOriginalFields": 7,
+      "sourceArchive": "docs/omni-remake-field-prompts.source.json",
+      "runtimeTemplates": "web/src/lib/omni-remake-field-prompts.json",
+      "archiveVerifiedAt": "2026-09-09",
+      "workflowScope": "Video analysis, analysis text, material analysis, master plan, classification, English prompt summary, Chinese prompt translation. Video editing route, not the Seedance contact-sheet route.",
+      "classificationNote": "Original field ends at the combination-logic heading; the archive explicitly documents browser end-of-field verification. Do not invent a missing continuation."
+    }
+  ],
+  "implementationStatus": {
+    "complete": false,
+    "deployed": false,
+    "pendingDecision": null,
+    "rejectedCurrentImplementation": "Tutorial prompt shells were replaced with six field instructions read directly from the upper 15-second table. The special 8AI host/model/custom-payload dependency has been removed. Only standard configured providers are selected; unresolved source modules stop the operation before generation.",
+    "gatewayConclusion": "No universal 8AI requirement can be inferred for the upper workflows from the excluded tutorial.",
+    "validation": {
+      "liveEditorEquality": "All six normalized prompt strings matched their live editor length/hash; the archived strings equal runtime JSON.",
+      "temporaryTests": "15 provider/preflight/reference-order checks and one API 422 response check passed. Temporary test files are deleted after verification.",
+      "typecheck": "Passed with the final implementation.",
+      "eslint": "Scoped check: 0 errors; 7 existing unused-parameter warnings. Final provider, source-error and API changes also pass ESLint.",
+      "realGeneration": "Not run: full source prompt bodies remain unavailable. No deployment or commit."
+    },
+    "selectedRoute": "Retain the requested Seedance frame extraction workflow and original application steps. Completion is blocked on full prompt bodies, not on a technical route choice.",
+    "sourceBlocker": "All six fields in the upper replacement workflow still contain module references with no visible body. A request for the complete original document/link is pending. This is not a request to choose another technical route."
+  },
+  "method": "Read-only field-editor inspection. Every opened configuration was cancelled. No Feishu field was saved and no generation was triggered."
+}

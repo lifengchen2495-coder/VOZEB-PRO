@@ -17,6 +17,7 @@ import {
     type FrameRemakeProject,
     type FrameRemakeWorkflowStage,
 } from "@/lib/frame-remake-contract";
+import { frameRemakeAnalysisPrompt } from "@/lib/frame-remake-prompts";
 import { TextOutput } from "./outputs";
 export type WorkflowProps = {
     project: FrameRemakeProject;
@@ -126,10 +127,10 @@ export function ScriptResult({ props, group, stage }: { props: WorkflowProps; gr
                     onChange={(e) => props.onEditGroup(stage, e.target.value, group.id)}
                 />
             </details>
-            {record?.prompt && (
+            {(record?.prompt || !text) && (
                 <details>
-                    <summary className="cursor-pointer text-xs">实际发送的提示词{record.elapsedMs !== undefined ? ` · ${(record.elapsedMs / 1000).toFixed(1)} 秒` : ""}</summary>
-                    <TextOutput title="模型输入" text={record.prompt} name={`第${group.number}组-${stage}-input`} />
+                    <summary className="cursor-pointer text-xs">{record?.prompt ? "本次执行记录的提示词" : "原表提示词预览（尚未发送）"}{record?.elapsedMs !== undefined ? ` · ${(record.elapsedMs / 1000).toFixed(1)} 秒` : ""}</summary>
+                    <TextOutput title="模型输入" text={record?.prompt || frameRemakeAnalysisPrompt(props.display, group, stage)} name={`第${group.number}组-${stage}-input`} />
                 </details>
             )}
         </section>

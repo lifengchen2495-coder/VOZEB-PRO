@@ -4,7 +4,10 @@ import { Button, Input } from "antd";
 import { useState } from "react";
 import { ArrowLeft, Check, FileOutput, Images, PanelLeft, Pause, RefreshCw, Save, SlidersHorizontal, Video, WandSparkles } from "lucide-react";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
+import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
+import { FRAME_REMAKE_FEISHU_URL } from "@/lib/frame-remake-feishu-workflow";
 import { FrameSourceStage } from "./source-stage";
+import { FramePlanningStage } from "./planning-stage";
 import { FrameImageStage } from "./image-stage";
 import { FrameProductionStage } from "./production-stage";
 import type { WorkflowProps } from "./workflow-controls";
@@ -13,11 +16,13 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
         ready = frameRemakeWorkflowReadiness(project),
         running = project.automation?.status === "running";
     const queued = project.groups.some((g) => [g.template, g.image, g.video].some((t) => t.status === "queued"));
+    const missingPromptFields = frameRemakeMissingPromptFields();
     const [sourceOpen, setSourceOpen] = useState(false),
         [editorOpen, setEditorOpen] = useState(false);
     const tabs = [
         { key: "analysis", label: "来源分析", icon: Video },
-        { key: "images", label: "分镜重绘", icon: Images },
+        { key: "planning", label: "分镜脚本", icon: SlidersHorizontal },
+        { key: "images", label: "两步生图", icon: Images },
         { key: "production", label: "生产内容", icon: FileOutput },
     ] as const;
     return (
@@ -74,6 +79,11 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                             <span className="hidden sm:inline">{project.error ? "重试分析" : ready.analysis ? "重新分析" : "开始分析"}</span>
                         </Button>
                     ) : null}
+                    {!running && stage === "analysis" && !ready.analysis && (
+                        <Button size="small" disabled={props.disabled || !project.sourceVideo} onClick={() => void props.onControl("step")}>
+                            执行下一步
+                        </Button>
+                    )}
                 </div>
             </header>
             <nav className="flex h-12 shrink-0 items-stretch overflow-x-auto border-b bg-card px-1 sm:justify-center sm:px-3" aria-label="原时长复刻流程">
@@ -101,6 +111,12 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     );
                 })}
             </nav>
+            {missingPromptFields.length > 0 && (
+                <div role="status" className="max-h-24 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5 text-muted-foreground">
+                    <p>原表有 {missingPromptFields.length} 个步骤尚缺完整提示词，暂时无法生成。可以查看素材和已有结果。</p>
+                    <a href={FRAME_REMAKE_FEISHU_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2">查看对应飞书工作流</a>
+                </div>
+            )}
             {(props.error || project.error || queued || running || project.operation) && (
                 <div className="max-h-24 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5">
                     {(props.error || project.error) && (
@@ -119,6 +135,8 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 {stage === "analysis" ? (
                     <FrameSourceStage {...props} sourceOpen={sourceOpen} editorOpen={editorOpen} onSourceClose={() => setSourceOpen(false)} onEditorClose={() => setEditorOpen(false)} />
+                ) : stage === "planning" ? (
+                    <FramePlanningStage {...props} />
                 ) : stage === "images" ? (
                     <FrameImageStage {...props} />
                 ) : (

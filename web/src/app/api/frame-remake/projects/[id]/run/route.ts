@@ -16,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const body = await readJsonBodyResult<{ revision?: number; action?: string; stageScope?: FrameRemakeWorkflowStage; stopAfterPrompts?: boolean; options?: FrameRemakeRunOptions }>(request, 4096);
     if (!body.ok) return frameRemakeResponse(null, body.message, body.status);
     if (!isFrameRemakeRevision(body.data?.revision) || (body.data?.action !== "step" && body.data?.action !== "start" && body.data?.action !== "pause")) return frameRemakeResponse(null, "操作或项目版本不正确", 400);
-    if (body.data.stageScope !== undefined && !["analysis", "images", "production"].includes(body.data.stageScope)) return frameRemakeResponse(null, "复刻阶段不正确", 400);
+    if (body.data.stageScope !== undefined && !["analysis", "planning", "images", "production"].includes(body.data.stageScope)) return frameRemakeResponse(null, "复刻阶段不正确", 400);
     if (body.data.stopAfterPrompts !== undefined && typeof body.data.stopAfterPrompts !== "boolean") return frameRemakeResponse(null, "脚本审阅选项不正确", 400);
     const options = body.data.options;
     if (

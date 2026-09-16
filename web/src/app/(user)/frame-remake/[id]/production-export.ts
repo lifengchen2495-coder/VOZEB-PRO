@@ -30,12 +30,12 @@ export async function downloadFrameRemakeProductionBundle(project: FrameRemakePr
             if (asset) media.push({ name: `${name}/${prefix}`, asset });
         for (const [name, text] of [
             ["镜头解析", g.analysis],
-            ["文案预处理", g.copy],
-            ["新产品脚本", g.productScript],
+            ["原文案（选填）", g.copy],
+            ["新产品-12分镜脚本", g.productScript],
             ["分镜脚本", g.imagePrompt],
             ["第一步完整提示词", g.template.prompt],
             ["第二步完整提示词", g.image.prompt],
-            ["视频生成指令", g.videoPromptInstructions || frameRemakeTemplates(project, g).video],
+            ["视频生成指令", frameRemakeTemplates(project, g).video],
             ["视频提示词", g.videoPrompt],
         ] as const)
             files.push({ name: `文本/${prefix}/${name}.txt`, data: text || "" });

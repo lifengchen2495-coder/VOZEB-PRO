@@ -1,15 +1,15 @@
 "use client";
-import { App, Button, Input, Segmented, Tag } from "antd";
+import { App, Button, Input, Segmented } from "antd";
 import { useState } from "react";
 import copy from "copy-to-clipboard";
-import { Copy, Download, FileAudio, FileText, Sparkles, Video, VolumeX } from "lucide-react";
-import { frameRemakeHasNarration, frameRemakeTime, frameRemakeSeconds, frameRemakeAspectRatio } from "@/lib/frame-remake-contract";
+import { Copy, Download, FileText, Sparkles, Video } from "lucide-react";
+import { frameRemakeTime, frameRemakeSeconds, frameRemakeAspectRatio } from "@/lib/frame-remake-contract";
 import { frameRemakeTemplates } from "@/lib/frame-remake-prompt-templates";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
 import { VideoGroupCard } from "../../remake15/[id]/remake-production-stage";
 import { ModelControl, type WorkflowProps } from "./workflow-controls";
 import { downloadFrameRemakeProductionBundle } from "./production-export";
-import { Media } from "./outputs";
+import { Media, TextOutput } from "./outputs";
 export function FrameProductionStage(props: WorkflowProps) {
     const { project, display } = props,
         ready = frameRemakeWorkflowReadiness(project);
@@ -17,7 +17,6 @@ export function FrameProductionStage(props: WorkflowProps) {
     const [exporting, setExporting] = useState(false);
     const promptsReady = project.groups.length > 0 && project.groups.every((g) => g.videoPrompt);
     const productionReady = ready.images && promptsReady && project.groups.every((g) => g.video.status === "completed" && g.video.result);
-    const noNarration = !frameRemakeHasNarration(display);
     const report = display.groups.map((g) => `=== 分镜 ${g.frames[0].number}–${g.frames.at(-1)!.number} ===\n${g.copy || ""}`).join("\n\n");
     const copyText = async (text: string) => {
         if (await copy(text)) void message.success("完整输出已复制");
@@ -39,7 +38,7 @@ export function FrameProductionStage(props: WorkflowProps) {
             <div className="mx-auto w-full max-w-[1480px] px-3 py-4 sm:px-5 sm:py-5">
                 <div className="flex min-w-0 flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-end lg:justify-between">
                     <div className="min-w-0">
-                        <div className="text-xs font-medium text-muted-foreground">阶段 03</div>
+                        <div className="text-xs font-medium text-muted-foreground">阶段 04</div>
                         <h2 className="mt-1 text-lg font-semibold">Prompt 与独立视频</h2>
                         <p className="mt-1 text-sm text-muted-foreground">
                             {project.groups.reduce((n, g) => n + g.frames.length, 0)} 个分镜 · {project.groups.length} 条独立视频 · 原时长 {frameRemakeTime(project.durationMs)}
@@ -56,67 +55,29 @@ export function FrameProductionStage(props: WorkflowProps) {
                         </Button>
                     </div>
                 </div>
-                <div className="grid gap-4 border-b border-border py-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-                    <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-sm font-semibold">
-                            {noNarration ? <VolumeX className="size-4" /> : <FileAudio className="size-4" />}
-                            {noNarration ? "口播设置" : "配音选择"}
-                        </div>
-                        {noNarration ? (
-                            <>
-                                <Tag className="!mt-2">不需要人物口播</Tag>
-                                <p className="mt-2 text-xs leading-5 text-muted-foreground">保留连续分镜动作，不添加口播、配音或音频引用。</p>
-                            </>
-                        ) : (
-                            <>
-                                <Segmented
-                                    className="!mt-2 !w-full sm:!w-auto"
-                                    disabled={props.editingDisabled}
-                                    value={display.audioMode === "generated" ? display.voice || "female" : undefined}
-                                    options={[
-                                        { label: "女性配音", value: "female" },
-                                        { label: "男性配音", value: "male" },
-                                    ]}
-                                    onChange={(value) => props.onChange({ voice: value === "male" ? "male" : "female", audioMode: "generated" })}
-                                />
-                                <p className="mt-2 text-xs leading-5 text-muted-foreground">视频生成时会把本段原视频音频作为参考音频传入所选视频模型。</p>
-                            </>
-                        )}
-                        <details className="mt-3 text-xs">
-                            <summary className="cursor-pointer text-muted-foreground">成片声音设置</summary>
-                            <Segmented
-                                className="!mt-2"
-                                disabled={props.editingDisabled}
-                                value={display.audioMode}
-                                options={[
-                                    { label: "使用配音", value: "generated" },
-                                    { label: "保留原声", value: "source" },
-                                    { label: "静音", value: "silent" },
-                                ]}
-                                onChange={(value) => props.onChange({ audioMode: value as typeof display.audioMode })}
-                            />
-                        </details>
-                    </div>
-                    <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card p-3">
-                        <div className="grid size-10 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-                            <FileAudio className="size-4.5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                            <div className="text-sm font-medium">原视频音频</div>
-                            <div className="mt-0.5 text-xs text-muted-foreground">{noNarration ? "当前流程无需参考音频" : `${project.groups.filter((g) => g.sourceAudio).length} / ${project.groups.length} 段已提取；生成 Prompt 时自动补齐`}</div>
-                        </div>
-                        <Tag className="!m-0">{noNarration ? "无需" : project.groups.every((g) => g.sourceAudio) ? "就绪" : "待提取"}</Tag>
-                    </div>
+                <div className="space-y-3 border-b py-4">
+                    <div className="text-sm font-semibold">成片声音</div>
+                    <Segmented
+                        disabled={props.editingDisabled}
+                        value={display.audioMode}
+                        options={[
+                            { label: "保留原声", value: "source" },
+                            { label: "模型声音", value: "generated" },
+                            { label: "静音", value: "silent" },
+                        ]}
+                        onChange={(value) => props.onChange({ audioMode: value as typeof display.audioMode })}
+                    />
+                    <p className="text-xs text-muted-foreground">原版生成15秒视频。尾段合成时使用完整视频调整到原片剩余时长，保留原声时使用原片音轨。</p>
                 </div>
-                {!ready.images && <div className="border-b bg-amber-50 px-3 py-2.5 text-xs text-amber-800">请先完成两步换品分镜图，再生成视频 Prompt。</div>}
+                {!ready.images && <div className="border-b bg-amber-50 px-3 py-2.5 text-xs text-amber-800">请先完成第一步模板图和最终分镜图，再生成视频提示词。</div>}
                 <div className="grid min-w-0 gap-4 py-4 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-                    <section className="min-w-0 rounded-lg border border-border bg-card" aria-label="文案预处理报告">
+                    <section className="min-w-0 rounded-lg border border-border bg-card" aria-label="原文案">
                         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                             <div className="flex items-center gap-2 text-sm font-semibold">
                                 <FileText className="size-4" />
-                                文案预处理
+                                原文案（选填）
                             </div>
-                            <Button type="text" size="small" icon={<Copy className="size-3.5" />} aria-label="复制文案预处理输出" onClick={() => copyText(report)} />
+                            <Button type="text" size="small" icon={<Copy className="size-3.5" />} aria-label="复制原文案（选填）输出" onClick={() => copyText(report)} />
                         </div>
                         <div className="p-3">
                             <Input.TextArea readOnly value={report} autoSize={{ minRows: 24, maxRows: 42 }} />
@@ -134,29 +95,37 @@ export function FrameProductionStage(props: WorkflowProps) {
                         </div>
                         <div className="grid gap-3">
                             {display.groups.map((g) => (
-                                <VideoGroupCard
-                                    key={g.id}
-                                    group={{
-                                        id: `${g.frames[0].number}–${g.frames.at(-1)!.number}`,
-                                        ordinal: g.number,
-                                        imageGeneration: { ...g.image, prompt: g.image.prompt || "" },
-                                        videoGeneration: { ...g.video, needsReview: g.video.status === "running" && Boolean(g.video.error) },
-                                        videoPrompt: g.videoPrompt,
-                                        videoPromptInstructions: g.videoPromptInstructions,
-                                    }}
-                                    description={`${frameRemakeSeconds(g)} 秒 · ${g.frames.length} 个连续镜头 · ${frameRemakeAspectRatio(project)} · 独立文件`}
-                                    defaultInstructions={frameRemakeTemplates(display, g).video}
-                                    instructionsDisabled={props.editingDisabled}
-                                    instructionsDirty={props.dirty}
-                                    onInstructionsChange={(value) => props.onChange({ group: { id: g.id, videoPromptInstructions: value } })}
-                                    onSaveInstructions={props.onSave}
-                                    building={project.operation?.groupId === g.id && project.operation.analysisStage === "videoPrompt"}
-                                    promptDisabled={props.disabled || !ready.images}
-                                    disabled={props.disabled || !g.videoPrompt || !g.image.result}
-                                    onBuild={() => void props.onOperation("analyze", g.id, "videoPrompt")}
-                                    onGenerate={() => void (g.video.status === "running" && g.video.error ? props.onRefresh() : props.onGenerate(g.id, "video"))}
-                                    onCopy={copyText}
-                                />
+                                <div key={g.id} className="space-y-2">
+                                    <VideoGroupCard
+                                        group={{
+                                            id: `${g.frames[0].number}–${g.frames.at(-1)!.number}`,
+                                            ordinal: g.number,
+                                            imageGeneration: { ...g.image, prompt: g.image.prompt || "" },
+                                            videoGeneration: { ...g.video, needsReview: g.video.status === "running" && Boolean(g.video.error) },
+                                            videoPrompt: g.videoPrompt,
+                                            videoPromptInstructions: undefined,
+                                        }}
+                                        description={`原片 ${frameRemakeSeconds(g)} 秒 · 12个镜头 · 生成15秒 · ${frameRemakeAspectRatio(project)}`}
+                                        defaultInstructions={frameRemakeTemplates(display, g).video}
+                                        instructionsReadOnly
+                                        instructionsDisabled={true}
+                                        instructionsDirty={props.dirty}
+                                        onInstructionsChange={() => undefined}
+                                        onSaveInstructions={props.onSave}
+                                        building={project.operation?.groupId === g.id && project.operation.analysisStage === "videoPrompt"}
+                                        promptDisabled={props.disabled || !ready.images}
+                                        disabled={props.disabled || !g.videoPrompt || !g.image.result}
+                                        onBuild={() => void props.onOperation("analyze", g.id, "videoPrompt")}
+                                        onGenerate={() => void (g.video.status === "running" && g.video.error ? props.onRefresh() : props.onGenerate(g.id, "video"))}
+                                        onCopy={copyText}
+                                    />
+                                    {g.analysisSteps?.videoPrompt?.prompt && (
+                                        <details className="rounded border p-3">
+                                            <summary className="cursor-pointer text-xs">实际发送的视频提示词生成输入</summary>
+                                            <TextOutput title="原版模型输入" text={g.analysisSteps.videoPrompt.prompt} name={`${g.id}-video-prompt-input`} />
+                                        </details>
+                                    )}
+                                </div>
                             ))}
                         </div>
                     </section>

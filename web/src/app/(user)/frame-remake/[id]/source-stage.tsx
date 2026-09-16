@@ -1,8 +1,8 @@
 "use client";
-import { Button, Drawer, Tabs, Tag } from "antd";
+import { Button, Drawer, Input, Tabs, Tag } from "antd";
 import { useState } from "react";
 import { FileText, Images, ScanSearch } from "lucide-react";
-import { FrameGrid, AnalysisRows, CopyBlockRows, type RemakeCopyBlockView, type RemakeWorkspaceTab } from "../../remake15/[id]/remake-analysis-board";
+import { FrameGrid, AnalysisRows, type RemakeCopyBlockView, type RemakeWorkspaceTab } from "../../remake15/[id]/remake-analysis-board";
 import { RemakeUnitEditor } from "../../remake15/[id]/remake-unit-editor";
 import { RemakeSourcePanel } from "../../remake15/[id]/remake-source-panel";
 import type { RemakeFrame } from "../../remake15/remake-contract";
@@ -43,7 +43,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
     };
     const editor = (
         <RemakeUnitEditor
-            activeTab={tab}
+            activeTab={tab === "copy" ? "frames" : tab}
             copyStrategy="manual"
             frame={frame}
             block={block}
@@ -72,7 +72,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
     const source = (
         <RemakeSourcePanel
             project={{ sourceVideo: video ? { ...video, durationMs: project.durationMs } : undefined, sourceCopy: display.sourceCopy ?? display.groups.map((g) => g.sourceCopy || "").join(""), copy: { optionRaw: "" } }}
-            copyRangeLabel={`${blocks.length || "若干"} 个三帧区间`}
+            manualGroupCopy
             uploading={props.working && !project.operation}
             uploadProgress={0}
             disabled={props.editingDisabled}
@@ -89,11 +89,11 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                 </div>
                 <div className="flex items-center gap-2">
                     <Tag className="!m-0" color={ready ? "success" : "default"}>
-                        {ready ? "分析就绪" : `${project.groups.filter((g) => g.copy).length}/${project.groups.length} 组就绪`}
+                        {ready ? "分析就绪" : `${project.groups.filter((g) => g.analysis && g.contactSheet).length}/${project.groups.length} 组就绪`}
                     </Tag>
                     {ready ? (
-                        <Button size="small" onClick={() => props.onStage("images")}>
-                            进入分镜重绘
+                        <Button size="small" onClick={() => props.onStage("planning")}>
+                            填写产品信息与人物图
                         </Button>
                     ) : null}
                 </div>
@@ -131,7 +131,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                         </div>
                                         {display.groups.map(
                                             (g) =>
-                                                g.analysis && (
+                                                (g.analysis || g.analysisSteps?.analysis?.prompt) && (
                                                     <details key={g.id} className="m-3 rounded border p-3">
                                                         <summary className="cursor-pointer text-xs">第 {g.number} 组完整分析与实际提示词</summary>
                                                         <TextOutput title="视频分析" text={g.analysis} name={`${g.id}-analysis`} />
@@ -147,15 +147,25 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                 label: (
                                     <span className="flex items-center gap-1.5">
                                         <FileText className="size-3.5" />
-                                        文案区间 {blocks.length}
+                                        原文案（选填）
                                     </span>
                                 ),
-                                children: <CopyBlockRows blocks={blocks} selectedId={block?.id} onSelect={(id) => select("copy", id)} />,
+                                children: (
+                                    <div className="h-full space-y-4 overflow-y-auto p-4">
+                                        <p className="text-xs text-muted-foreground">文案按原样传入视频提示词步骤。长视频请分别填写每组文案，留空则不指定口播。</p>
+                                        {display.groups.map((g) => (
+                                            <label key={g.id} className="grid gap-2 text-sm">
+                                                第 {g.number} 组 · {g.startMs / 1000}–{g.endMs / 1000} 秒
+                                                <Input.TextArea aria-label={`第${g.number}组原文案`} value={g.copy || ""} rows={5} disabled={props.editingDisabled} onChange={(event) => props.onChange({ group: { id: g.id, copy: event.target.value } })} />
+                                            </label>
+                                        ))}
+                                    </div>
+                                ),
                             },
                         ]}
                     />
                 </div>
-                <div className="hidden min-h-0 border-l min-[1200px]:block">{editor}</div>
+                <div className="hidden min-h-0 border-l min-[1200px]:block">{tab === "copy" ? <p className="p-4 text-xs text-muted-foreground">在中间区域填写每组文案，修改会自动保存。</p> : editor}</div>
             </div>
             <Drawer title="来源视频与原文案" placement="left" size={340} open={props.sourceOpen} onClose={props.onSourceClose} styles={{ wrapper: { maxWidth: "calc(100vw - 20px)" }, body: { padding: 0 } }}>
                 {source}

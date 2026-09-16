@@ -12,24 +12,8 @@ import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 
 import type { RemakeMediaAsset, RemakeProject, RemakeRangeGroup, RemakeReferenceAssets } from "../remake-contract";
-import {
-    buildRemakeImagePrompt,
-    buildRemakeReplacementPrompt,
-    imageGenerationResultAsset,
-    remakeGroupReferenceImages,
-    remakeImagesReady,
-    remakeReferencesReady,
-    remakeReplacementReferenceImages,
-} from "./remake-production-utils";
-import {
-    isRemakeImageInputCurrent,
-    isRemakeImageTaskCurrent,
-    remakeGroupInputVersion,
-    remakeImageClientRequestId,
-    remakeImageCreationFailureDisposition,
-    remakeImageGenerationSlotId,
-    type RemakeImageTaskSnapshot,
-} from "./remake-workspace-state";
+import { buildRemakeImagePrompt, buildRemakeReplacementPrompt, imageGenerationResultAsset, remakeGroupReferenceImages, remakeImagesReady, remakeReferencesReady, remakeReplacementReferenceImages } from "./remake-production-utils";
+import { isRemakeImageInputCurrent, isRemakeImageTaskCurrent, remakeGroupInputVersion, remakeImageClientRequestId, remakeImageCreationFailureDisposition, remakeImageGenerationSlotId, type RemakeImageTaskSnapshot } from "./remake-workspace-state";
 
 type ReferenceKey = "product" | "character";
 type ImageStage = "replacement" | "storyboard";
@@ -78,10 +62,7 @@ export function RemakeImageStage({
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const selectedImageModel = project.modelSelection.image || config.imageModel || config.model;
-    const imageConfig = useMemo(
-        () => ({ ...config, model: selectedImageModel, imageModel: selectedImageModel, size: "9:16", count: "1" }),
-        [config, selectedImageModel],
-    );
+    const imageConfig = useMemo(() => ({ ...config, model: selectedImageModel, imageModel: selectedImageModel, size: "9:16", count: "1" }), [config, selectedImageModel]);
     const latestProjectRef = useRef(project);
     latestProjectRef.current = project;
     const inputRefs = useRef<Partial<Record<ReferenceKey, HTMLInputElement | null>>>({});
@@ -245,7 +226,15 @@ export function RemakeImageStage({
                 stage === "replacement"
                     ? {
                           replacementGeneration: queued,
-                          imageGeneration: { status: "idle", taskId: null, attemptNo: group.imageGeneration.status === "idle" ? group.imageGeneration.attemptNo : (group.imageGeneration.attemptNo ?? 0) + 1, model: null, prompt: "", result: null, error: null },
+                          imageGeneration: {
+                              status: "idle",
+                              taskId: null,
+                              attemptNo: group.imageGeneration.status === "idle" ? group.imageGeneration.attemptNo : (group.imageGeneration.attemptNo ?? 0) + 1,
+                              model: null,
+                              prompt: "",
+                              result: null,
+                              error: null,
+                          },
                           videoPrompt: "",
                           videoGeneration: { status: "idle", taskId: null, model: null, result: null, error: null },
                       }
@@ -342,7 +331,7 @@ export function RemakeImageStage({
     const scriptReady = Boolean(project.productInfo.trim() && project.productScript.trim() && project.storyboardScript.trim());
     const imagesReady = remakeImagesReady(project);
     const generationActive = startingStagesRef.current.size > 0 || project.groups.some(activeGeneration);
-    const completedCount = project.groups.filter(groupComplete).length;
+    const completedCount = project.groups.filter((group) => groupComplete(group)).length;
 
     return (
         <section className="h-full min-h-0 overflow-y-auto bg-background" aria-label="十二宫格重绘">
@@ -397,16 +386,41 @@ export function RemakeImageStage({
                 <section className="grid gap-3 border-b border-border py-4" aria-label="新产品脚本">
                     <label className="grid gap-2 text-sm font-medium">
                         新产品信息
-                        <Input.TextArea value={project.productInfo} disabled={disabled || generationActive} maxLength={20000} autoSize={{ minRows: 3, maxRows: 8 }} placeholder="填写新产品名称、核心卖点、规格及适用场景。" onChange={(event) => onProductChange({ productInfo: event.target.value })} />
+                        <Input.TextArea
+                            value={project.productInfo}
+                            disabled={disabled || generationActive}
+                            maxLength={20000}
+                            autoSize={{ minRows: 3, maxRows: 8 }}
+                            placeholder="填写新产品名称、核心卖点、规格及适用场景。"
+                            onChange={(event) => onProductChange({ productInfo: event.target.value })}
+                        />
                     </label>
                     <div className="flex flex-wrap items-center gap-2">
-                        <ModelPicker config={config} capability="text" value={project.modelSelection.prompt || config.textModel || ""} onChange={onPromptModelChange} onMissingConfig={() => openConfigDialog(true)} className={disabled || generationActive ? "pointer-events-none opacity-60" : ""} placeholder="选择脚本文本模型" />
+                        <ModelPicker
+                            config={config}
+                            capability="text"
+                            value={project.modelSelection.prompt || config.textModel || ""}
+                            onChange={onPromptModelChange}
+                            onMissingConfig={() => openConfigDialog(true)}
+                            className={disabled || generationActive ? "pointer-events-none opacity-60" : ""}
+                            placeholder="选择脚本文本模型"
+                        />
                         <Button loading={buildingScript} disabled={disabled || generationActive || Boolean(uploadingKey) || !referencesReady || !project.productInfo.trim() || project.analysis.status !== "completed"} onClick={() => void onBuildScript()}>
                             {project.storyboardScript ? "重新生成新产品脚本" : "生成新产品脚本"}
                         </Button>
                     </div>
-                    {project.productScript ? <details><summary className="cursor-pointer text-sm font-medium">查看新产品 12 分镜脚本</summary><Input.TextArea readOnly value={project.productScript} autoSize={{ minRows: 4, maxRows: 12 }} className="!mt-2" /></details> : null}
-                    {project.storyboardScript ? <label className="grid gap-2 text-sm font-medium">1–12 分镜提示词 · 审阅后生图<Input.TextArea value={project.storyboardScript} disabled={disabled || generationActive} autoSize={{ minRows: 7, maxRows: 16 }} onChange={(event) => onProductChange({ storyboardScript: event.target.value })} /></label> : null}
+                    {project.productScript ? (
+                        <details>
+                            <summary className="cursor-pointer text-sm font-medium">查看新产品 12 分镜脚本</summary>
+                            <Input.TextArea readOnly value={project.productScript} autoSize={{ minRows: 4, maxRows: 12 }} className="!mt-2" />
+                        </details>
+                    ) : null}
+                    {project.storyboardScript ? (
+                        <label className="grid gap-2 text-sm font-medium">
+                            1–12 分镜提示词 · 审阅后生图
+                            <Input.TextArea value={project.storyboardScript} disabled={disabled || generationActive} autoSize={{ minRows: 7, maxRows: 16 }} onChange={(event) => onProductChange({ storyboardScript: event.target.value })} />
+                        </label>
+                    ) : null}
                 </section>
 
                 {!referencesReady ? (
@@ -431,11 +445,35 @@ export function RemakeImageStage({
     );
 }
 
-export function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; children: React.ReactNode }) {
+export function ReferenceSlot({
+    label,
+    detail,
+    required,
+    asset,
+    loading,
+    disabled,
+    onChoose,
+    onRemove,
+    children,
+}: {
+    label: string;
+    detail: string;
+    required: boolean;
+    asset?: RemakeMediaAsset;
+    loading: boolean;
+    disabled: boolean;
+    onChoose: () => void;
+    onRemove: () => void;
+    children: React.ReactNode;
+}) {
     return (
         <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card p-2.5">
             <div className="relative aspect-square w-20 shrink-0 overflow-hidden rounded-md border border-border bg-muted/30">
-                {asset?.url ? <Image className="!size-full !object-cover" src={imagePreviewUrl(asset.url, 480)} alt={label} preview={{ src: imagePreviewUrl(asset.url, 1600) }} /> : <ImagePlus className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 text-muted-foreground" />}
+                {asset?.url ? (
+                    <Image className="!size-full !object-cover" src={imagePreviewUrl(asset.url, 480)} alt={label} preview={{ src: imagePreviewUrl(asset.url, 1600) }} />
+                ) : (
+                    <ImagePlus className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 text-muted-foreground" />
+                )}
             </div>
             <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-sm font-semibold">
@@ -458,13 +496,33 @@ export function ReferenceSlot({ label, detail, required, asset, loading, disable
 }
 
 export type RemakeImageGroupView = Pick<RemakeRangeGroup, "replacementGeneration" | "imageGeneration" | "sourceContactSheet"> & { id: string };
-export function RemakeGroupCard({ project, group, disabled, onGenerate, prompts, title, description, sourceLabel = "来源十二宫格" }: {
-    project?: RemakeProject; group: RemakeImageGroupView; references?: RemakeReferenceAssets; disabled: boolean; onGenerate: () => void;
-    prompts?: { replacement: string; storyboard: string }; title?: string; description?: string; sourceLabel?: string;
+export function RemakeGroupCard({
+    project,
+    group,
+    disabled,
+    onGenerate,
+    prompts,
+    title,
+    description,
+    sourceLabel = "来源十二宫格",
+    singleStep = false,
+    imageLabel,
+}: {
+    project?: RemakeProject;
+    group: RemakeImageGroupView;
+    references?: RemakeReferenceAssets;
+    disabled: boolean;
+    onGenerate: () => void;
+    prompts?: { replacement: string; storyboard: string };
+    title?: string;
+    description?: string;
+    sourceLabel?: string;
+    singleStep?: boolean;
+    imageLabel?: string;
 }) {
     const { message } = App.useApp();
-    const active = activeGeneration(group);
-    const replacementError = group.replacementGeneration.error ? friendlyAgentError(group.replacementGeneration.error, "图片生成失败，请稍后重试") : "";
+    const active = singleStep ? isGenerationActive(group.imageGeneration) : activeGeneration(group);
+    const replacementError = !singleStep && group.replacementGeneration.error ? friendlyAgentError(group.replacementGeneration.error, "图片生成失败，请稍后重试") : "";
     const imageError = group.imageGeneration.error ? friendlyAgentError(group.imageGeneration.error, "图片生成失败，请稍后重试") : "";
     const replacementPrompt = prompts?.replacement ?? (group.replacementGeneration.prompt || (project ? buildRemakeReplacementPrompt(project, group as RemakeRangeGroup) : ""));
     const storyboardPrompt = prompts?.storyboard ?? (group.imageGeneration.prompt || (project ? buildRemakeImagePrompt(project, group as RemakeRangeGroup) : ""));
@@ -476,30 +534,35 @@ export function RemakeGroupCard({ project, group, disabled, onGenerate, prompts,
                     <p className="mt-0.5 text-[11px] text-muted-foreground">{description || "3 列 × 4 行 · 两步生成 · 9:16"}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                    <GenerationTag group={group} />
+                    <GenerationTag group={group} singleStep={singleStep} />
                     <Button
                         size="small"
-                        type={groupComplete(group) ? "default" : "primary"}
+                        type={groupComplete(group, singleStep) ? "default" : "primary"}
                         loading={active}
                         disabled={disabled || active || !group.sourceContactSheet}
-                        icon={groupComplete(group) || hasGenerationError(group) ? <RefreshCw className="size-3.5" /> : <Images className="size-3.5" />}
+                        icon={groupComplete(group, singleStep) || hasGenerationError(group) ? <RefreshCw className="size-3.5" /> : <Images className="size-3.5" />}
                         onClick={onGenerate}
                     >
-                        {groupComplete(group) ? "重新生成" : hasGenerationError(group) ? "重试" : "生成"}
+                        {groupComplete(group, singleStep) ? "重新生成" : hasGenerationError(group) ? "重试" : "生成"}
                     </Button>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
+            <div className={`grid grid-cols-1 gap-px bg-border ${singleStep ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
                 <ContactSheet label={sourceLabel} asset={group.sourceContactSheet} />
-                <ContactSheet label="第一步：清理 / 换人 / 去旧产品" asset={completedAsset(group.replacementGeneration)} loading={isGenerationActive(group.replacementGeneration)} error={replacementError || undefined} />
-                <ContactSheet label="第二步：放入新产品" asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} error={imageError || undefined} />
+                {!singleStep && <ContactSheet label="第一步：清理 / 换人 / 去旧产品" asset={completedAsset(group.replacementGeneration)} loading={isGenerationActive(group.replacementGeneration)} error={replacementError || undefined} />}
+                <ContactSheet label={imageLabel || (singleStep ? "最终分镜图" : "第二步：放入新产品")} asset={completedAsset(group.imageGeneration)} loading={isGenerationActive(group.imageGeneration)} error={imageError || undefined} />
             </div>
 
             {replacementError || imageError ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{replacementError || imageError}</div> : null}
 
-            <PromptDetails title="第一步完整提示词" prompt={replacementPrompt} copyLabel={`分镜 ${group.id} 第一步提示词`} onCopied={() => message.success("第一步完整提示词已复制")} />
-            <PromptDetails title="第二步完整提示词" prompt={storyboardPrompt} copyLabel={`分镜 ${group.id} 第二步提示词`} onCopied={() => message.success("第二步完整提示词已复制")} />
+            {!singleStep && <PromptDetails title="第一步完整提示词" prompt={replacementPrompt} copyLabel={`分镜 ${group.id} 第一步提示词`} onCopied={() => message.success("第一步完整提示词已复制")} />}
+            <PromptDetails
+                title={singleStep ? "完整重绘提示词" : "第二步完整提示词"}
+                prompt={storyboardPrompt}
+                copyLabel={`分镜 ${group.id} ${singleStep ? "重绘" : "第二步"}提示词`}
+                onCopied={() => message.success(singleStep ? "完整重绘提示词已复制" : "第二步完整提示词已复制")}
+            />
         </article>
     );
 }
@@ -558,11 +621,15 @@ function ContactSheet({ label, asset, loading, error }: { label: string; asset?:
     );
 }
 
-function GenerationTag({ group }: { group: RemakeImageGroupView }) {
-    const status = groupStatus(group);
+function GenerationTag({ group, singleStep = false }: { group: RemakeImageGroupView; singleStep?: boolean }) {
+    const status = singleStep ? group.imageGeneration.status : groupStatus(group);
     const color = status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
     const label = status === "completed" ? "已完成" : status === "error" ? "失败" : status === "queued" ? "排队中" : status === "running" ? "生成中" : "未生成";
-    return <Tag color={color} className="!m-0">{label}</Tag>;
+    return (
+        <Tag color={color} className="!m-0">
+            {label}
+        </Tag>
+    );
 }
 
 function groupStatus(group: RemakeImageGroupView) {
@@ -589,8 +656,8 @@ function activeGeneration(group: RemakeImageGroupView) {
     return isGenerationActive(group.replacementGeneration) || isGenerationActive(group.imageGeneration);
 }
 
-function groupComplete(group: RemakeImageGroupView) {
-    return group.replacementGeneration.status === "completed" && Boolean(group.replacementGeneration.result?.url) && group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result?.url);
+function groupComplete(group: RemakeImageGroupView, singleStep = false) {
+    return (singleStep || (group.replacementGeneration.status === "completed" && Boolean(group.replacementGeneration.result?.url))) && group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result?.url);
 }
 
 function hasGenerationError(group: RemakeImageGroupView) {

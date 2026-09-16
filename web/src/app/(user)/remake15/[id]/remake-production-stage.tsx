@@ -470,7 +470,7 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
 
 export type RemakeVideoGroupView = Pick<RemakeRangeGroup, "ordinal" | "imageGeneration" | "videoGeneration" | "videoPrompt" | "videoPromptInstructions"> & { id: string };
 
-export function VideoGroupCard({ defaultInstructions, description, group, building, promptDisabled, disabled, instructionsDisabled, instructionsDirty, onInstructionsChange, onSaveInstructions, onBuild, onGenerate, onCopy }: { defaultInstructions?: string; description?: string; group: RemakeVideoGroupView; building: boolean; promptDisabled: boolean; disabled: boolean; instructionsDisabled: boolean; instructionsDirty: boolean; onInstructionsChange: (value: string) => void; onSaveInstructions: () => Promise<void>; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
+export function VideoGroupCard({ instructionsReadOnly = false, defaultInstructions, description, group, building, promptDisabled, disabled, instructionsDisabled, instructionsDirty, onInstructionsChange, onSaveInstructions, onBuild, onGenerate, onCopy }: { instructionsReadOnly?: boolean; defaultInstructions?: string; description?: string; group: RemakeVideoGroupView; building: boolean; promptDisabled: boolean; disabled: boolean; instructionsDisabled: boolean; instructionsDirty: boolean; onInstructionsChange: (value: string) => void; onSaveInstructions: () => Promise<void>; onBuild: () => void; onGenerate: () => void; onCopy: (text: string) => void }) {
     const generation = group.videoGeneration;
     const active = isVideoActive(group) && !generation.needsReview;
     const videoUrl = generation.result?.url ? browserReadableMediaUrl(generation.result.url) : "";
@@ -497,7 +497,7 @@ export function VideoGroupCard({ defaultInstructions, description, group, buildi
                 </div>
             </div>
             <div className="border-b border-border p-3">
-                <VideoPromptInstructionEditor
+                {instructionsReadOnly ? <details><summary className="cursor-pointer text-xs">原版视频提示词模板</summary><pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">{defaultInstructions}</pre></details> : <VideoPromptInstructionEditor
                     label={`分镜 ${group.id} · 视频提示词生成指令`}
                     defaultText={defaultInstructions ?? remakeEffectiveVideoPromptInstructions({ id: group.id })}
                     value={group.videoPromptInstructions}
@@ -508,7 +508,7 @@ export function VideoGroupCard({ defaultInstructions, description, group, buildi
                     onSave={onSaveInstructions}
                     onGenerate={onBuild}
                     generationDisabled={promptDisabled}
-                />
+                />}
             </div>
             <div className="grid min-w-0 gap-3 p-3 sm:grid-cols-[110px_minmax(0,1fr)]">
                 <div className="relative aspect-[9/16] w-[110px] overflow-hidden rounded-md border border-border bg-[#15181c]">

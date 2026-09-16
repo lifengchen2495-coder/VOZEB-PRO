@@ -1,9 +1,16 @@
 export type FrameRemakeMedia = { url: string; storageKey?: string; mimeType: string; originalName?: string; bytes?: number; width?: number; height?: number; duration?: number };
 export type FrameRemakeGenerationKind = "template" | "image" | "video";
-export const FRAME_REMAKE_ANALYSIS_STAGES = ["analysis", "copy", "productScript", "imagePrompt", "videoPrompt"] as const;
-export type FrameRemakeAnalysisStage = (typeof FRAME_REMAKE_ANALYSIS_STAGES)[number];
-export const FRAME_REMAKE_ANALYSIS_LABELS: Record<FrameRemakeAnalysisStage, string> = { analysis: "理解来源视频", copy: "文案预处理", productScript: "适配产品脚本", imagePrompt: "优化分镜脚本", videoPrompt: "生成视频提示词" };
-export type FrameRemakeWorkflowStage = "analysis" | "images" | "production";
+export type FrameRemakeAnalysisStage = "analysis" | "copy" | "productScript" | "imagePrompt" | "videoPrompt";
+export const FRAME_REMAKE_ANALYSIS_STAGES: readonly FrameRemakeAnalysisStage[] = ["analysis", "productScript", "imagePrompt", "videoPrompt"];
+export const FRAME_REMAKE_ANALYSIS_LABELS: Record<FrameRemakeAnalysisStage, string> = {
+    analysis: "理解来源视频",
+    copy: "原文案（选填）",
+    productScript: "新产品-12分镜脚本",
+    imagePrompt: "1-12分镜提示词",
+    videoPrompt: "生成视频提示词",
+};
+export type FrameRemakeWorkflowStage = "analysis" | "planning" | "images" | "production";
+export type FrameRemakeReplacement = { product: boolean; character: boolean; background: boolean };
 export type FrameRemakeOperationKind = "inspect" | "extract" | "analyze" | "merge";
 export type FrameRemakeTask = {
     status: "idle" | "queued" | "running" | "completed" | "error";
@@ -36,6 +43,7 @@ export type FrameRemakeGroup = {
     copyBlocks?: FrameRemakeCopyBlock[];
     // 旧项目的 analysis 同时包含产品脚本；新项目从空字符串开始独立执行。
     productScript?: string;
+    materialAnalysis?: string;
     analysisSteps?: Partial<Record<FrameRemakeAnalysisStage, { prompt: string; model: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string }>>;
     imagePrompt: string;
     videoPrompt: string;
@@ -49,12 +57,14 @@ export type FrameRemakeProject = {
     title: string;
     status: "active" | "archived";
     revision: number;
+    workflowVersion?: "feishu-original-15s";
     createdAt: string;
     updatedAt: string;
     sourceVideo?: FrameRemakeMedia;
     durationMs: number;
     maxSegmentSeconds: number;
     references: { product: FrameRemakeMedia[]; character: FrameRemakeMedia[]; background: FrameRemakeMedia[] };
+    replacement?: FrameRemakeReplacement;
     sourceCopy?: string;
     productInfo?: string;
     instructions: string;
@@ -85,7 +95,7 @@ export type FrameRemakeRunOptions = {
     restartFrom?: "analysis" | "productScript" | "videoPrompt" | "images";
 };
 export type FrameRemakeProjectList = { items: FrameRemakeProject[]; total: number; page: number; pageSize: number };
-export type FrameRemakePatch = Partial<Pick<FrameRemakeProject, "voice" | "title" | "sourceCopy" | "productInfo" | "instructions" | "audioMode" | "maxSegmentSeconds" | "references" | "modelSelection">> & {
+export type FrameRemakePatch = Partial<Pick<FrameRemakeProject, "replacement" | "voice" | "title" | "sourceCopy" | "productInfo" | "instructions" | "audioMode" | "maxSegmentSeconds" | "references" | "modelSelection">> & {
     sourceVideo?: FrameRemakeMedia | null;
     group?: { id: string; analysis?: string; copy?: string; productScript?: string; imagePrompt?: string; videoPrompt?: string; videoPromptInstructions?: string };
     frame?: { groupId: string; number: number; detail: FrameRemakeFrameAnalysis };
@@ -105,8 +115,9 @@ export function newFrameRemakeProject(id: string, title: string): FrameRemakePro
         durationMs: 0,
         maxSegmentSeconds: 15,
         references: { product: [], character: [], background: [] },
+        replacement: { product: true, character: true, background: false },
         instructions: "",
-        audioMode: "generated",
+        audioMode: "source",
         voice: "female",
         modelSelection: { analysis: "", image: "", video: "" },
         groups: [],
@@ -122,7 +133,7 @@ export function planFrameRemakeTimeline(durationMs: number, maxSegmentSeconds = 
     let frameNumber = 0;
     for (let startMs = 0; startMs < durationMs; startMs += segmentMs) {
         const endMs = Math.min(durationMs, startMs + segmentMs);
-        const count = Math.max(1, Math.ceil((endMs - startMs) / 1250));
+        const count = 12;
         const frames = Array.from({ length: count }, (_, index) => {
             const start = startMs + Math.floor((index * (endMs - startMs)) / count);
             const end = startMs + Math.floor(((index + 1) * (endMs - startMs)) / count);
@@ -137,6 +148,7 @@ export function planFrameRemakeTimeline(durationMs: number, maxSegmentSeconds = 
             analysis: "",
             copy: "",
             productScript: "",
+            materialAnalysis: "",
             imagePrompt: "",
             videoPrompt: "",
             template: idleFrameRemakeTask(),
@@ -147,7 +159,7 @@ export function planFrameRemakeTimeline(durationMs: number, maxSegmentSeconds = 
     return groups;
 }
 export function frameRemakeAnalysisResult(group: FrameRemakeGroup, stage: FrameRemakeAnalysisStage) {
-    return stage === "productScript" ? (group.productScript ?? group.analysis) : stage === "copy" ? (group.copy ?? (group.sourceAnalysisMode === "video" ? "" : group.analysis)) : group[stage];
+    return stage === "productScript" ? (group.productScript ?? group.analysis) : stage === "copy" ? (group.copy ?? (group.sourceAnalysisMode === "video" ? "" : group.analysis)) : (group[stage] ?? "");
 }
 export function nextFrameRemakeAnalysisStage(group: FrameRemakeGroup) {
     return FRAME_REMAKE_ANALYSIS_STAGES.find((stage) => !frameRemakeAnalysisResult(group, stage));
@@ -155,7 +167,7 @@ export function nextFrameRemakeAnalysisStage(group: FrameRemakeGroup) {
 // 修改某一步时，仅使它和依赖它的后续结果失效。
 export function resetFrameRemakeAnalysisFrom(group: FrameRemakeGroup, stage: FrameRemakeAnalysisStage): FrameRemakeGroup {
     const next = { ...group, analysisSteps: { ...group.analysisSteps }, video: idleFrameRemakeTask(group.video.attemptNo) };
-    if (stage !== "videoPrompt") {
+    if (stage !== "videoPrompt" && stage !== "copy") {
         next.template = idleFrameRemakeTask(group.template.attemptNo);
         next.image = idleFrameRemakeTask(group.image.attemptNo);
     }
@@ -164,8 +176,12 @@ export function resetFrameRemakeAnalysisFrom(group: FrameRemakeGroup, stage: Fra
         next.sourceAnalysisMode = undefined;
         next.frames = next.frames.map(({ detail: _detail, ...frame }) => frame);
     }
-    if (stage === "analysis" || stage === "copy") next.copyBlocks = undefined;
-    for (const key of FRAME_REMAKE_ANALYSIS_STAGES.slice(FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage))) {
+    if (stage === "copy") {
+        next.copy = "";
+        next.copyBlocks = undefined;
+    }
+    const resetStage = stage === "copy" ? "videoPrompt" : stage;
+    for (const key of FRAME_REMAKE_ANALYSIS_STAGES.slice(FRAME_REMAKE_ANALYSIS_STAGES.indexOf(resetStage))) {
         next[key] = "";
         delete next.analysisSteps[key];
     }
@@ -182,13 +198,32 @@ export function frameRemakeBusy(project: FrameRemakeProject) {
     return Boolean(project.operation || project.groups.some((group) => [group.template, group.image, group.video].some((task) => task.status === "queued" || task.status === "running")));
 }
 export function frameRemakeImageReferences(project: FrameRemakeProject, group: FrameRemakeGroup, kind: "template" | "image" = "image") {
-    return (kind === "template" ? [group.contactSheet, ...project.references.character] : [group.template.result, ...project.references.product, ...project.references.background]).filter((media): media is FrameRemakeMedia => Boolean(media));
+    const refs = frameRemakeActiveReferences(project);
+    return (kind === "template" ? [group.contactSheet, ...refs.character] : [group.template.result, ...refs.product]).filter((media): media is FrameRemakeMedia => Boolean(media));
 }
 export function frameRemakeVideoReferences(project: FrameRemakeProject, group: FrameRemakeGroup) {
-    return [group.image.result, ...project.references.product, ...project.references.character].filter((media): media is FrameRemakeMedia => Boolean(media));
+    const refs = frameRemakeActiveReferences(project);
+    return [group.image.result, ...refs.product, ...refs.character].filter((media): media is FrameRemakeMedia => Boolean(media));
 }
-export function frameRemakeAspectRatio(project: FrameRemakeProject) {
-    return (project.sourceVideo?.width || 9) >= (project.sourceVideo?.height || 16) ? "16:9" : "9:16";
+// 旧项目按已有参考素材恢复选项；新项目由用户明确选择，上传素材不会暗中改变目标。
+export function frameRemakeReplacement(project: FrameRemakeProject): FrameRemakeReplacement {
+    return project.replacement ?? { product: Boolean(project.references.product.length), character: Boolean(project.references.character.length), background: Boolean(project.references.background.length) };
+}
+export function frameRemakeActiveReferences(project: FrameRemakeProject) {
+    // 原版：产品图必填，人物图可选；不把背景图混入其他表的流程。
+    return { product: project.references.product, character: project.references.character, background: [] as FrameRemakeMedia[] };
+}
+export function frameRemakeUsesTemplate(_project: FrameRemakeProject) {
+    return true;
+}
+export function frameRemakeInputError(project: FrameRemakeProject) {
+    if (!project.references.product.length) return "请上传原版流程必需的产品图";
+    if (project.references.background.length) return "当前为原版15秒拆帧流程，不包含背景图输入；请先移除旧版环境参考图";
+    if (project.references.product.length > 1 || project.references.character.length > 1) return "原版流程每次使用一张产品图和一张可选人物图，请先移除多余参考图";
+    return "";
+}
+export function frameRemakeAspectRatio(_project: FrameRemakeProject) {
+    return "9:16";
 }
 export function frameRemakeTime(milliseconds: number) {
     const seconds = milliseconds / 1000;
@@ -212,10 +247,11 @@ export function assertFrameRemakeTimeline(project: FrameRemakeProject) {
                         !Number.isSafeInteger(frame.endMs) ||
                         !Number.isSafeInteger(frame.sampleMs) ||
                         frame.startMs !== (i ? group.frames[i - 1].endMs : group.startMs) ||
-                        frame.endMs <= frame.startMs ||
+                        frame.endMs < frame.startMs ||
                         frame.endMs > group.endMs ||
                         frame.sampleMs < frame.startMs ||
-                        frame.sampleMs >= frame.endMs,
+                        frame.sampleMs > frame.endMs ||
+                        frame.sampleMs >= group.endMs,
                 ) ||
                 group.frames.at(-1)?.endMs !== group.endMs
             );
@@ -226,5 +262,5 @@ export function assertFrameRemakeTimeline(project: FrameRemakeProject) {
 
 export function frameRemakeHasNarration(project: FrameRemakeProject, group?: FrameRemakeGroup) {
     if (project.sourceCopy?.trim() === "不需要人物口播") return false;
-    return (group ? [group] : project.groups).some((g) => g.copyBlocks?.some((b) => b.text.trim()) || g.sourceCopy?.trim());
+    return (group ? [group] : project.groups).some((g) => g.copy?.trim() || g.copyBlocks?.some((b) => b.text.trim()) || g.sourceCopy?.trim() || (project.groups.length === 1 && project.sourceCopy?.trim()));
 }

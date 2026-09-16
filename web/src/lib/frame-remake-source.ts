@@ -1,24 +1,57 @@
 import { frameRemakeAnalysisResult, type FrameRemakeCopyBlock, type FrameRemakeFrame, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
 import { frameRemakeTemplates } from "./frame-remake-prompt-templates";
-import { REMAKE_FEISHU_COPY_PROMPT } from "./remake15-feishu-prompts";
+import { parseFrameRemakeAnalysis } from "./frame-remake-prompts";
 
 export function frameRemakeSourcePrompt(project: FrameRemakeProject, group: FrameRemakeGroup) {
-    return [
-        frameRemakeTemplates(project, group).analysis.replace("读取本组全部实际抽帧及时间码", "完整观看本组上传的视频和声音"),
-        `当前执行合同：附视频仅为原片第 ${group.number} 组，原片 ${group.startMs / 1000}–${group.endMs / 1000} 秒。本组实际 ${(group.endMs - group.startMs) / 1000} 秒。分析视频后再按你给出的语义时间拆帧。`,
-        `只输出 JSON 对象 {"sourceCopy":"本组原语言逐字口播，无口播则为空字符串","frames":[{"ordinal":1,"startTime":0,"endTime":1,"subtitle":"可见字幕","sellingPoint":"卖点","shotType":"景别","description":"主体、构图、性别、动作、节奏、展示目的及环境","subjectRatio":"主体占比","hasFace":false}]}。`,
-        `frames 必须恰好 ${group.frames.length} 项。本组局部编号从 1 到 ${group.frames.length}，局部时间从 0 连续覆盖到 ${(group.endMs - group.startMs) / 1000} 秒，时间使用秒数，保留毫秒精度，禁止重叠、跳过或压缩。不要套用模板中的全片编号。`,
-        "仅描述可见画面和实际听见的声音，不能将字幕当作口播。sourceCopy 保持原语言，不翻译、润色、遗漏或重复。",
-        project.sourceCopy ? `用户提供的原文案（仅用于校对本组实际口播，禁止将整片文案重复填入每组）：${project.sourceCopy}` : "",
-    ]
-        .filter(Boolean)
-        .join("\n\n");
+    return frameRemakeTemplates(project, group).analysis;
+}
+
+// 从分析结果的 12 个“时间”字段读取抽帧起点。
+// 此处只解析结果，不要求模型改成 JSON，也不再用另一轮模型补写。
+export function parseFrameRemakeOriginalAnalysis(raw: string, group: FrameRemakeGroup) {
+    const analysis = parseFrameRemakeAnalysis(raw, "analysis");
+    const timeFields = [...analysis.matchAll(/时间\s*[:：]\s*["“”']([^"“”']+)["“”']/g)];
+    if (timeFields.length !== 12) throw new Error("原版分析结果未包含12个带引号的时间字段，请检查本步原文后重试");
+    const seconds = (value: string) => {
+        const parts = value.trim().split(":");
+        if (!parts.length || parts.length > 3 || parts.some((p) => !/^\d+(?:\.\d+)?$/.test(p))) throw new Error("原版时间码格式无效");
+        return parts.reduce((total, part) => total * 60 + Number(part), 0);
+    };
+    const duration = group.endMs - group.startMs;
+    const starts = timeFields.map((field) => Math.min(Math.max(Math.round(seconds(field[1].split(/[-–—~～]/)[0]) * 1000), 0), Math.max(duration - 50, 0)));
+    if (starts.some((start, i) => !Number.isSafeInteger(start) || (i > 0 && start < starts[i - 1]))) throw new Error("原版返回的12个抽帧时间须按视频顺序排列，请重试视频分析");
+    const frames = group.frames.map((frame, index) => {
+        const section = analysis.slice(timeFields[index].index, timeFields[index + 1]?.index ?? analysis.length);
+        const field = (label: string) => {
+            const match = section.match(new RegExp(`(?:${label})\\s*[:：]\\s*[“"']?([^\\n]+)`));
+            return match?.[1]?.trim().replace(/[”"',，]$/, "") || "";
+        };
+        const startMs = group.startMs + (index === 0 ? 0 : starts[index]);
+        const endMs = index === 11 ? group.endMs : group.startMs + starts[index + 1];
+        return {
+            ...frame,
+            media: undefined,
+            startMs,
+            endMs,
+            sampleMs: group.startMs + Math.min(starts[index], duration - 1),
+            detail: {
+                subtitle: field("字幕"),
+                sellingPoint: field("卖点"),
+                shotType: field("镜头类型|景别"),
+                description: field("画面描述") || section.trim(),
+                subjectRatio: field("人物占比|主体占比"),
+                hasFace: /^(是|有|true)/.test(field("是否出现人脸|是否有人脸|包含人脸")),
+            },
+        };
+    });
+    return { analysis, frames };
 }
 export function renderFrameRemakeSourceAnalysis(frames: FrameRemakeFrame[]) {
+    const offset = frames[0]?.startMs || 0;
     return frames
         .map(
-            (f) =>
-                `分镜${f.number}:\n时间：${f.startMs / 1000}–${f.endMs / 1000} 秒\n字幕：${f.detail?.subtitle || "无"}\n卖点：${f.detail?.sellingPoint || "无"}\n镜头类型：${f.detail?.shotType || ""}\n画面描述：${f.detail?.description || ""}\n主体占比：${f.detail?.subjectRatio || ""}\n包含人脸：${f.detail?.hasFace ? "是" : "否"}`,
+            (f, index) =>
+                `分镜${index + 1}:\n时间: "${(f.startMs - offset) / 1000}-${(f.endMs - offset) / 1000}"\n字幕：${f.detail?.subtitle || "无"}\n卖点：${f.detail?.sellingPoint || "无"}\n镜头类型：${f.detail?.shotType || ""}\n画面描述：${f.detail?.description || ""}\n主体占比：${f.detail?.subjectRatio || ""}\n包含人脸：${f.detail?.hasFace ? "是" : "否"}`,
         )
         .join("\n\n");
 }
@@ -27,20 +60,6 @@ export function frameRemakeCopyRanges(group: FrameRemakeGroup): FrameRemakeCopyB
         const frames = group.frames.slice(i * 3, i * 3 + 3);
         return { number: i + 1, frameNumbers: frames.map((f) => f.number), startMs: frames[0].startMs, endMs: frames.at(-1)!.endMs, sourceText: "", text: "" };
     });
-}
-export function frameRemakeCopyPrompt(group: FrameRemakeGroup) {
-    const ranges = frameRemakeCopyRanges(group);
-    return `${REMAKE_FEISHU_COPY_PROMPT}\n\n本次只处理原片第 ${group.number} 组，按下列实际区间执行，取代模板固定的 4 区间/12分镜规则。\n${JSON.stringify({ sourceCopy: group.sourceCopy || "", ranges, frames: group.frames.map(({ media: _media, ...f }) => f) })}\n\n严格按顺序返回 ${ranges.length} 个 blocks，每项包含 number、sourceText、text。所有 sourceText 拼接必须逐字等于 sourceCopy，允许无口播区间为空。text 保留相同原文，不改写事实。不得新增口播。`;
-}
-export function parseFrameRemakeCopy(raw: string, group: FrameRemakeGroup) {
-    const value = JSON.parse(raw) as { blocks?: Array<{ number: number; sourceText: string; text: string }> };
-    const ranges = frameRemakeCopyRanges(group),
-        blocks = value.blocks;
-    if (!Array.isArray(blocks) || blocks.length !== ranges.length || blocks.some((b, i) => b.number !== i + 1 || typeof b.sourceText !== "string" || typeof b.text !== "string" || b.text.length > 20000)) throw new Error("文案区间数量、顺序或正文不完整");
-    const normalized = (text: string) => text.replace(/\s/g, "");
-    if (normalized(blocks.map((b) => b.sourceText).join("")) !== normalized(group.sourceCopy || "") || blocks.some((b) => normalized(b.text) !== normalized(b.sourceText))) throw new Error("文案没有逐字连续覆盖原文，请重试文案预处理");
-    const copyBlocks = ranges.map((range, i) => ({ ...range, sourceText: blocks[i].sourceText, text: blocks[i].text }));
-    return { copyBlocks, copy: renderFrameRemakeCopy(copyBlocks) };
 }
 export function renderFrameRemakeCopy(blocks: FrameRemakeCopyBlock[]) {
     return blocks.map((b) => `区间 ${b.number} · 分镜 ${b.frameNumbers.join("、")} · ${b.startMs / 1000}–${b.endMs / 1000} 秒\n原文：${b.sourceText || "无口播"}\n采用文案：${b.text || "无口播"}`).join("\n\n");

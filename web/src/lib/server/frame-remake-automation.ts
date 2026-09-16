@@ -1,8 +1,10 @@
 import { nextFrameRemakeStep, frameRemakeWorkflowReadiness, frameRemakeAutomationView } from "@/lib/frame-remake-steps";
 export { nextFrameRemakeStep } from "@/lib/frame-remake-steps";
 import { randomUUID } from "node:crypto";
-import { frameRemakeBusy, idleFrameRemakeTask, resetFrameRemakeAnalysisFrom, type FrameRemakeRunOptions, type FrameRemakeWorkflowStage } from "@/lib/frame-remake-contract";
-import { changedFrameRemake, FrameRemakeError, assertFrameRemakeRevision, getFrameRemakeProjectForUser, mutateFrameRemake, startFrameRemakeOperation, submitFrameRemakeGeneration } from "./frame-remake-project-service";
+import { frameRemakeInputError, frameRemakeBusy, idleFrameRemakeTask, resetFrameRemakeAnalysisFrom, type FrameRemakeRunOptions, type FrameRemakeWorkflowStage } from "@/lib/frame-remake-contract";
+import { changedFrameRemake, FrameRemakeError, assertFrameRemakeRevision, assertFrameRemakeAnalysisPromptReady, getFrameRemakeProjectForUser, mutateFrameRemake, startFrameRemakeOperation, submitFrameRemakeGeneration } from "./frame-remake-project-service";
+import { assertFrameRemakePromptResolved } from "@/lib/frame-remake-feishu-workflow";
+import { frameRemakeImagePrompt, frameRemakeVideoPrompt } from "@/lib/frame-remake-prompts";
 import { listRunnableFrameRemakeProjects } from "./frame-remake-project-store";
 import { runFrameRemakeOperation } from "./frame-remake-runtime";
 import { isWorkerTokenConfigured, maintenanceWorkerContext } from "./maintenance-auth";
@@ -16,14 +18,14 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
         if (!project.sourceVideo) throw new FrameRemakeError("请先上传原视频");
         if (project.automation?.status === "running") return project;
         const ready = frameRemakeWorkflowReadiness(project);
-        if ((stageScope === "images" && !ready.analysis) || (stageScope === "production" && !ready.images)) throw new FrameRemakeError("请先完成前一个阶段，再开始本阶段");
+        if ((stageScope === "planning" && !ready.analysis) || (stageScope === "images" && !ready.planning) || (stageScope === "production" && !ready.images)) throw new FrameRemakeError("请先完成前一个阶段，再开始本阶段");
         if (options.restartFrom && frameRemakeBusy(project)) throw new FrameRemakeError("请等待当前步骤完成后再开始", 409);
         if (options.groupId && !project.groups.some((g) => g.id === options.groupId)) throw new FrameRemakeError("分组不存在", 404);
-        const restartStage = options.restartFrom === "productScript" || options.restartFrom === "images" ? "images" : options.restartFrom === "videoPrompt" ? "production" : "analysis";
+        const restartStage = options.restartFrom === "productScript" ? "planning" : options.restartFrom === "images" ? "images" : options.restartFrom === "videoPrompt" ? "production" : "analysis";
         if (options.restartFrom && restartStage !== stageScope) throw new FrameRemakeError("重新生成的步骤与当前阶段不一致");
-        if (stageScope === "images" && (!project.references.product.length || !project.productInfo?.trim())) throw new FrameRemakeError("请先填写新产品信息并上传产品图");
+        if (stageScope !== "analysis" && frameRemakeInputError(project)) throw new FrameRemakeError(frameRemakeInputError(project));
         if (options.restartFrom === "images" && project.groups.filter((g) => !options.groupId || g.id === options.groupId).some((g) => !g.productScript?.trim() || !g.imagePrompt.trim()))
-            throw new FrameRemakeError("请先生成并审阅新产品脚本，再开始两步重绘");
+            throw new FrameRemakeError("请先完成新产品脚本和分镜提示词，再开始两步生图");
         // 继续由用户明确发起。仅重置失败步骤，已提交的未知结果继续复用原请求。
         const groups = project.groups.map((original) => {
             if (options.groupId && original.id !== options.groupId) return original;
@@ -42,15 +44,15 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
             };
         });
         const now = new Date().toISOString();
-        return changedFrameRemake({
+        const next = {
             ...project,
             groups,
             error: undefined,
             mergedVideo: options.restartFrom ? undefined : project.mergedVideo,
             automation: {
                 id: randomUUID(),
-                status: "running",
-                mode: action === "step" ? "step" : "auto",
+                status: "running" as const,
+                mode: action === "step" ? "step" as const : "auto" as const,
                 stageScope,
                 stopAfterPrompts,
                 groupId: options.groupId,
@@ -58,7 +60,16 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
                 updatedAt: now,
                 progress: "开始执行复刻流程",
             },
-        });
+        };
+        // 校验拟执行步骤后才保存重置结果，缺失原文不会清空已完成的内容。
+        const step = nextFrameRemakeStep(next);
+        if (step?.kind === "inspect") assertFrameRemakeAnalysisPromptReady(next, undefined, "analysis");
+        if (step?.kind === "analyze") assertFrameRemakeAnalysisPromptReady(next, step.groupId, step.analysisStage);
+        if (step && (step.kind === "template" || step.kind === "image" || step.kind === "video")) {
+            const group = next.groups.find((item) => item.id === step.groupId);
+            if (group) assertFrameRemakePromptResolved(step.kind === "video" ? frameRemakeVideoPrompt(next, group, 15) : frameRemakeImagePrompt(next, group, step.kind));
+        }
+        return changedFrameRemake(next);
     });
 }
 

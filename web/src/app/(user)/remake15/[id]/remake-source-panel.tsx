@@ -14,9 +14,11 @@ export function RemakeSourcePanel({
     onUpload,
     onPatch,
     copyRangeLabel = "4 个三帧区间",
+    manualGroupCopy = false,
 }: {
     project: Pick<RemakeProject, "sourceVideo" | "sourceCopy"> & { copy: Pick<RemakeProject["copy"], "optionRaw"> };
     copyRangeLabel?: string;
+    manualGroupCopy?: boolean;
     uploading: boolean;
     uploadProgress: number;
     disabled: boolean;
@@ -77,29 +79,35 @@ export function RemakeSourcePanel({
                     />
                 </section>
 
-                <section className="border-b border-border p-3">
-                    <label htmlFor="remake-source-copy" className="flex items-center gap-2 text-xs font-semibold">
-                        <FileText className="size-3.5 text-muted-foreground" />
-                        原文案
-                    </label>
-                    <Input.TextArea
-                        id="remake-source-copy"
-                        className="!mt-2"
-                        value={sourceCopy}
-                        disabled={disabled}
-                        autoSize={{ minRows: 7, maxRows: 14 }}
-                        placeholder={`粘贴来源视频文案；无口播时输入“${REMAKE_NO_NARRATION_TEXT}”`}
-                        onChange={(event) => onPatch({ sourceCopy: event.target.value })}
-                    />
-                    <div className="mt-1 text-right text-[11px] tabular-nums text-muted-foreground">{sourceCopy.length.toLocaleString("zh-CN")} 字</div>
-                </section>
-                <section className="p-3">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="font-semibold">文案处理方式</span>
-                        <Tag className="!m-0">{sourceCopy.trim() === REMAKE_NO_NARRATION_TEXT ? REMAKE_NO_NARRATION_TEXT : "保持原文案，可校对"}</Tag>
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">有口播时按原顺序分配到 {copyRangeLabel}并完成补全校对；无口播时只保留分镜描述。</p>
-                </section>
+                {manualGroupCopy ? (
+                    <p className="p-3 text-xs leading-5 text-muted-foreground">文案为选填项。请在“原文案（选填）”标签中按组填写，内容会原样传入视频提示词步骤。</p>
+                ) : (
+                    <>
+                        <section className="border-b border-border p-3">
+                            <label htmlFor="remake-source-copy" className="flex items-center gap-2 text-xs font-semibold">
+                                <FileText className="size-3.5 text-muted-foreground" />
+                                原文案
+                            </label>
+                            <Input.TextArea
+                                id="remake-source-copy"
+                                className="!mt-2"
+                                value={sourceCopy}
+                                disabled={disabled}
+                                autoSize={{ minRows: 7, maxRows: 14 }}
+                                placeholder={`粘贴来源视频文案；无口播时输入“${REMAKE_NO_NARRATION_TEXT}”`}
+                                onChange={(event) => onPatch({ sourceCopy: event.target.value })}
+                            />
+                            <div className="mt-1 text-right text-[11px] tabular-nums text-muted-foreground">{sourceCopy.length.toLocaleString("zh-CN")} 字</div>
+                        </section>
+                        <section className="p-3">
+                            <div className="flex items-center justify-between gap-2 text-xs">
+                                <span className="font-semibold">文案处理方式</span>
+                                <Tag className="!m-0">{sourceCopy.trim() === REMAKE_NO_NARRATION_TEXT ? REMAKE_NO_NARRATION_TEXT : "保持原文案，可校对"}</Tag>
+                            </div>
+                            <p className="mt-2 text-xs leading-5 text-muted-foreground">有口播时按原顺序分配到 {copyRangeLabel}并完成补全校对；无口播时只保留分镜描述。</p>
+                        </section>
+                    </>
+                )}
             </div>
         </aside>
     );
