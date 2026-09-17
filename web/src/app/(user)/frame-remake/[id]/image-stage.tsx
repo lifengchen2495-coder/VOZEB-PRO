@@ -2,15 +2,21 @@
 import { Button, Tag } from "antd";
 import { Check } from "lucide-react";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
-import { frameRemakeGrid, frameRemakeSeconds, frameRemakeUsesTemplate } from "@/lib/frame-remake-contract";
+import { frameRemakeGrid, frameRemakeInputError, frameRemakeIsBasicWorkflow, frameRemakeSeconds, frameRemakeUsesTemplate } from "@/lib/frame-remake-contract";
 import { frameRemakeImagePrompt } from "@/lib/frame-remake-prompts";
+import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
 import { RemakeGroupCard } from "../../remake15/[id]/remake-image-stage";
 import { ModelControl, type WorkflowProps } from "./workflow-controls";
+import { frameRemakePromptPreview } from "./workflow-source";
 
 export function FrameImageStage(props: WorkflowProps) {
     const { project, display } = props,
         ready = frameRemakeWorkflowReadiness(project),
-        twoStep = frameRemakeUsesTemplate(display);
+        twoStep = frameRemakeUsesTemplate(display),
+        basic = frameRemakeIsBasicWorkflow(display),
+        inputError = frameRemakeInputError(display),
+        missingSource = frameRemakeMissingPromptFields(display).length > 0;
+    const disabled = props.disabled || !ready.planning || Boolean(inputError) || missingSource;
     return (
         <section className="h-full min-h-0 overflow-y-auto" aria-label="分镜重绘">
             <div className="mx-auto w-full max-w-[1480px] px-3 py-4 sm:px-5">
@@ -18,11 +24,11 @@ export function FrameImageStage(props: WorkflowProps) {
                     <div>
                         <p className="text-xs text-muted-foreground">阶段 02</p>
                         <h2 className="mt-1 text-lg font-semibold">十二宫格重绘</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : "从原始分镜图直接生成最终图，只替换已选择的对象。"}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : "使用所选飞书流程的原文提示词，从原分镜拼图单步生成最终图。"}</p>
                     </div>
                     <div className="flex flex-wrap items-end gap-2">
                         <ModelControl props={props} kind="image" label="生图模型" />
-                        <Button disabled={props.disabled || !ready.planning || ready.images} onClick={() => void props.onControl("step")}>
+                        <Button disabled={disabled || ready.images} onClick={() => void props.onControl("step")}>
                             执行下一步生图
                         </Button>
                         <Tag className="!m-0">
@@ -30,10 +36,10 @@ export function FrameImageStage(props: WorkflowProps) {
                         </Tag>
                     </div>
                 </header>
-                {!ready.planning && (
+                {(!ready.planning || inputError) && (
                     <div className="flex items-center justify-between gap-2 border-b py-3 text-sm">
-                        <span>请先完成分镜脚本和分镜提示词。</span>
-                        <Button onClick={() => props.onStage("planning")}>返回分镜脚本</Button>
+                        <span>{inputError || (basic ? "请先完成来源分析与拆帧。" : "请先完成分镜脚本和分镜提示词。")}</span>
+                        <Button onClick={() => props.onStage(!ready.analysis ? "analysis" : "planning")}>{!ready.analysis ? "返回来源分析" : basic ? "设置替换素材" : "返回分镜脚本"}</Button>
                     </div>
                 )}
                 <div className="grid items-start gap-3 py-4">
@@ -53,8 +59,8 @@ export function FrameImageStage(props: WorkflowProps) {
                                 sourceLabel="来源分镜图"
                                 singleStep={!twoStep}
                                 imageLabel={twoStep ? "第二步：最终分镜图" : "最终分镜图"}
-                                prompts={{ replacement: group.template.prompt || frameRemakeImagePrompt(display, group, "template"), storyboard: group.image.prompt || frameRemakeImagePrompt(display, group, "image") }}
-                                disabled={props.disabled || !ready.planning}
+                                prompts={{ replacement: twoStep ? group.template.prompt || frameRemakePromptPreview(() => frameRemakeImagePrompt(display, group, "template")) : "", storyboard: group.image.prompt || frameRemakePromptPreview(() => frameRemakeImagePrompt(display, group, "image")) }}
+                                disabled={disabled}
                                 onGenerate={() => void props.onControl("start", false, { groupId: group.id, restartFrom: "images" })}
                             />
                         );

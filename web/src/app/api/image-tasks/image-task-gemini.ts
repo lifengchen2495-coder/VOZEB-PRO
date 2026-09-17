@@ -74,6 +74,7 @@ import {
     geminiHeaders,
     geminiApiUrl,
     withSystemPrompt,
+    imageTaskRequestPrompt,
     withImageOutputInstructions,
     parseImagePayloadOrPoll,
     pollOpenAiImageTask,
@@ -125,7 +126,7 @@ import {
 export async function runGeminiImageTask(task: ImageTask, origin: string, cookie: string): Promise<ImageTaskRunResult> {
     const config = task.config;
     const maskInstruction = task.mask ? "\n\n最后一张图片是编辑蒙版：透明区域需要重新生成，白色不透明区域必须保持原图。只补全透明区域，不要把蒙版当作画面内容。" : "";
-    const parts: GeminiPart[] = [{ text: withSystemPrompt(config, withImageOutputInstructions(config, buildImageReferencePromptText(task.prompt, task.references) + maskInstruction)) }];
+    const parts: GeminiPart[] = [{ text: imageTaskRequestPrompt(task, () => withSystemPrompt(config, withImageOutputInstructions(config, buildImageReferencePromptText(task.prompt, task.references) + maskInstruction))) }];
     const [referenceDataUrls, maskDataUrl] = await Promise.all([
         Promise.all(task.references.map((reference, index) => imageReferenceToDataUrl(reference, reference.name || `reference-${index + 1}.png`, origin, cookie))),
         task.mask ? imageReferenceToDataUrl(task.mask, task.mask.name || "mask.png", origin, cookie) : undefined,

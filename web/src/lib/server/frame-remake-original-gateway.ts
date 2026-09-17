@@ -36,9 +36,10 @@ export function resolveFrameOriginalModel(settings: AuthSettings, capability: "t
         : `请选择已配置的${capability === "image" ? "生图" : requirements.imageCount ? "图片理解" : "文本"}模型`);
 }
 
-export async function requestFrameOriginalText(input: { origin: string; credential: string; candidate: ResolvedLogicalModel; prompt: string; files: FrameOriginalFile[]; idempotencyKey: string }) {
+export async function requestFrameOriginalText(input: { origin: string; credential: string; candidate: ResolvedLogicalModel; prompt: string; files: FrameOriginalFile[]; idempotencyKey: string; signal?: AbortSignal }) {
     // 在读写媒体、上传文件或调用计费代理之前拒绝缺少原文的模块引用。
     assertFrameRemakePromptResolved(input.prompt);
+    input.signal?.throwIfAborted();
     const videos = input.files.filter((file) => file.type === "video");
     const headers = new Headers({
         "content-type": "application/json",
@@ -56,6 +57,7 @@ export async function requestFrameOriginalText(input: { origin: string; credenti
             headers,
             maxOutputTokens: 24_000,
             defaultTimeoutMs: 600_000,
+            signal: input.signal,
         });
     }
     if (videos.length !== 1 || input.files.length !== 1 || !supportsBangbangFullVideo(input.candidate)) throw new Error("当前视频分析需单个来源视频与已配置的 Doubao Seed 2.0 Pro 完整视频理解渠道");
@@ -64,8 +66,8 @@ export async function requestFrameOriginalText(input: { origin: string; credenti
     let responseHeaders: Headers | undefined;
     try {
         const sourcePath = join(directory, "source.mp4");
-        await writeFile(sourcePath, Buffer.from(videos[0].file_base64, "base64"));
-        const probe = await runFfprobe(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration:format=duration", "-of", "json", sourcePath], { timeoutMs: 30_000 });
+        await writeFile(sourcePath, Buffer.from(videos[0].file_base64, "base64"), { signal: input.signal });
+        const probe = await runFfprobe(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration:format=duration", "-of", "json", sourcePath], { timeoutMs: 30_000, signal: input.signal });
         const metadata = JSON.parse(probe.stdout) as { streams?: Array<{ duration?: string }>; format?: { duration?: string } };
         const duration = [metadata.streams?.[0]?.duration, metadata.format?.duration].map(Number).find((value) => Number.isFinite(value) && value > 0);
         if (!duration) throw new Error("来源视频时长无效");
@@ -77,12 +79,14 @@ export async function requestFrameOriginalText(input: { origin: string; credenti
             origin: input.origin,
             messages,
             headers,
-            signal: AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text", 600_000)),
+            signal: input.signal
+                ? AbortSignal.any([input.signal, AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text", 600_000))])
+                : AbortSignal.timeout(resolveModelRequestTimeoutMs(input.candidate, "text", 600_000)),
             onResponse: (value) => { responseHeaders = value; },
         });
         return { text, headers: responseHeaders!, elapsedMs: Date.now() - started };
     } catch (error) {
-        throw new RemakeProductionVisionError(toSafeGenerationErrorMessage(error, "视频理解调用失败"), 502, responseHeaders);
+        throw new RemakeProductionVisionError(toSafeGenerationErrorMessage(error, "视频理解调用失败"), input.signal?.aborted ? 499 : 502, responseHeaders);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }

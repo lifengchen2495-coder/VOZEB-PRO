@@ -1,8 +1,8 @@
-import { FRAME_REMAKE_ANALYSIS_LABELS, frameRemakeAnalysisResult, frameRemakeUsesTemplate, type FrameRemakeProject } from "./frame-remake-contract";
+import { FRAME_REMAKE_ANALYSIS_LABELS, frameRemakeAnalysisResult, frameRemakeUsesTemplate, frameRemakeIsBasicWorkflow, frameRemakeSourceCopyReady, type FrameRemakeProject } from "./frame-remake-contract";
 
 export function frameRemakeWorkflowReadiness(project: FrameRemakeProject) {
-    const analysis = project.workflowVersion === "feishu-original-15s" && project.groups.length > 0 && project.groups.every((group) => group.contactSheet && group.frames.every((frame) => frame.media) && group.analysis);
-    const planning = analysis && project.groups.every((group) => frameRemakeAnalysisResult(group, "productScript") && group.imagePrompt);
+    const analysis = project.workflowVersion === "feishu-original-15s" && project.groups.length > 0 && project.groups.every((group) => group.contactSheet && group.frames.every((frame) => frame.media) && group.analysis && (!frameRemakeIsBasicWorkflow(project) || frameRemakeSourceCopyReady(project, group)));
+    const planning = analysis && (frameRemakeIsBasicWorkflow(project) || project.groups.every((group) => frameRemakeAnalysisResult(group, "productScript") && group.imagePrompt));
     const images = planning && project.groups.every((group) => (!frameRemakeUsesTemplate(project) || (group.template.status === "completed" && group.template.result)) && group.image.status === "completed" && group.image.result);
     return { analysis, planning, images, production: Boolean(project.mergedVideo) };
 }
@@ -25,8 +25,9 @@ export function nextFrameRemakeStep(project: FrameRemakeProject) {
     for (const group of project.groups) {
         if (!group.analysis) return { kind: "analyze" as const, workflowStage: "analysis" as const, groupId: group.id, analysisStage: "analysis" as const, label: `第 ${group.number} / ${totalGroups} 组：理解来源视频` };
         if (!group.contactSheet || group.frames.some((frame) => !frame.media)) return { kind: "extract" as const, workflowStage: "analysis" as const, groupId: group.id, label: `第 ${group.number} / ${totalGroups} 组：按分析结果拆帧` };
+        if (frameRemakeIsBasicWorkflow(project) && !frameRemakeSourceCopyReady(project, group)) return { kind: "transcribe" as const, workflowStage: "analysis" as const, groupId: group.id, label: `第 ${group.number} / ${totalGroups} 组：音视频转原文案` };
     }
-    for (const group of project.groups) {
+    for (const group of frameRemakeIsBasicWorkflow(project) ? [] : project.groups) {
         for (const analysisStage of ["productScript", "imagePrompt"] as const)
             if (!frameRemakeAnalysisResult(group, analysisStage))
                 return { kind: "analyze" as const, workflowStage: "planning" as const, groupId: group.id, analysisStage, label: `第 ${group.number} / ${totalGroups} 组：${FRAME_REMAKE_ANALYSIS_LABELS[analysisStage]}` };
@@ -38,6 +39,7 @@ export function nextFrameRemakeStep(project: FrameRemakeProject) {
         }
     }
     for (const group of project.groups) {
+        if (frameRemakeIsBasicWorkflow(project) && !group.copy) return { kind: "analyze" as const, workflowStage: "production" as const, groupId: group.id, analysisStage: "copy" as const, label: `第 ${group.number} / ${totalGroups} 组：文案预处理` };
         if (!group.videoPrompt) return { kind: "analyze" as const, workflowStage: "production" as const, groupId: group.id, analysisStage: "videoPrompt" as const, label: `第 ${group.number} / ${totalGroups} 组：生成视频提示词` };
     }
     for (const group of project.groups) {

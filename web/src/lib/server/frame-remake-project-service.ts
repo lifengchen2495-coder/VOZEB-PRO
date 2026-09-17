@@ -1,5 +1,6 @@
 import { resolveFrameOriginalModel } from "./frame-remake-original-gateway";
-import { frameRemakeActiveReferences, frameRemakeHasNarration, frameRemakeInputError, frameRemakeUsesTemplate } from "@/lib/frame-remake-contract";
+import { frameRemakeActiveReferences, frameRemakeHasNarration, frameRemakeInputError, frameRemakeUsesTemplate, frameRemakeIsBasicWorkflow, frameRemakeAnalysisStages, frameRemakeGenerationSeconds, frameRemakeSourceCopyReady } from "@/lib/frame-remake-contract";
+import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
 import { assertFrameRemakePromptResolved } from "@/lib/frame-remake-feishu-workflow";
 import { randomUUID } from "node:crypto";
 import { getAuthSettings } from "@/lib/auth/store";
@@ -52,6 +53,7 @@ export class FrameRemakeError extends Error {
     }
 }
 export const listFrameRemakeProjectsForUser = listFrameRemakeProjects;
+const FRAME_REMAKE_REVIEW_ERROR = "任务需要检查，请在生成任务中查询原任务";
 export async function createFrameRemakeProjectForUser(userId: string, title: string) {
     return createFrameRemakeProject(userId, newFrameRemakeProject(`frame-remake-${randomUUID()}`, text(title, 160)));
 }
@@ -148,7 +150,7 @@ export async function getFrameRemakeProjectForUser(userId: string, id: string) {
                         // 其他身份不匹配时保留原请求，避免自动重提已计费但尚未确认的任务。
                         next = { ...pending, status: "running", error: "原生成任务与当前步骤的记录不一致，请检查或停止原任务后再继续" };
                     } else {
-                        next = { ...pending, status: "running", taskId: task.id, error: record.executionPhase === "needs_review" ? "任务需要检查，请在生成任务中查询原任务" : undefined };
+                        next = { ...pending, status: "running", taskId: task.id, error: record.executionPhase === "needs_review" ? FRAME_REMAKE_REVIEW_ERROR : undefined };
                         if (task.status === "success") {
                             try {
                                 const result = kind !== "video" ? (task as ImageTask).result : undefined;
@@ -175,7 +177,7 @@ export async function getFrameRemakeProjectForUser(userId: string, id: string) {
                                   ...item,
                                   [kind]: next,
                                   ...(kind !== "video" && next.status === "completed"
-                                      ? { ...resetFrameRemakeAnalysisFrom(item, "videoPrompt"), [kind]: next, ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) }
+                                      ? { ...resetFrameRemakeAnalysisFrom(item, frameRemakeIsBasicWorkflow(current) ? "copy" : "videoPrompt"), [kind]: next, ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) }
                                       : {}),
                               },
                     ),
@@ -190,7 +192,15 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
     assertFrameRemakeRevision(before, revision);
     assertFrameRemakeIdle(before);
     const patch: Partial<FrameRemakeProject> = {};
-    for (const key of ["title", "instructions", "sourceCopy", "productInfo"] as const) if (value[key] !== undefined) patch[key] = requiredText(value[key], key === "title" ? 160 : 20000);
+    if (value.workflowSource !== undefined) {
+        if (!["product-basic", "person-basic", "combined-original"].includes(String(value.workflowSource))) throw new FrameRemakeError("飞书流程来源不正确");
+        patch.workflowSource = value.workflowSource as FrameRemakeProject["workflowSource"];
+    }
+    for (const key of ["title", "instructions", "sourceCopy", "productInfo", "copyInstructions"] as const) if (value[key] !== undefined) patch[key] = requiredText(value[key], key === "title" ? 160 : 20000);
+    if (value.copyMode !== undefined) {
+        if (value.copyMode !== "original" && value.copyMode !== "custom") throw new FrameRemakeError("文案处理选项不正确");
+        patch.copyMode = value.copyMode;
+    }
     if (value.replacement !== undefined) {
         const selected = object(value.replacement);
         if (["product", "character", "background"].some((key) => typeof selected[key] !== "boolean")) throw new FrameRemakeError("替换选项不正确");
@@ -228,10 +238,10 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
         if (patch.sourceVideo && patch.sourceVideo.url === current.sourceVideo?.url) next.sourceVideo = { ...current.sourceVideo, ...patch.sourceVideo };
         const sourceChanged = (value.sourceVideo !== undefined && current.sourceVideo?.url !== next.sourceVideo?.url) || current.maxSegmentSeconds !== next.maxSegmentSeconds;
         const referencesChanged = JSON.stringify(current.references) !== JSON.stringify(next.references);
-        const sourceCopyChanged = current.sourceCopy !== next.sourceCopy;
+        const sourceCopyChanged = current.sourceCopy !== next.sourceCopy || current.copyMode !== next.copyMode || current.copyInstructions !== next.copyInstructions;
         const instructionsChanged = current.instructions !== next.instructions;
         const replacementChanged = JSON.stringify(current.replacement) !== JSON.stringify(next.replacement);
-        const targetsChanged = referencesChanged || instructionsChanged || replacementChanged || current.productInfo !== next.productInfo;
+        const targetsChanged = referencesChanged || instructionsChanged || replacementChanged || current.productInfo !== next.productInfo || current.workflowSource !== next.workflowSource;
         if (sourceChanged) next = { ...next, sourceVideo: patch.sourceVideo ?? (value.sourceVideo === null ? undefined : current.sourceVideo), durationMs: 0, groups: [], mergedVideo: undefined };
         else if (targetsChanged)
             next = {
@@ -241,10 +251,10 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
             };
         else if (sourceCopyChanged || current.audioMode !== next.audioMode || current.voice !== next.voice) {
             next.mergedVideo = undefined;
-            if (sourceCopyChanged || next.audioMode === "generated" || current.audioMode === "generated" || current.voice !== next.voice) next.groups = next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, "videoPrompt"));
+            if (sourceCopyChanged || next.audioMode === "generated" || current.audioMode === "generated" || current.voice !== next.voice) next.groups = next.groups.map((group) => resetFrameRemakeAnalysisFrom(group, sourceCopyChanged ? "copy" : "videoPrompt"));
         }
         if (!sourceChanged && !targetsChanged && current.modelSelection.image !== next.modelSelection.image) {
-            next = { ...next, mergedVideo: undefined, groups: next.groups.map((g) => ({ ...resetFrameRemakeAnalysisFrom(g, "videoPrompt"), template: idleFrameRemakeTask(g.template.attemptNo), image: idleFrameRemakeTask(g.image.attemptNo) })) };
+            next = { ...next, mergedVideo: undefined, groups: next.groups.map((g) => ({ ...resetFrameRemakeAnalysisFrom(g, frameRemakeIsBasicWorkflow(next) ? "copy" : "videoPrompt"), template: idleFrameRemakeTask(g.template.attemptNo), image: idleFrameRemakeTask(g.image.attemptNo) })) };
         } else if (current.modelSelection.video !== next.modelSelection.video) {
             next = { ...next, mergedVideo: undefined, groups: next.groups.map((g) => ({ ...g, video: idleFrameRemakeTask(g.video.attemptNo) })) };
         }
@@ -254,6 +264,11 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
             const target = next.groups.find((group) => group.id === edit.id);
             if (!target) throw new FrameRemakeError("分组不存在", 404);
             if (edit.videoPromptInstructions !== undefined) throw new FrameRemakeError("此流程使用原版视频提示词模板，不接受模板改写");
+            if (edit.sourceCopy !== undefined) {
+                const sourceCopy = requiredText(edit.sourceCopy, 30000);
+                const reset = { ...resetFrameRemakeAnalysisFrom(target, "copy"), sourceCopy, sourceCopyStatus: "provided" as const, sourceCopyStep: undefined };
+                next = { ...next, mergedVideo: undefined, groups: next.groups.map((group) => group.id === target.id ? reset : group) };
+            }
             const values = {
                 analysis: edit.analysis === undefined ? target.analysis : requiredText(edit.analysis, 30000),
                 copy: edit.copy === undefined ? frameRemakeAnalysisResult(target, "copy") : requiredText(edit.copy, 30000),
@@ -264,7 +279,7 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
             const editableStages: readonly FrameRemakeAnalysisStage[] = [...FRAME_REMAKE_ANALYSIS_STAGES, "copy"];
             const changed = editableStages.find((stage) => values[stage] !== frameRemakeAnalysisResult(target, stage));
             if (changed) {
-                const reset = resetFrameRemakeAnalysisFrom(target, changed);
+                const reset = resetFrameRemakeAnalysisFrom(next.groups.find((group) => group.id === target.id)!, changed);
                 for (const stage of editableStages) if (values[stage] !== frameRemakeAnalysisResult(target, stage)) reset[stage] = values[stage];
                 next = { ...next, mergedVideo: undefined, groups: next.groups.map((group) => (group.id === target.id ? reset : group)) };
             }
@@ -309,9 +324,9 @@ export async function deleteFrameRemakeProjectForUser(userId: string, id: string
 }
 
 export function assertFrameRemakeAnalysisPromptReady(project: FrameRemakeProject, groupId?: string, analysisStage?: FrameRemakeAnalysisStage) {
-    const group = groupId ? project.groups.find((item) => item.id === groupId) : project.groups.find((item) => nextFrameRemakeAnalysisStage(item)) ?? project.groups[0];
+    const group = groupId ? project.groups.find((item) => item.id === groupId) : project.groups.find((item) => nextFrameRemakeAnalysisStage(item, project)) ?? project.groups[0];
     if (groupId && !group) throw new FrameRemakeError("分组不存在", 404);
-    const stage = analysisStage ?? (group && nextFrameRemakeAnalysisStage(group)) ?? "analysis";
+    const stage = analysisStage ?? (group && nextFrameRemakeAnalysisStage(group, project)) ?? "analysis";
     const context = group ?? planFrameRemakeTimeline(15_000)[0];
     const prompt = stage === "analysis" ? frameRemakeSourcePrompt(project, context) : frameRemakeAnalysisPrompt(project, context, stage);
     assertFrameRemakePromptResolved(prompt);
@@ -324,7 +339,7 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
     if (kind === "analyze") {
         const { stage } = assertFrameRemakeAnalysisPromptReady(before, groupId, analysisStage);
         const refs = frameRemakeActiveReferences(before);
-        const imageCount = stage === "analysis" ? 0 : stage === "productScript" ? refs.product.length + refs.character.length + refs.background.length : stage === "videoPrompt" ? 1 + refs.product.length + refs.character.length : 1;
+        const imageCount = stage === "analysis" ? 0 : frameRemakeIsBasicWorkflow(before) ? 1 : stage === "productScript" ? refs.product.length + refs.character.length + refs.background.length : stage === "videoPrompt" ? 1 + refs.product.length + refs.character.length : 1;
         resolveFrameOriginalModel(await getAuthSettings(), "text", before.modelSelection.analysis, { fullVideo: stage === "analysis", imageCount });
     }
     return mutateFrameRemake(userId, id, (current) => {
@@ -341,21 +356,29 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
         if (groupId && !current.groups.some((group) => group.id === groupId)) throw new FrameRemakeError("分组不存在", 404);
         let group = groupId ? current.groups.find((group) => group.id === groupId) : undefined;
         let stage: FrameRemakeAnalysisStage | undefined;
+        if (resolvedKind === "transcribe") {
+            group ??= current.groups.find((item) => !frameRemakeSourceCopyReady(current, item));
+            if (!group) throw new FrameRemakeError("全部分组已取得原文案");
+            if (!group.contactSheet) throw new FrameRemakeError("请先完成本组分析和拆帧");
+        }
         if (resolvedKind === "extract") {
             group ??= current.groups.find((group) => !group.contactSheet || group.frames.some((frame) => !frame.media));
             if (!group) throw new FrameRemakeError("全部分组已拆帧");
             if (!group.analysis) throw new FrameRemakeError("请先完成本组视频分析，再按分析时间点拆帧");
         }
         if (resolvedKind === "analyze") {
-            group ??= current.groups.find((group) => nextFrameRemakeAnalysisStage(group));
+            group ??= current.groups.find((group) => nextFrameRemakeAnalysisStage(group, current));
             if (!group) throw new FrameRemakeError("全部分析步骤已完成");
-            stage = analysisStage ?? nextFrameRemakeAnalysisStage(group) ?? "analysis";
+            stage = analysisStage ?? nextFrameRemakeAnalysisStage(group, current) ?? "analysis";
             assertFrameRemakeAnalysisPromptReady(current, group.id, stage);
-            if (!FRAME_REMAKE_ANALYSIS_STAGES.includes(stage)) throw new FrameRemakeError("原文案为可选输入，不单独生成");
+            const stages = frameRemakeAnalysisStages(current);
+            if (!stages.includes(stage)) throw new FrameRemakeError("此步骤不属于所选飞书原流程");
             if (stage !== "analysis" && frameRemakeInputError(current)) throw new FrameRemakeError(frameRemakeInputError(current));
-            if (stage === "videoPrompt" && (group.image.status !== "completed" || !group.image.result)) throw new FrameRemakeError("请先完成本组最终分镜图");
+            if ((stage === "videoPrompt" || stage === "copy") && (group.image.status !== "completed" || !group.image.result)) throw new FrameRemakeError("请先完成本组最终分镜图");
+            if (stage === "copy" && !frameRemakeSourceCopyReady(current, group)) throw new FrameRemakeError("请先转录或填写本组原文案；无口播可保存为空");
+            if (stage === "copy" && current.copyMode === "custom" && !current.copyInstructions?.trim()) throw new FrameRemakeError("请填写原表选项B的自定义优化需求");
             if (stage !== "analysis" && (!group.contactSheet || group.frames.some((frame) => !frame.media))) throw new FrameRemakeError("请先完成本组拆帧");
-            if (FRAME_REMAKE_ANALYSIS_STAGES.slice(0, FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group!, key))) throw new FrameRemakeError("请先完成前序分析步骤");
+            if (stages.slice(0, stages.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group!, key))) throw new FrameRemakeError("请先完成前序分析步骤");
         }
         if (resolvedKind === "merge" && current.groups.some((group) => group.video.status !== "completed" || !group.video.result)) throw new FrameRemakeError("请先完成全部分组视频");
         const now = new Date().toISOString();
@@ -370,7 +393,7 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
                 analysisStage: stage,
                 startedAt: now,
                 updatedAt: now,
-                progress: stage ? `第 ${group!.number} 组：${FRAME_REMAKE_ANALYSIS_LABELS[stage]}` : resolvedKind === "extract" ? `第 ${group!.number} 组：准备拆帧` : "准备处理",
+                progress: stage ? `第 ${group!.number} 组：${FRAME_REMAKE_ANALYSIS_LABELS[stage]}` : resolvedKind === "extract" ? `第 ${group!.number} 组：准备拆帧` : resolvedKind === "transcribe" ? `第 ${group!.number} 组：转录原文案` : "准备处理",
             },
             error: undefined,
         });
@@ -379,9 +402,11 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
 
 async function reserveGeneration(userId: string, id: string, revision: number, groupId: string, kind: FrameRemakeGenerationKind, automationLeaseId?: string) {
     const original = await readFrameRemakeProjectForUser(userId, id);
+    const missing = frameRemakeMissingPromptFields(original);
+    if (missing.length) throw new FrameRemakeError(`所选飞书流程仍缺完整原文：${missing.join("、")}`);
     const requested = original.groups.find((group) => group.id === groupId);
     if (!requested) throw new FrameRemakeError("分组不存在", 404);
-    assertFrameRemakePromptResolved(requested[kind].status === "queued" ? requested[kind].prompt || "" : kind !== "video" ? frameRemakeImagePrompt(original, requested, kind) : frameRemakeVideoPrompt(original, requested, 15));
+    assertFrameRemakePromptResolved(requested[kind].status === "queued" ? requested[kind].prompt || "" : kind !== "video" ? frameRemakeImagePrompt(original, requested, kind) : frameRemakeVideoPrompt(requested));
     const before = await getFrameRemakeProjectForUser(userId, id);
     const target = before.groups.find((group) => group.id === groupId);
     if (!target) throw new FrameRemakeError("分组不存在", 404);
@@ -391,15 +416,15 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
         assertFrameRemakeRevision(before, revision);
         return before;
     }
-    const prompt = kind !== "video" ? frameRemakeImagePrompt(before, target, kind) : frameRemakeVideoPrompt(before, target, 15);
+    const prompt = kind !== "video" ? frameRemakeImagePrompt(before, target, kind) : frameRemakeVideoPrompt(target);
     assertFrameRemakePromptResolved(prompt);
     assertFrameRemakeIdle(before, automationLeaseId);
     if (before.workflowVersion !== "feishu-original-15s") throw new FrameRemakeError("请先按原版流程重新分析来源视频");
     assertFrameRemakeTimeline(before);
     if (frameRemakeInputError(before)) throw new FrameRemakeError(frameRemakeInputError(before));
-    if (!target.productScript) throw new FrameRemakeError("请先完成新产品分镜脚本");
+    if (!frameRemakeIsBasicWorkflow(before) && !target.productScript) throw new FrameRemakeError("请先完成新产品分镜脚本");
     if (kind === "template" && !frameRemakeUsesTemplate(before)) throw new FrameRemakeError("当前替换组合直接生成最终分镜图");
-    if (kind !== "video" && (!target.contactSheet || !target.imagePrompt)) throw new FrameRemakeError("请先拆帧并生成本组复刻提示词");
+    if (kind !== "video" && (!target.analysis || !target.contactSheet || target.frames.some((frame) => !frame.media) || (!frameRemakeIsBasicWorkflow(before) && !target.imagePrompt))) throw new FrameRemakeError("请先完成本组分析、拆帧及所选流程的前序步骤");
     if (kind === "image" && frameRemakeUsesTemplate(before) && (target.template.status !== "completed" || !target.template.result)) throw new FrameRemakeError("请先完成本组清理模板图");
     if (kind === "video" && (target.image.status !== "completed" || !target.image.result || !target.videoPrompt)) throw new FrameRemakeError("请先完成本组分镜图及视频提示词");
     const settings = await getAuthSettings();
@@ -412,12 +437,12 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
     if (kind === "video") {
         for (const candidate of candidates) {
             const channel = toSystemGenerationChannel(candidate);
-            const requested = 15;
+            const requested = frameRemakeGenerationSeconds(target);
             const duration =
                 channel.apiFormat === "gemini" && !["globalaiopc", "huifeng"].includes(channel.advancedConfig?.protocol || "")
                     ? normalizeGeminiVideoDuration(requested)
                     : resolveUpstreamVideoDuration(requested, requested, { ...channel.capabilityProfile, durationRange: channel.advancedConfig?.durationRange });
-            if (duration !== 15) continue;
+            if (duration !== requested) continue;
             try {
                 assertCapabilityConstraints(channel.capabilityProfile, { capability: "video", durationSeconds: duration, referenceCount: references.length, aspectRatio: frameRemakeAspectRatio(before) });
                 seconds = duration;
@@ -426,7 +451,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
                 /* Try another configured binding before reserving a paid task. */
             }
         }
-        if (!seconds) throw new FrameRemakeError("原版视频提示词固定15秒，请选择支持15秒的Seedance模型；尾段会完整还原为原片时长");
+        if (!seconds) throw new FrameRemakeError(`所选模型不支持本组 ${frameRemakeGenerationSeconds(target)} 秒生成，请选择支持该时长的模型`);
     }
     return mutateFrameRemake(userId, id, (current) => {
         assertFrameRemakeRevision(current, revision);
@@ -443,7 +468,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
             error: undefined,
             model,
             seconds,
-            ...(kind === "video" ? { timingMode: "trim" as const } : {}),
+            ...(kind === "video" ? { timingMode: "fit" as const } : {}),
             audioReferenceUrl: undefined,
             referenceUrls: references.map((media) => media.url),
             prompt,
@@ -458,7 +483,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
                           ...item,
                           [kind]: pending,
                           ...(kind !== "video"
-                              ? { ...resetFrameRemakeAnalysisFrom(item, "videoPrompt"), [kind]: pending, ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) }
+                              ? { ...resetFrameRemakeAnalysisFrom(item, frameRemakeIsBasicWorkflow(current) ? "copy" : "videoPrompt"), [kind]: pending, ...(kind === "template" ? { image: idleFrameRemakeTask(item.image.attemptNo) } : {}), video: idleFrameRemakeTask(item.video.attemptNo) }
                               : {}),
                       }
                     : item,
@@ -526,7 +551,7 @@ export async function abandonFrameRemakeGeneration(userId: string, id: string, g
     });
     const project = await readFrameRemakeProjectForUser(userId, id);
     const pending = project.groups.find((item) => item.id === groupId)![kind];
-    if (pending.status !== "queued" && pending.status !== "running") return project;
+    if (pending.status !== "queued" && pending.status !== "running") return settleFrameRemakeCancellation(userId, id, groupId, kind, pending);
     const type = kind === "template" ? "image" : kind;
     const result = await withGenerationConcurrencyLimit(
         userId,
@@ -581,7 +606,26 @@ export async function abandonFrameRemakeGeneration(userId: string, id: string, g
         pending.clientRequestId,
     );
     if (!result) throw new FrameRemakeError("提交仍在确认中，后续步骤已暂停，请稍后再次取消", 409);
-    return result;
+    return settleFrameRemakeCancellation(userId, id, groupId, kind, pending);
+}
+
+async function settleFrameRemakeCancellation(userId: string, id: string, groupId: string, kind: FrameRemakeGenerationKind, cancelled: FrameRemakeTask) {
+    return mutateFrameRemake(userId, id, (current) => {
+        const target = current.groups.find((group) => group.id === groupId)?.[kind];
+        // A new operation or retry must not inherit the previous cancellation's cleanup.
+        if (!target || target.clientRequestId !== cancelled.clientRequestId || target.attemptNo !== cancelled.attemptNo || target.status === "queued" || target.status === "running" || current.operation || current.automation?.status === "running") return current;
+        const pending = frameRemakeBusy(current);
+        const sameErrorElsewhere = current.error && current.groups.some((group) =>
+            (["template", "image", "video"] as const).some((otherKind) => (group.id !== groupId || otherKind !== kind) && group[otherKind].error === current.error)
+            || Object.values(group.analysisSteps || {}).some((step) => step?.error === current.error)
+            || group.sourceCopyStep?.error === current.error,
+        );
+        const error = !pending && !sameErrorElsewhere && (current.error === cancelled.error || current.error === FRAME_REMAKE_REVIEW_ERROR) ? undefined : current.error;
+        const progress = pending ? "后续步骤已暂停；已提交任务仍在处理，可单独取消本次任务" : "已暂停，已保存的结果保留";
+        const automation = current.automation?.status === "paused" && current.automation.progress !== progress ? { ...current.automation, progress, updatedAt: new Date().toISOString() } : current.automation;
+        if (error === current.error && automation === current.automation) return current;
+        return changedFrameRemake({ ...current, error, automation });
+    });
 }
 export async function validateFrameRemakeGeneration(input: {
     userId: string;

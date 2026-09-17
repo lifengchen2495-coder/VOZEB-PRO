@@ -1,5 +1,8 @@
-import { frameRemakeActiveReferences } from "@/lib/frame-remake-contract";
-import { parseFrameRemakeOriginalAnalysis } from "@/lib/frame-remake-source";
+import { frameRemakeActiveReferences, frameRemakeIsBasicWorkflow, frameRemakeSourceCopyReady, resetFrameRemakeAnalysisFrom } from "@/lib/frame-remake-contract";
+import { parseFrameRemakeOriginalAnalysis, parseFrameRemakeCopy } from "@/lib/frame-remake-source";
+import { frameRemakeTemplates } from "@/lib/frame-remake-prompt-templates";
+import { transcribeBangbangVideo } from "./bangbang-asr";
+import { requestFrameRemakeTranscription, FRAME_REMAKE_TRANSCRIPTION_PROMPT } from "./frame-remake-transcription";
 import { resolveFrameOriginalModel, requestFrameOriginalText, type FrameOriginalFile } from "./frame-remake-original-gateway";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,17 +95,64 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
             const sourceAudio = await extractFrameRemakeAudio(source, directory, group, input, uncommitted);
             if (sourceAudio?.storageKey) keys.push(sourceAudio.storageKey);
             await apply((current) => ({ ...current, groups: current.groups.map((item) => (item.id === group.id ? { ...item, frames, contactSheet, sourceAudio } : item)) }), keys);
+        } else if (operation.kind === "transcribe") {
+            const group = operation.groupId ? input.project.groups.find((item) => item.id === operation.groupId) : input.project.groups.find((item) => !frameRemakeSourceCopyReady(input.project, item));
+            if (!group) throw new Error("没有待转录的分组");
+            const source = join(directory, "source-video");
+            await downloadOwned(input.project.sourceVideo!, source, input);
+            const probe = await inspectFrameRemakeVideo(source);
+            const controller = new AbortController();
+            const timer = setInterval(() => { void canContinue().then((active) => { if (!active) controller.abort(); }).catch(() => controller.abort()); }, 3000);
+            let chargedHeaders: Headers | undefined;
+            let saved = false;
+            let model = "";
+            try {
+                let result: { text: string; status: "transcribed" | "no-audio" | "no-speech" } = { text: "", status: "no-audio" };
+                let step: FrameRemakeGroup["sourceCopyStep"];
+                const started = Date.now();
+                if (probe.hasAudio) {
+                    const useAsr = Boolean(process.env.DASHSCOPE_API_KEY?.trim() || process.env.DASHSCOPE_KEY?.trim());
+                    const candidate = useAsr ? undefined : resolveFrameOriginalModel(await getAuthSettings(), "text", input.project.modelSelection.analysis, { fullVideo: true });
+                    model = candidate?.logicalModelId || "paraformer-v2";
+                    step = { source: useAsr ? "dashscope-asr" : "system-video-transcription", model, prompt: useAsr ? "" : FRAME_REMAKE_TRANSCRIPTION_PROMPT, startedAt: new Date().toISOString() };
+                    await apply((current) => ({ ...current, groups: current.groups.map((g) => g.id === group.id ? { ...g, sourceCopyStep: step } : g) }));
+                    const clip = join(directory, useAsr ? "transcription-audio.wav" : "transcription-video.mp4");
+                    const encoding = useAsr
+                        ? ["-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
+                        : ["-map", "0:v:0", "-map", "0:a:0", "-vf", "scale=min(720\\,iw):-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"];
+                    await runFfmpeg(["-y", "-hide_banner", "-loglevel", "error", "-ss", String(group.startMs / 1000), "-i", source, "-t", String(frameRemakeSeconds(group)), ...encoding, clip], { timeoutMs: 180000, signal: controller.signal });
+                    if (!(await canContinue())) throw new Error("转录已暂停");
+                    if (candidate) {
+                        const call = await requestFrameRemakeTranscription({ origin: input.origin, credential: input.credential, candidate, video: { type: "video", file_name: "source.mp4", file_base64: (await readFile(clip)).toString("base64"), content_type: "video/mp4" }, idempotencyKey: systemAiIdempotencyKey("frame-remake-transcribe", input.userId, input.project.id, operation.id, group.id), signal: controller.signal });
+                        chargedHeaders = call.headers;
+                        result = call;
+                    } else result = await transcribeBangbangVideo({ sourcePath: clip, workDirectory: directory, hasAudio: true, signal: controller.signal });
+                    step = { ...step, completedAt: new Date().toISOString(), elapsedMs: Date.now() - started };
+                }
+                if (!(await canContinue())) throw new Error("转录已暂停");
+                await apply((current) => ({ ...current, mergedVideo: undefined, groups: current.groups.map((g) => g.id === group.id ? { ...resetFrameRemakeAnalysisFrom(g, "copy"), sourceCopy: result.status === "transcribed" ? result.text : "", sourceCopyStatus: result.status, sourceCopyStep: step } : g) }));
+                saved = true;
+            } catch (error) {
+                if (error instanceof RemakeProductionVisionError && error.responseHeaders) chargedHeaders = error.responseHeaders;
+                throw error;
+            } finally {
+                clearInterval(timer);
+                if (!saved && chargedHeaders) {
+                    const billing = readSystemAiBilling(chargedHeaders);
+                    if (hasSystemAiCharge(billing)) await refundUserPoints(input.userId, model, billing.pointsCost, "text", 1, undefined, billing.pointsRecordId);
+                }
+            }
         } else if (operation.kind === "analyze") {
-            const group = operation.groupId ? input.project.groups.find((item) => item.id === operation.groupId) : input.project.groups.find((item) => nextFrameRemakeAnalysisStage(item));
+            const group = operation.groupId ? input.project.groups.find((item) => item.id === operation.groupId) : input.project.groups.find((item) => nextFrameRemakeAnalysisStage(item, input.project));
             if (!group) throw new Error("没有待分析的分组");
             const { stage, prompt } = assertFrameRemakeAnalysisPromptReady(input.project, group.id, operation.analysisStage);
             const refs = frameRemakeActiveReferences(input.project);
-            const images = stage === "productScript" ? [...refs.product, ...refs.character, ...refs.background] : stage === "imagePrompt" ? [group.contactSheet!] : stage === "videoPrompt" ? [group.image.result!, ...refs.product, ...refs.character] : [];
+            const images = frameRemakeIsBasicWorkflow(input.project) ? (stage === "copy" || stage === "videoPrompt" ? [group.image.result!] : []) : stage === "productScript" ? [...refs.product, ...refs.character, ...refs.background] : stage === "imagePrompt" ? [group.contactSheet!] : stage === "videoPrompt" ? [group.image.result!, ...refs.product, ...refs.character] : [];
             const settings = await getAuthSettings();
             const candidate = resolveFrameOriginalModel(settings, "text", input.project.modelSelection.analysis, { fullVideo: stage === "analysis", imageCount: images.length });
             const model = candidate.logicalModelId;
             const started = Date.now();
-            const step = { prompt, model, startedAt: new Date().toISOString() };
+            const step = { prompt, model, startedAt: new Date().toISOString(), ...(stage === "videoPrompt" && frameRemakeIsBasicWorkflow(input.project) ? { promptSource: frameRemakeTemplates(input.project, group).videoSource } : {}) };
             await apply((current) => ({
                 ...current,
                 operation: { ...current.operation!, groupId: group.id, analysisStage: stage, progress: `第 ${group.number} 组：${FRAME_REMAKE_ANALYSIS_LABELS[stage]}` },
@@ -171,7 +221,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                     idempotencyKey: systemAiIdempotencyKey("frame-remake-original", input.userId, input.project.id, operation.id, group.id, stage),
                 });
                 chargedHeaders = call.headers;
-                const result = stage === "analysis" ? parseFrameRemakeOriginalAnalysis(call.text, group) : { [stage]: parseFrameRemakeAnalysis(call.text, stage) };
+                const result = stage === "analysis" ? parseFrameRemakeOriginalAnalysis(call.text, group) : stage === "copy" ? parseFrameRemakeCopy(call.text, group) : { [stage]: parseFrameRemakeAnalysis(call.text, stage) };
                 await apply((current) => ({
                     ...current,
                     modelSelection: { ...current.modelSelection, analysis: model },
@@ -181,7 +231,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                             ? {
                                   ...g,
                                   ...result,
-                                  ...(stage === "analysis" ? { contactSheet: undefined, sourceAnalysisMode: "video" as const } : {}),
+                                  ...(stage === "analysis" ? { contactSheet: undefined, sourceAnalysisMode: "video" as const, sourceCopy: g.sourceCopy, sourceCopyStatus: g.sourceCopyStatus } : {}),
                                   analysisSteps: { ...g.analysisSteps, [stage]: { ...step, completedAt: new Date().toISOString(), elapsedMs: Date.now() - started } },
                               }
                             : g,
@@ -210,6 +260,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
         await apply((current) => ({
             ...current,
             groups: current.groups.map((group) => {
+                if (current.operation?.kind === "transcribe" && current.operation.groupId === group.id && group.sourceCopyStep) return { ...group, sourceCopyStep: { ...group.sourceCopyStep, error: message } };
                 const stage = current.operation?.analysisStage;
                 if (current.operation?.kind !== "analyze" || current.operation.groupId !== group.id || !stage) return group;
                 const step = group.analysisSteps?.[stage];
@@ -264,7 +315,7 @@ export async function createFrameRemakeContactSheet(group: FrameRemakeGroup, fra
 }
 
 export function frameRemakeNormalizationArgs(source: string, output: string, seconds: number, hasAudio: boolean, width: number, height: number, generatedSeconds = seconds, timingMode: "trim" | "fit" = "trim") {
-    // 新任务把尾段动作放在实际区间内，原速裁掉补齐部分；旧任务仍需完整缩放到原时长。
+    // 完整缩放生成片段至原片时长，保留尾段最后的镜头；历史 trim 任务仍沿用原处理。
     const tempo: number[] = [];
     if (timingMode === "fit") {
         let remaining = generatedSeconds / seconds;

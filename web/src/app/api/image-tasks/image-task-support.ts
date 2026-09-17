@@ -315,6 +315,13 @@ export function withSystemPrompt(config: ImageTaskConfig, prompt: string) {
     return systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
 }
 
+export function imageTaskRequestPrompt(task: Pick<ImageTask, "projectId" | "generationSlotId" | "prompt">, decorate: () => string) {
+    // /api/image-tasks validates this project's reserved slot, owner, prompt and references
+    // before storing the task. Keep its workflow prompt intact through every provider path.
+    if (task.projectId?.startsWith("frame-remake-") && /^frame-remake-(?:template|image):[^:\s]+$/.test(task.generationSlotId || "")) return task.prompt;
+    return decorate();
+}
+
 export function withImageOutputInstructions(config: ImageTaskConfig, prompt: string) {
     if (config.outputMode === "layers") {
         return `${prompt}\n\n分层任务要求：一次请求返回完整的多图片结果数组。每个前景结果只包含一个独立元素，必须与源图同宽高、保留原始坐标、使用源图原始像素和真实透明 Alpha；另返回一张同宽高、已移除所有前景元素并只补全遮挡区域的干净背景。禁止拼图、裁片、缩放、重绘、改字、合并元素、改动元素外区域或把已分离元素补回背景。`;
@@ -731,7 +738,7 @@ export function toGeminiImagePart(dataUrl: string, fallbackType?: string): Gemin
 export async function buildImageEditFormData(task: ImageTask, quality: string | undefined, requestSize: string | undefined, origin: string, cookie: string, responseFormat: (typeof IMAGE_RESPONSE_FORMATS)[number], includeCompatibilityFields = true) {
     const formData = new FormData();
     formData.set("model", task.config.model);
-    formData.set("prompt", withSystemPrompt(task.config, withImageOutputInstructions(task.config, buildImageReferencePromptText(task.prompt, task.references))));
+    formData.set("prompt", imageTaskRequestPrompt(task, () => withSystemPrompt(task.config, withImageOutputInstructions(task.config, buildImageReferencePromptText(task.prompt, task.references)))));
     if (task.config.outputMode !== "layers") formData.set("n", "1");
     if (includeCompatibilityFields) {
         formData.set("response_format", responseFormat);

@@ -3,6 +3,7 @@
 import { Alert, Button, Empty, Progress, Tabs, Tag } from "antd";
 import { CircleAlert, FileText, Images, RefreshCw, ScanSearch } from "lucide-react";
 import Image from "next/image";
+import { QueuedMediaImage } from "@/components/queued-media-image";
 
 import { formatFrameTime, type RemakeCopyBlock, type RemakeFrame, type RemakeProject, type RemakeTask } from "../remake-contract";
 
@@ -106,7 +107,19 @@ function TabLabel({ icon, text, count }: { icon: React.ReactNode; text: string; 
     );
 }
 
-export function FrameGrid({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; selectedId?: string; onSelect: (id: string) => void }) {
+export function FrameGrid({
+    frames,
+    selectedId,
+    onSelect,
+    showAnalysisWarnings = true,
+    queuedThumbnails = false,
+}: {
+    frames: RemakeFrame[];
+    selectedId?: string;
+    onSelect: (id: string) => void;
+    showAnalysisWarnings?: boolean;
+    queuedThumbnails?: boolean;
+}) {
     if (!frames.length) return <WorkspaceEmpty icon={<Images className="size-5" />} title="还没有抽帧" detail="上传来源视频后启动分析。" />;
     return (
         <div className="h-full overflow-y-auto p-2 sm:p-4">
@@ -123,12 +136,23 @@ export function FrameGrid({ frames, selectedId, onSelect }: { frames: RemakeFram
                         >
                             <span className="relative block aspect-[9/12] overflow-hidden bg-[#16191d]">
                                 {frame.frameUrl ? (
-                                    <Image src={frame.frameUrl} alt={`抽帧 ${frame.ordinal}`} fill unoptimized sizes="(min-width: 1200px) 140px, (min-width: 640px) 22vw, 32vw" className="object-cover transition duration-200 group-hover:scale-[1.02]" />
+                                    queuedThumbnails ? (
+                                        <QueuedMediaImage src={frame.frameUrl} alt={`抽帧 ${frame.ordinal}`} sizes="(min-width: 1200px) 140px, (min-width: 640px) 22vw, 32vw" className="object-cover transition duration-200 group-hover:scale-[1.02]" />
+                                    ) : (
+                                        <Image
+                                            src={frame.frameUrl}
+                                            alt={`抽帧 ${frame.ordinal}`}
+                                            fill
+                                            unoptimized
+                                            sizes="(min-width: 1200px) 140px, (min-width: 640px) 22vw, 32vw"
+                                            className="object-cover transition duration-200 group-hover:scale-[1.02]"
+                                        />
+                                    )
                                 ) : (
                                     <Images className="absolute left-3 top-3 size-5 text-white/60" />
                                 )}
                                 <span className="absolute left-1.5 top-1.5 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white">{String(frame.ordinal).padStart(2, "0")}</span>
-                                {frame.analysisStatus === "unavailable" ? <CircleAlert className="absolute bottom-1.5 right-1.5 size-4 text-amber-300" aria-label="分析不可用" /> : null}
+                                {showAnalysisWarnings && frame.analysisStatus === "unavailable" ? <CircleAlert className="absolute bottom-1.5 right-1.5 size-4 text-amber-300" aria-label="分析不可用" /> : null}
                             </span>
                             <span className="block px-2 py-1.5">
                                 <span className="block truncate text-[11px] font-medium tabular-nums">{formatFrameTime(frame.time)}</span>

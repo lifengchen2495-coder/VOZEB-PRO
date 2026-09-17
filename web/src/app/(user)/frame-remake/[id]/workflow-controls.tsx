@@ -8,6 +8,7 @@ import {
     FRAME_REMAKE_ANALYSIS_STAGES,
     FRAME_REMAKE_ANALYSIS_LABELS,
     frameRemakeAnalysisResult,
+    frameRemakeIsBasicWorkflow,
     type FrameRemakeAnalysisStage,
     type FrameRemakeRunOptions,
     type FrameRemakeGenerationKind,
@@ -18,7 +19,9 @@ import {
     type FrameRemakeWorkflowStage,
 } from "@/lib/frame-remake-contract";
 import { frameRemakeAnalysisPrompt } from "@/lib/frame-remake-prompts";
+import { frameRemakeMissingPromptFields, frameRemakeTemplates } from "@/lib/frame-remake-prompt-templates";
 import { TextOutput } from "./outputs";
+import { frameRemakePromptPreview } from "./workflow-source";
 export type WorkflowProps = {
     project: FrameRemakeProject;
     display: FrameRemakeProject;
@@ -97,14 +100,21 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 export function ScriptResult({ props, group, stage }: { props: WorkflowProps; group: FrameRemakeGroup; stage: FrameRemakeAnalysisStage }) {
     const record = group.analysisSteps?.[stage],
         text = frameRemakeAnalysisResult(group, stage),
-        label = FRAME_REMAKE_ANALYSIS_LABELS[stage];
+        label = stage === "copy" ? "文案预处理" : FRAME_REMAKE_ANALYSIS_LABELS[stage];
+    const basic = frameRemakeIsBasicWorkflow(props.display);
+    const promptSource = record?.promptSource ?? (!record?.prompt && stage === "videoPrompt" && basic ? frameRemakeTemplates(props.display, group).videoSource : undefined);
+    const prerequisiteMissing = basic
+        ? stage === "copy" ? !group.analysis || !group.image.result : stage === "videoPrompt" ? !group.copy?.trim() || !group.image.result : false
+        : FRAME_REMAKE_ANALYSIS_STAGES.slice(0, FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group, key));
+    const missingSource = frameRemakeMissingPromptFields(props.display).length > 0;
     return (
         <section className="min-w-0 space-y-3 rounded-lg border bg-card p-3" aria-label={`第${group.number}组${label}`}>
             <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-semibold">{label}</h3>
                 <Button
                     size="small"
-                    disabled={props.disabled || FRAME_REMAKE_ANALYSIS_STAGES.slice(0, FRAME_REMAKE_ANALYSIS_STAGES.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group, key)) || (stage === "videoPrompt" && !group.image.result)}
+                    loading={props.project.operation?.groupId === group.id && props.project.operation.analysisStage === stage}
+                    disabled={props.disabled || prerequisiteMissing || missingSource || (stage === "videoPrompt" && !group.image.result)}
                     onClick={() => void props.onOperation("analyze", group.id, stage)}
                 >
                     {text ? "重新生成" : "生成本步"}
@@ -131,7 +141,8 @@ export function ScriptResult({ props, group, stage }: { props: WorkflowProps; gr
             {(record?.prompt || !text) && (
                 <details>
                     <summary className="cursor-pointer text-xs">{record?.prompt ? "本次执行记录的提示词" : "提示词模板预览（尚未发送）"}{record?.elapsedMs !== undefined ? ` · ${(record.elapsedMs / 1000).toFixed(1)} 秒` : ""}</summary>
-                    <TextOutput title="模型输入" text={record?.prompt || frameRemakeAnalysisPrompt(props.display, group, stage)} name={`第${group.number}组-${stage}-input`} />
+                    {promptSource && <p className="my-2 text-xs text-muted-foreground">原文来源：<a className="underline" href={promptSource.url} target="_blank" rel="noreferrer">{promptSource.tableId === "tblWsGmy3C9igdZ2" ? "不换品_换人基础版" : "换品_不换人基础版"} · {promptSource.field}</a>{promptSource.shared ? "（共用该表后续分组的视频模板）" : ""}。按本组镜头编号和时长绑定。</p>}
+                    <TextOutput title="模型输入" text={record?.prompt || frameRemakePromptPreview(() => frameRemakeAnalysisPrompt(props.display, group, stage))} name={`第${group.number}组-${stage}-input`} />
                 </details>
             )}
         </section>

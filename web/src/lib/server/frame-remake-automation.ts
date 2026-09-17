@@ -1,7 +1,7 @@
 import { nextFrameRemakeStep, frameRemakeWorkflowReadiness, frameRemakeAutomationView } from "@/lib/frame-remake-steps";
 export { nextFrameRemakeStep } from "@/lib/frame-remake-steps";
 import { randomUUID } from "node:crypto";
-import { frameRemakeInputError, frameRemakeBusy, idleFrameRemakeTask, resetFrameRemakeAnalysisFrom, type FrameRemakeRunOptions, type FrameRemakeWorkflowStage } from "@/lib/frame-remake-contract";
+import { frameRemakeInputError, frameRemakeBusy, frameRemakeIsBasicWorkflow, idleFrameRemakeTask, resetFrameRemakeAnalysisFrom, type FrameRemakeRunOptions, type FrameRemakeWorkflowStage } from "@/lib/frame-remake-contract";
 import { changedFrameRemake, pausedFrameRemakeProject, FrameRemakeError, assertFrameRemakeRevision, assertFrameRemakeAnalysisPromptReady, getFrameRemakeProjectForUser, mutateFrameRemake, startFrameRemakeOperation, submitFrameRemakeGeneration } from "./frame-remake-project-service";
 import { assertFrameRemakePromptResolved } from "@/lib/frame-remake-feishu-workflow";
 import { frameRemakeImagePrompt, frameRemakeVideoPrompt } from "@/lib/frame-remake-prompts";
@@ -25,14 +25,14 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
         const restartStage = options.restartFrom === "productScript" ? "planning" : options.restartFrom === "images" ? "images" : options.restartFrom === "videoPrompt" ? "production" : "analysis";
         if (options.restartFrom && restartStage !== stageScope) throw new FrameRemakeError("重新生成的步骤与当前阶段不一致");
         if (stageScope !== "analysis" && frameRemakeInputError(project)) throw new FrameRemakeError(frameRemakeInputError(project));
-        if (options.restartFrom === "images" && project.groups.filter((g) => !options.groupId || g.id === options.groupId).some((g) => !g.productScript?.trim() || !g.imagePrompt.trim()))
+        if (!frameRemakeIsBasicWorkflow(project) && options.restartFrom === "images" && project.groups.filter((g) => !options.groupId || g.id === options.groupId).some((g) => !g.productScript?.trim() || !g.imagePrompt.trim()))
             throw new FrameRemakeError("请先完成新产品脚本和分镜提示词，再开始两步生图");
         // 继续由用户明确发起。仅重置失败步骤，已提交的未知结果继续复用原请求。
         const groups = project.groups.map((original) => {
             if (options.groupId && original.id !== options.groupId) return original;
             let group = original;
             if (options.restartFrom === "images" && group.image.status === "completed") {
-                group = { ...resetFrameRemakeAnalysisFrom(group, "videoPrompt"), template: idleFrameRemakeTask(group.template.attemptNo), image: idleFrameRemakeTask(group.image.attemptNo) };
+                group = { ...resetFrameRemakeAnalysisFrom(group, frameRemakeIsBasicWorkflow(project) ? "copy" : "videoPrompt"), template: idleFrameRemakeTask(group.template.attemptNo), image: idleFrameRemakeTask(group.image.attemptNo) };
             } else if (options.restartFrom && options.restartFrom !== "images") group = resetFrameRemakeAnalysisFrom(group, options.restartFrom);
             return {
                 ...group,
@@ -68,7 +68,7 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
         if (step?.kind === "analyze") assertFrameRemakeAnalysisPromptReady(next, step.groupId, step.analysisStage);
         if (step && (step.kind === "template" || step.kind === "image" || step.kind === "video")) {
             const group = next.groups.find((item) => item.id === step.groupId);
-            if (group) assertFrameRemakePromptResolved(step.kind === "video" ? frameRemakeVideoPrompt(next, group, 15) : frameRemakeImagePrompt(next, group, step.kind));
+            if (group) assertFrameRemakePromptResolved(step.kind === "video" ? frameRemakeVideoPrompt(group) : frameRemakeImagePrompt(next, group, step.kind));
         }
         return changedFrameRemake(next);
     });
@@ -148,7 +148,7 @@ export async function runFrameRemakeAutomationBatch(origin: string) {
                 if (latest.automation?.status !== "running" || latest.automation.leaseId !== leaseId) throw new Error("后续步骤已暂停");
                 return changedFrameRemake({ ...latest, automation: { ...latest.automation, progress: step.label, updatedAt: new Date().toISOString() } });
             });
-            if (step.kind === "inspect" || step.kind === "extract" || step.kind === "analyze" || step.kind === "merge") {
+            if (step.kind === "inspect" || step.kind === "extract" || step.kind === "transcribe" || step.kind === "analyze" || step.kind === "merge") {
                 const active = await startFrameRemakeOperation(userId, ready.id, ready.revision, step.kind, step.groupId, leaseId, step.analysisStage);
                 await runFrameRemakeOperation({ userId, project: active, origin, credential: maintenanceWorkerContext(userId) });
             } else {

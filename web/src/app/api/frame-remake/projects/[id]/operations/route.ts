@@ -20,7 +20,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const body = await readJsonBodyResult<{ revision?: number; kind?: string; groupId?: string; analysisStage?: string }>(request, 4096);
     if (!body.ok) return frameRemakeResponse(null, body.message, body.status);
     const kind = body.data?.kind;
-    if (!isFrameRemakeRevision(body.data?.revision) || (kind !== "inspect" && kind !== "extract" && kind !== "analyze" && kind !== "merge") || (body.data.groupId !== undefined && typeof body.data.groupId !== "string"))
+    if (!isFrameRemakeRevision(body.data?.revision) || (kind !== "inspect" && kind !== "extract" && kind !== "transcribe" && kind !== "analyze" && kind !== "merge") || (body.data.groupId !== undefined && typeof body.data.groupId !== "string"))
         return frameRemakeResponse(null, "处理步骤或项目版本不正确", 400);
     if (body.data.analysisStage !== undefined && (kind !== "analyze" || !FRAME_REMAKE_ANALYSIS_STAGES.includes(body.data.analysisStage as FrameRemakeAnalysisStage))) return frameRemakeResponse(null, "分析步骤不正确", 400);
     if (!(await checkGenerationRateLimit(user.id, request, "text")).allowed) return frameRemakeResponse(null, "请求过于频繁，请稍后重试", 429);

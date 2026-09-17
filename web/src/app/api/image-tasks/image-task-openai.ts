@@ -75,6 +75,7 @@ import {
     geminiHeaders,
     geminiApiUrl,
     withSystemPrompt,
+    imageTaskRequestPrompt,
     withImageOutputInstructions,
     parseImagePayloadOrPoll,
     pollOpenAiImageTask,
@@ -162,7 +163,7 @@ export async function runOpenAiImageTask(task: ImageTask, origin: string, public
             headers,
             body: JSON.stringify({
                 model: config.model,
-                prompt: withSystemPrompt(config, withImageOutputInstructions(config, task.prompt)),
+                prompt: imageTaskRequestPrompt(task, () => withSystemPrompt(config, withImageOutputInstructions(config, task.prompt))),
                 ...(config.outputMode === "layers" ? {} : { n: 1 }),
                 ...(quality ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),
@@ -206,7 +207,7 @@ async function runGlobalAiOpcImageTask(task: ImageTask, origin: string, publicOr
         body: JSON.stringify({
             ...buildGlobalAiOpcImageRequest(preset, {
                 model: config.model,
-                prompt: withSystemPrompt(config, withImageOutputInstructions(config, buildImageReferencePromptText(task.prompt, task.references))),
+                prompt: imageTaskRequestPrompt(task, () => withSystemPrompt(config, withImageOutputInstructions(config, buildImageReferencePromptText(task.prompt, task.references)))),
                 quality,
                 size: requestSize,
                 ratio,
@@ -308,7 +309,7 @@ export async function runOpenAiImageTaskWithBase64Response(task: ImageTask, orig
         headers,
         body: JSON.stringify({
             model: config.model,
-            prompt: withSystemPrompt(config, task.prompt),
+            prompt: imageTaskRequestPrompt(task, () => withSystemPrompt(config, task.prompt)),
             ...(config.outputMode === "layers" ? {} : { n: 1 }),
             ...(quality ? { quality } : {}),
             ...(requestSize ? { size: requestSize } : {}),
@@ -351,7 +352,7 @@ export async function runOpenAiResponsesImageTask(task: ImageTask, origin: strin
 }
 
 export function buildResponsesImageBodies(task: ImageTask, origin: string) {
-    const prompt = withSystemPrompt(task.config, withImageOutputInstructions(task.config, buildImageReferencePromptText(task.prompt, task.references)));
+    const prompt = imageTaskRequestPrompt(task, () => withSystemPrompt(task.config, withImageOutputInstructions(task.config, buildImageReferencePromptText(task.prompt, task.references))));
     const imageContent = task.references.map((reference) => ({ type: "input_image", image_url: referenceRequestUrl(reference, origin) }));
     const content = [{ type: "input_text", text: prompt }, ...imageContent];
     return [
@@ -392,10 +393,10 @@ export async function buildJsonImageEditBodies(
         await Promise.all(task.references.map((reference) => (publicUrlReferenceMode ? publicImageReferenceRequestUrl(reference, origin, publicOrigin, referenceContext) : Promise.resolve(jsonImageReferenceRequestUrl(reference, origin)))))
     ).filter(Boolean);
     const mask = task.mask ? (publicUrlReferenceMode ? await publicImageReferenceRequestUrl(task.mask, origin, publicOrigin, referenceContext) : jsonImageReferenceRequestUrl(task.mask, origin)) : "";
-    const prompt = withImageOutputInstructions(task.config, imageUrlObjectOnlyMode ? buildSub2ApiImageEditPrompt(task.prompt, task.references) : buildImageReferencePromptText(task.prompt, task.references));
+    const prompt = imageTaskRequestPrompt(task, () => withSystemPrompt(task.config, withImageOutputInstructions(task.config, imageUrlObjectOnlyMode ? buildSub2ApiImageEditPrompt(task.prompt, task.references) : buildImageReferencePromptText(task.prompt, task.references))));
     const base = {
         model: task.config.model,
-        prompt: withSystemPrompt(task.config, prompt),
+        prompt,
         ...(task.config.outputMode === "layers" ? {} : { n: 1 }),
         ...(quality ? { quality } : {}),
         ...(requestSize ? { size: requestSize } : {}),
@@ -411,7 +412,7 @@ export async function buildJsonImageEditBodies(
         return [
             {
                 model: task.config.model,
-                prompt: withSystemPrompt(task.config, prompt),
+                prompt,
                 ...(task.config.outputMode === "layers" ? {} : { n: 1 }),
                 ...(quality ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),

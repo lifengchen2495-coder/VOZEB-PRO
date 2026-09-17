@@ -15,10 +15,12 @@ export function RemakeSourcePanel({
     onPatch,
     copyRangeLabel = "4 个三帧区间",
     manualGroupCopy = false,
+    manualGroupCopyDescription,
 }: {
     project: Pick<RemakeProject, "sourceVideo" | "sourceCopy"> & { copy: Pick<RemakeProject["copy"], "optionRaw"> };
     copyRangeLabel?: string;
     manualGroupCopy?: boolean;
+    manualGroupCopyDescription?: string;
     uploading: boolean;
     uploadProgress: number;
     disabled: boolean;
@@ -80,7 +82,7 @@ export function RemakeSourcePanel({
                 </section>
 
                 {manualGroupCopy ? (
-                    <p className="p-3 text-xs leading-5 text-muted-foreground">文案为选填项。请在“原文案（选填）”标签中按组填写，内容会原样传入视频提示词步骤。</p>
+                    <p className="p-3 text-xs leading-5 text-muted-foreground">{manualGroupCopyDescription || "文案为选填项。请在“原文案（选填）”标签中按组填写，内容会原样传入视频提示词步骤。"}</p>
                 ) : (
                     <>
                         <section className="border-b border-border p-3">

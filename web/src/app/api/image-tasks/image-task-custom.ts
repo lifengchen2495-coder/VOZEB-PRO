@@ -24,6 +24,7 @@ import {
     taskHeaders,
     taskUrl,
     withSystemPrompt,
+    imageTaskRequestPrompt,
     withImageOutputInstructions,
     ImageUpstreamTerminalError,
 } from "./image-task-support";
@@ -44,7 +45,7 @@ export async function runCustomImageTask(task: ImageTask, origin: string, public
     const outputCount = config.outputMode === "layers" ? undefined : 1;
     const values = {
         model: config.model,
-        prompt: withSystemPrompt(config, withImageOutputInstructions(config, task.prompt)),
+        prompt: imageTaskRequestPrompt(task, () => withSystemPrompt(config, withImageOutputInstructions(config, task.prompt))),
         size,
         ratio: imageRequestAspectRatio(config.size || "auto"),
         aspect_ratio: imageRequestAspectRatio(config.size || "auto"),

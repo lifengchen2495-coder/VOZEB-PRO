@@ -1,0 +1,263 @@
+{
+  "verifiedAt": "2026-09-17",
+  "baseUrl": "https://ocn18sf3pb4v.feishu.cn/base/ZxmYbuEfeaY97GsdjZtcv96Bnt0",
+  "scope": "Only upper workflow tables, excluding the lower tutorial documents.",
+  "method": "Read the complete native browser accessibility value in each field editor, then cancel without saving. Length and FNV refer to the captured prompt with U+200B removed and outer whitespace trimmed. FNV uses JavaScript for...of and charCodeAt(0). Field chips appear as their visible names separated by newlines.",
+  "runtimeStatus": "Integrated locally: two complete basic workflow profiles use archived original prompts with mechanical timing/group/field binding. Video prompts select the original first/second/third/fourth group templates; later groups reuse the archived continuation template. Product-profile continuation video templates explicitly share the person-basic source table, with source links saved/displayed. Combined originals remain blocked because module bodies are incomplete. Independent transcription uses the configured system full-video model when DashScope ASR credentials are absent. Live audio transcription and provider end-to-end validation remain pending; no deployment or Git commit.",
+  "runtimeStatusUpdatedAt": "2026-09-18",
+  "fields": [
+    {
+      "tableId": "tbl7CUSql4kncNvk",
+      "tableName": "Codex+Seedance_ 全品类 (换品_不换人) -1分钟-基础版",
+      "field": "48镜头解析",
+      "title": "抖音长视频全量拆解（60秒版 - 混合导向 - V2 - 时长精准版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 4551,
+      "normalizedFnv1a": 1482948663,
+      "matchingLocalConstant": "web/src/lib/remake-product-feishu-prompts.ts#REMAKE_FEISHU_ANALYSIS_PROMPT"
+    },
+    {
+      "tableId": "tbl7CUSql4kncNvk",
+      "tableName": "Codex+Seedance_ 全品类 (换品_不换人) -1分钟-基础版",
+      "field": "1-12 生图",
+      "title": "十二宫格分镜图 - 清理画面 + 重绘 + 换人物 + 换产品",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 5907,
+      "normalizedFnv1a": 845834516,
+      "referenceFieldOrder": [
+        "产品图",
+        "1-12拼图"
+      ],
+      "sourceConflict": "Despite the table name, the full body explicitly instructs person replacement, changing camera angle/shot size, and product replacement only where held by a person or hand. Do not silently rewrite these source rules or claim this is a preserve-person template."
+    },
+    {
+      "tableId": "tbl7CUSql4kncNvk",
+      "tableName": "Codex+Seedance_ 全品类 (换品_不换人) -1分钟-基础版",
+      "field": "1-12视频提示词",
+      "title": "视频提示词生成（V63 - 精简版 - 第一张：分镜1-12）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 5470,
+      "normalizedFnv1a": 2610752921,
+      "textFields": [
+        "48镜头解析",
+        "文案预处理",
+        "配音选择"
+      ],
+      "referenceFieldOrder": [
+        "1-12 生图"
+      ]
+    },
+    {
+      "tableId": "tblV3axyFXYbbWPq",
+      "tableName": "Codex+Seedance_ 全品类 (换品_不换人) -1分钟",
+      "field": "1-12 生图",
+      "title": "十二宫格分镜图 - 清理画面 + 重绘 + 换人物 + 换产品",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 5907,
+      "normalizedFnv1a": 845834516,
+      "sameNormalizedBodyAs": "tbl7CUSql4kncNvk/1-12 生图"
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "field": "1-12 生图",
+      "title": "电商视频分镜图生成（跟品版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 4627,
+      "normalizedFnv1a": 2422252088,
+      "referenceFieldOrder": [
+        "1-12拼图",
+        "人物图",
+        "背景图"
+      ],
+      "comparison": "Known local candidate web/src/lib/remake-image-prompt.ts has the same non-whitespace text, but different indentation; do not label that candidate byte-for-byte copied."
+    },
+    {
+      "tableId": "tblKoEJS0NZWsSlh",
+      "tableName": "Codex+Seedance_ 全品类 (换品_换人) -1分钟",
+      "field": "新产品-48分镜脚本 最新",
+      "completeBodyVisible": false,
+      "normalizedUtf16Length": 136,
+      "normalizedFnv1a": 3313703629,
+      "unresolvedModule": "Codex新产品60秒分镜脚本适配"
+    },
+    {
+      "tableId": "tblKoEJS0NZWsSlh",
+      "tableName": "Codex+Seedance_ 全品类 (换品_换人) -1分钟",
+      "field": "1-12 分镜图",
+      "completeBodyVisible": false,
+      "normalizedUtf16Length": 365,
+      "normalizedFnv1a": 672823141,
+      "unresolvedModule": "Codex分镜图1-12-第二步"
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "field": "文案预处理",
+      "title": "字幕预处理提示词（V5 - 分镜区间版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 4930,
+      "normalizedFnv1a": 2276787751,
+      "textFields": [
+        "48镜头解析",
+        "原文案"
+      ],
+      "sameNormalizedBody": true
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "field": "1-12视频提示词",
+      "title": "视频提示词生成（V63 - 精简版 - 第一张：分镜1-12）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 5470,
+      "normalizedFnv1a": 2610752921,
+      "textFields": [
+        "48镜头解析",
+        "文案预处理",
+        "配音选择"
+      ],
+      "referenceFieldOrder": [
+        "1-12 生图"
+      ]
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "field": "13-24视频提示词",
+      "title": "视频提示词生成（V63 - 分镜13-24版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 3544,
+      "normalizedFnv1a": 172624634,
+      "textFields": [
+        "48镜头解析",
+        "文案预处理",
+        "配音选择"
+      ],
+      "referenceFieldOrder": [
+        "1-12 生图"
+      ],
+      "sourceBindingConflict": "The visible field configuration references 1-12 生图, while the prompt body requests the 13-24 image. Preserve this discrepancy in the source archive; do not silently label the source binding correct."
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "field": "25-36视频提示词",
+      "title": "视频提示词生成（V63 - 分镜25-36版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 3544,
+      "normalizedFnv1a": 4002991570,
+      "textFields": [
+        "48镜头解析",
+        "文案预处理",
+        "配音选择"
+      ],
+      "referenceFieldOrder": [
+        "25-36 生图"
+      ]
+    },
+    {
+      "tableId": "tblWsGmy3C9igdZ2",
+      "tableName": "Codex+Seedance_ 全品类 (不换品_换人) -1分钟-基础版",
+      "field": "37-48视频提示词",
+      "title": "视频提示词生成（V63 - 分镜37-48版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 3544,
+      "normalizedFnv1a": 2623160004,
+      "textFields": [
+        "48镜头解析",
+        "文案预处理",
+        "配音选择"
+      ],
+      "referenceFieldOrder": [
+        "37-48 生图"
+      ]
+    },
+    {
+      "tableId": "tbl7CUSql4kncNvk",
+      "tableName": "Codex+Seedance_ 全品类 (换品_不换人) -1分钟-基础版",
+      "field": "文案预处理",
+      "title": "字幕预处理提示词（V5 - 分镜区间版）",
+      "completeBodyVisible": true,
+      "normalizedUtf16Length": 4930,
+      "normalizedFnv1a": 2276787751,
+      "textFields": [
+        "48镜头解析",
+        "原文案"
+      ],
+      "sameNormalizedBody": true
+    },
+    {
+      "tableId": "tblKoEJS0NZWsSlh",
+      "tableName": "Codex+Seedance_ 全品类 (换品_换人) -1分钟",
+      "field": "1-12 替换人物",
+      "title": "十二宫格分镜图 - 去除产品 + 清理画面 + 换人物（一比一还原版）",
+      "completeBodyVisible": false,
+      "normalizedUtf16Length": 417,
+      "normalizedFnv1a": 3016101491,
+      "unresolvedModules": [
+        "Codex分镜图1-12-第一步"
+      ],
+      "referenceFieldOrder": [
+        "1-12拼图",
+        "人物图"
+      ]
+    },
+    {
+      "tableId": "tblKoEJS0NZWsSlh",
+      "tableName": "Codex+Seedance_ 全品类 (换品_换人) -1分钟",
+      "field": "13-24 替换人物",
+      "title": "十二宫格分镜图 - 去除产品 + 清理画面 + 换人物（一比一还原版）",
+      "completeBodyVisible": false,
+      "normalizedUtf16Length": 419,
+      "normalizedFnv1a": 2770662869,
+      "unresolvedModules": [
+        "Codex分镜图13-24-第一步"
+      ],
+      "referenceFieldOrder": [
+        "13-24拼图",
+        "人物图"
+      ]
+    },
+    {
+      "tableId": "tblhKUGCUi0u5RdA",
+      "tableName": "Codex+Seedance_ 全品类 (换品_换人) -15秒-实操版测试",
+      "field": "新产品-12分镜脚本",
+      "title": "步骤2：根据原12分镜脚本适配新产品 - 完整版提示词",
+      "completeBodyVisible": false,
+      "normalizedUtf16Length": 128,
+      "normalizedFnv1a": 2936885822,
+      "unresolvedModules": [
+        "短视频12分镜新产品脚本Skill"
+      ]
+    },
+    {
+      "tableId": "tblOIhfW3pO5kdCB",
+      "tableName": "Codex+Seedance_ 全品类 (换品_换人) -1分钟-实操版",
+      "field": "新产品-48分镜脚本 最新",
+      "title": "步骤2：根据原48分镜脚本适配新产品 - 完整版提示词",
+      "completeBodyVisible": false,
+      "normalizedUtf16Length": 136,
+      "normalizedFnv1a": 3313703629,
+      "unresolvedModules": [
+        "Codex新产品60秒分镜脚本适配"
+      ]
+    }
+  ],
+  "pending": [
+    "The combined product/person workflows still reference unexpanded modules in product-script and two-step image fields. Main 15-second, test 15-second, standard 1-minute, and practical 1-minute variants were inspected at the recorded fields; no missing module body was invented.",
+    "Complete the final build after the last per-group video-template correction, then verify actual model submissions and source-audio transcription before claiming a real-provider end-to-end run or deploying."
+  ],
+  "nonPromptFields": [
+    {
+      "tableId": "tbl7CUSql4kncNvk",
+      "field": "原文案",
+      "type": "音频视频转文字",
+      "inputField": "原始视频",
+      "configuredProvider": "阿里百炼",
+      "hasPromptBody": false,
+      "note": "An independent transcription shortcut. Analysis subtitles are not an equivalent substitute for its output."
+    }
+  ],
+  "sourceArchive": "docs/frame-remake-upper-workflow-prompts.source.json"
+}

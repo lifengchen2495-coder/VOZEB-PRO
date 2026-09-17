@@ -4,18 +4,24 @@ import { Button, Input } from "antd";
 import { useState } from "react";
 import { ArrowLeft, Check, FileOutput, Images, PanelLeft, Pause, RefreshCw, Save, SlidersHorizontal, Video, WandSparkles } from "lucide-react";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
+import { frameRemakeIsBasicWorkflow } from "@/lib/frame-remake-contract";
+import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
 import { FrameSourceStage } from "./source-stage";
 import { FramePlanningStage } from "./planning-stage";
 import { FrameImageStage } from "./image-stage";
 import { FrameProductionStage } from "./production-stage";
 import type { WorkflowProps } from "./workflow-controls";
+import { FrameWorkflowSource } from "./workflow-source";
 export function FrameRemakeWorkflow(props: WorkflowProps) {
     const { project, display, stage, dirty } = props,
         ready = frameRemakeWorkflowReadiness(project),
         running = project.automation?.status === "running";
+    const basic = frameRemakeIsBasicWorkflow(display),
+        missingSource = frameRemakeMissingPromptFields(display).length > 0;
     const pendingTasks = project.groups.flatMap((group) => (["template", "image", "video"] as const).filter((kind) => group[kind].status === "queued" || group[kind].status === "running").map((kind) => ({ group, kind })));
     const queued = pendingTasks.some(({ group, kind }) => group[kind].status === "queued");
     const paused = project.automation?.status === "paused";
+    const analysisActionLabel = project.error ? "重试分析" : ready.analysis ? "重新分析" : paused ? "继续完成分析" : "开始分析";
     const canPause = running || Boolean(project.operation) || (pendingTasks.length > 0 && !paused);
     const flowStage = stage === "planning" ? "images" : stage;
     const [sourceOpen, setSourceOpen] = useState(false),
@@ -72,15 +78,15 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                             type="primary"
                             className="!h-9 !px-2.5 sm:!px-3"
                             icon={<WandSparkles className="size-4" />}
-                            disabled={props.disabled || !project.sourceVideo}
+                            disabled={props.disabled || !project.sourceVideo || missingSource}
                             onClick={() => void props.onControl("start", false, ready.analysis ? { restartFrom: "analysis" } : undefined)}
-                            aria-label={project.error ? "重试分析" : ready.analysis ? "重新分析" : "开始分析"}
+                            aria-label={analysisActionLabel}
                         >
-                            <span className="hidden sm:inline">{project.error ? "重试分析" : ready.analysis ? "重新分析" : "开始分析"}</span>
+                            <span className="hidden sm:inline">{analysisActionLabel}</span>
                         </Button>
                     ) : null}
                     {!running && stage === "analysis" && !ready.analysis && (
-                        <Button size="small" disabled={props.disabled || !project.sourceVideo} onClick={() => void props.onControl("step")}>
+                        <Button size="small" disabled={props.disabled || !project.sourceVideo || missingSource} onClick={() => void props.onControl("step")}>
                             执行下一步
                         </Button>
                     )}
@@ -111,6 +117,7 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     );
                 })}
             </nav>
+            <FrameWorkflowSource props={props} />
             {(props.error || project.error || pendingTasks.length > 0 || running || paused || project.operation) && (
                 <div className="max-h-40 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5">
                     {(props.error || project.error) && (
@@ -119,16 +126,29 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                         </p>
                     )}
                     {queued && !running && !paused && (
-                        <Button size="small" disabled={props.working || props.controlling} onClick={() => void props.onControl("start")}>
+                        <Button size="small" disabled={props.working || props.controlling || missingSource} onClick={() => void props.onControl("start")}>
                             检查并继续原任务
                         </Button>
                     )}
                     {(running || project.operation) && <p role="status">{project.operation?.progress || project.automation?.progress}</p>}
-                    {paused && <p role="status">{pendingTasks.length ? "后续步骤已暂停。已提交任务仍在处理，可在下方单独取消；已有素材和结果会保留。" : "已暂停，已有素材和结果已保留。"}</p>}
+                    {paused && (
+                        <div>
+                            <p role="status">{project.automation?.progress || "已暂停，已有素材和结果已保留。"}</p>
+                            {pendingTasks.length ? (
+                                <p className="text-muted-foreground">已提交任务仍在处理，可在下方单独取消；已有素材和结果会保留。</p>
+                            ) : stage === "analysis" && !ready.analysis ? (
+                                <p className="text-muted-foreground">点击“继续完成分析”会依次完成剩余分组；每一步单独执行并保存结果。</p>
+                            ) : null}
+                        </div>
+                    )}
                     {pendingTasks.map(({ group, kind }) => (
                         <div key={`${group.id}:${kind}`} className="flex flex-wrap items-center justify-between gap-2 py-1">
-                            <span>第 {group.number} 组 · {kind === "template" ? "第一步模板图" : kind === "image" ? "最终分镜图" : "视频"} · {group[kind].status === "queued" ? "等待确认" : "生成中"}</span>
-                            {running ? <span className="text-muted-foreground">暂停后可取消本次任务</span> : (
+                            <span>
+                                第 {group.number} 组 · {kind === "template" ? "第一步模板图" : kind === "image" ? "最终分镜图" : "视频"} · {group[kind].status === "queued" ? "等待确认" : "生成中"}
+                            </span>
+                            {running ? (
+                                <span className="text-muted-foreground">暂停后可取消本次任务</span>
+                            ) : (
                                 <Button size="small" disabled={props.controlling} onClick={() => void props.onAbandon(group.id, kind)}>
                                     取消本次任务
                                 </Button>
@@ -144,15 +164,13 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     <section className="flex h-full min-h-0 flex-col" aria-label="十二宫格重绘工作区">
                         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-card px-3 py-2" aria-label="重绘步骤">
                             <Button size="small" type={stage === "planning" ? "primary" : "default"} onClick={() => props.onStage("planning")}>
-                                1. 分镜脚本{ready.planning ? " · 已完成" : ""}
+                                1. {basic ? "替换素材" : "分镜脚本"}{!basic && ready.planning ? " · 已完成" : ""}
                             </Button>
                             <Button size="small" type={stage === "images" ? "primary" : "default"} onClick={() => props.onStage("images")}>
-                                2. 分镜重绘{ready.images ? " · 已完成" : ""}
+                                2. {basic ? "单步分镜生图" : "分镜重绘"}{ready.images ? " · 已完成" : ""}
                             </Button>
                         </div>
-                        <div className="min-h-0 flex-1 overflow-hidden">
-                            {stage === "planning" ? <FramePlanningStage {...props} /> : <FrameImageStage {...props} />}
-                        </div>
+                        <div className="min-h-0 flex-1 overflow-hidden">{stage === "planning" ? <FramePlanningStage {...props} /> : <FrameImageStage {...props} />}</div>
                     </section>
                 ) : (
                     <FrameProductionStage {...props} />
