@@ -15,7 +15,10 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
     const { project, display, stage, dirty } = props,
         ready = frameRemakeWorkflowReadiness(project),
         running = project.automation?.status === "running";
-    const queued = project.groups.some((g) => [g.template, g.image, g.video].some((t) => t.status === "queued"));
+    const pendingTasks = project.groups.flatMap((group) => (["template", "image", "video"] as const).filter((kind) => group[kind].status === "queued" || group[kind].status === "running").map((kind) => ({ group, kind })));
+    const queued = pendingTasks.some(({ group, kind }) => group[kind].status === "queued");
+    const paused = project.automation?.status === "paused";
+    const canPause = running || Boolean(project.operation) || (pendingTasks.length > 0 && !paused);
     const missingPromptFields = frameRemakeMissingPromptFields();
     const [sourceOpen, setSourceOpen] = useState(false),
         [editorOpen, setEditorOpen] = useState(false);
@@ -63,8 +66,8 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                             保存
                         </Button>
                     )}
-                    {running ? (
-                        <Button icon={<Pause className="size-4" />} disabled={props.working} onClick={() => void props.onControl("pause")}>
+                    {canPause ? (
+                        <Button icon={<Pause className="size-4" />} loading={props.controlling} disabled={props.controlling} onClick={() => void props.onControl("pause")}>
                             暂停
                         </Button>
                     ) : stage === "analysis" ? (
@@ -117,19 +120,30 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     <a href={FRAME_REMAKE_FEISHU_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2">查看对应飞书工作流</a>
                 </div>
             )}
-            {(props.error || project.error || queued || running || project.operation) && (
-                <div className="max-h-24 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5">
+            {(props.error || project.error || pendingTasks.length > 0 || running || paused || project.operation) && (
+                <div className="max-h-40 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5">
                     {(props.error || project.error) && (
                         <p role="alert" className="text-destructive">
                             {props.error || project.error}
                         </p>
                     )}
-                    {queued && !running && (
-                        <Button size="small" disabled={props.working} onClick={() => void props.onControl("start")}>
+                    {queued && !running && !paused && (
+                        <Button size="small" disabled={props.working || props.controlling} onClick={() => void props.onControl("start")}>
                             检查并继续原任务
                         </Button>
                     )}
                     {(running || project.operation) && <p role="status">{project.operation?.progress || project.automation?.progress}</p>}
+                    {paused && <p role="status">{pendingTasks.length ? "后续步骤已暂停。已提交任务仍在处理，可在下方单独取消；已有素材和结果会保留。" : "已暂停，已有素材和结果已保留。"}</p>}
+                    {pendingTasks.map(({ group, kind }) => (
+                        <div key={`${group.id}:${kind}`} className="flex flex-wrap items-center justify-between gap-2 py-1">
+                            <span>第 {group.number} 组 · {kind === "template" ? "第一步模板图" : kind === "image" ? "最终分镜图" : "视频"} · {group[kind].status === "queued" ? "等待确认" : "生成中"}</span>
+                            {running ? <span className="text-muted-foreground">暂停后可取消本次任务</span> : (
+                                <Button size="small" disabled={props.controlling} onClick={() => void props.onAbandon(group.id, kind)}>
+                                    取消本次任务
+                                </Button>
+                            )}
+                        </div>
+                    ))}
                 </div>
             )}
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">

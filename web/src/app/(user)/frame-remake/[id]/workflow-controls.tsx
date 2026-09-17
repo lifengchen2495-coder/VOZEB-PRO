@@ -27,6 +27,7 @@ export type WorkflowProps = {
     dirty: boolean;
     saving?: boolean;
     working: boolean;
+    controlling?: boolean;
     editingDisabled: boolean;
     disabled: boolean;
     groupLocked: boolean;

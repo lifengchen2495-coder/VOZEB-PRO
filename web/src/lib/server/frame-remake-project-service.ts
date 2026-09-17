@@ -31,8 +31,9 @@ import { getLocalMediaRegistration, isLocalMediaRegistrationExpired } from "./lo
 import { collectLocalMediaStorageKeys, localMediaStorageKeyFromValue } from "./local-media-references";
 import { deleteUserLocalMediaAssets } from "./local-media-storage";
 import { getStoredGenerationTaskByRequest, getStoredGenerationTaskRecord, withGenerationConcurrencyLimit } from "./generation-task-store";
-import type { ImageTask } from "./image-task-store";
-import type { VideoTask } from "./video-task-store";
+import { transitionImageTask, type ImageTask } from "./image-task-store";
+import { transitionVideoTask, type VideoTask } from "./video-task-store";
+import { cancellationExecutionPatch } from "./generation-task-cancellation-service";
 import { resolveLogicalModelCandidates } from "./logical-model-router";
 import { toSystemGenerationChannel } from "./generation-channel";
 import { assertCapabilityConstraints } from "./capability-constraints";
@@ -56,6 +57,23 @@ export async function createFrameRemakeProjectForUser(userId: string, title: str
 }
 export function changedFrameRemake(project: FrameRemakeProject): FrameRemakeProject {
     return { ...project, revision: project.revision + 1, updatedAt: new Date().toISOString() };
+}
+export function pausedFrameRemakeProject(project: FrameRemakeProject): FrameRemakeProject {
+    const pending = project.groups.some((group) => [group.template, group.image, group.video].some((task) => task.status === "queued" || task.status === "running"));
+    return {
+        ...project,
+        operation: undefined,
+        groups: project.groups.map((group) => ({ ...group, ...Object.fromEntries((["template", "image", "video"] as const).map((kind) => [kind, group[kind].status === "queued" ? { ...group[kind], submissionPaused: true } : group[kind]])) })),
+        automation: project.automation ? {
+            ...project.automation,
+            status: "paused",
+            leaseId: undefined,
+            leaseUntil: undefined,
+            pendingGeneration: undefined,
+            updatedAt: new Date().toISOString(),
+            progress: pending ? "后续步骤已暂停；已提交任务仍在处理，可单独取消本次任务" : "已暂停，已保存的结果保留",
+        } : undefined,
+    };
 }
 export async function mutateFrameRemake(userId: string, id: string, fn: (project: FrameRemakeProject) => FrameRemakeProject) {
     const project = await mutateFrameRemakeProject(userId, id, fn);
@@ -101,33 +119,52 @@ export async function getFrameRemakeProjectForUser(userId: string, id: string) {
     for (const group of project.groups)
         for (const kind of ["template", "image", "video"] as const) {
             const pending = group[kind];
-            if (!pending.clientRequestId || !["queued", "running"].includes(pending.status)) continue;
-            const task = await getStoredGenerationTaskByRequest<ImageTask | VideoTask>(kind === "template" ? "image" : kind, userId, pending.clientRequestId, pending.attemptNo);
-            if (
-                !task ||
-                task.userId !== userId ||
-                task.projectId !== id ||
-                task.generationSlotId !== `frame-remake-${kind}:${group.id}` ||
-                task.prompt?.trim() !== pending.prompt?.trim() ||
-                task.clientRequestId !== pending.clientRequestId ||
-                task.attemptNo !== pending.attemptNo
-            )
-                continue;
-            const record = await getStoredGenerationTaskRecord(kind === "template" ? "image" : kind, task.id);
-            let next: FrameRemakeTask = { ...pending, status: "running", taskId: task.id, error: record?.executionPhase === "needs_review" ? "任务需要检查，请在生成任务中查询原任务" : undefined };
-            if (task.status === "success") {
-                try {
-                    const result = kind !== "video" ? (task as ImageTask).result : undefined;
-                    const media = await ownedFrameRemakeMedia(userId, { url: kind !== "video" ? result?.serverUrl || result?.dataUrl : (task as VideoTask).result?.url }, kind === "template" ? "image" : kind);
-                    next = { ...next, status: "completed", error: undefined, result: { ...media, ...(result ? { width: result.width, height: result.height } : {}) } };
-                } catch {
-                    next = { ...next, status: "error", error: "生成结果尚未保存为可读取素材，请检查原任务" };
+            if (!["queued", "running"].includes(pending.status)) continue;
+            let next: FrameRemakeTask;
+            if (!pending.clientRequestId && !pending.taskId) {
+                next = { ...pending, status: "error", error: "原生成任务缺少请求标识，处理已中断；已保存的素材和结果保留" };
+            } else {
+                const type = kind === "template" ? "image" : kind;
+                const requested = pending.clientRequestId ? await getStoredGenerationTaskByRequest<ImageTask | VideoTask>(type, userId, pending.clientRequestId, pending.attemptNo) : null;
+                const taskId = requested?.id || pending.taskId;
+                const record = taskId ? await getStoredGenerationTaskRecord(type, taskId) : null;
+                if (!record) {
+                    // queued 可能正在提交；不能把尚未创建记录的请求改成新一轮生成。
+                    if (pending.status === "queued") continue;
+                    next = { ...pending, status: "error", error: "原生成任务记录不存在或已过期，处理已中断；已保存的素材和结果保留" };
+                } else {
+                    const task = record.payload as unknown as ImageTask | VideoTask;
+                    if (
+                        record.userId !== userId ||
+                        (pending.clientRequestId && (record.clientRequestId !== pending.clientRequestId || record.attemptNo !== pending.attemptNo || task.clientRequestId !== pending.clientRequestId)) ||
+                        task.id !== record.id ||
+                        task.userId !== userId ||
+                        task.projectId !== id ||
+                        task.generationSlotId !== `frame-remake-${kind}:${group.id}` ||
+                        // 已失败或取消只同步终态，不绑定输出；提示词差异不能阻止解除等待。
+                        (task.status !== "error" && task.status !== "cancelled" && pending.prompt !== undefined && task.prompt?.trim() !== pending.prompt.trim())
+                    ) {
+                        // 请求编号存于 record；payload.attemptNo 是模型渠道内部的重试次数。
+                        // 其他身份不匹配时保留原请求，避免自动重提已计费但尚未确认的任务。
+                        next = { ...pending, status: "running", error: "原生成任务与当前步骤的记录不一致，请检查或停止原任务后再继续" };
+                    } else {
+                        next = { ...pending, status: "running", taskId: task.id, error: record.executionPhase === "needs_review" ? "任务需要检查，请在生成任务中查询原任务" : undefined };
+                        if (task.status === "success") {
+                            try {
+                                const result = kind !== "video" ? (task as ImageTask).result : undefined;
+                                const media = await ownedFrameRemakeMedia(userId, { url: kind !== "video" ? result?.serverUrl || result?.dataUrl : (task as VideoTask).result?.url }, kind === "template" ? "image" : kind);
+                                next = { ...next, status: "completed", error: undefined, result: { ...media, ...(result ? { width: result.width, height: result.height } : {}) } };
+                            } catch {
+                                next = { ...next, status: "error", error: "生成结果尚未保存为可读取素材，请检查原任务" };
+                            }
+                        } else if (task.status === "error" || task.status === "cancelled") next = { ...next, status: "error", error: task.error || "生成已取消" };
+                    }
                 }
-            } else if (task.status === "error" || task.status === "cancelled") next = { ...next, status: "error", error: task.error || "生成已取消" };
+            }
             if (JSON.stringify(next) === JSON.stringify(pending)) continue;
             project = await mutateFrameRemake(userId, id, (current) => {
                 const latest = current.groups.find((item) => item.id === group.id)?.[kind];
-                if (!latest || latest.clientRequestId !== pending.clientRequestId || latest.attemptNo !== pending.attemptNo || !["queued", "running"].includes(latest.status)) return current;
+                if (!latest || latest.clientRequestId !== pending.clientRequestId || latest.attemptNo !== pending.attemptNo || latest.taskId !== pending.taskId || latest.prompt !== pending.prompt || !["queued", "running"].includes(latest.status)) return current;
                 return changedFrameRemake({
                     ...current,
                     mergedVideo: next.status === "completed" ? undefined : current.mergedVideo,
@@ -264,10 +301,10 @@ export async function saveFrameRemakeProjectForUser(userId: string, id: string, 
     });
 }
 export async function deleteFrameRemakeProjectForUser(userId: string, id: string) {
-    const project = await getFrameRemakeProjectForUser(userId, id);
-    assertFrameRemakeIdle(project);
-    await deleteFrameRemakeProject(userId, id);
-    const keys = collectLocalMediaStorageKeys(project);
+    await getFrameRemakeProjectForUser(userId, id);
+    const deleted = await deleteFrameRemakeProject(userId, id, assertFrameRemakeIdle);
+    if (!deleted) return;
+    const keys = collectLocalMediaStorageKeys(deleted);
     if (keys.length) await deleteUserLocalMediaAssets(userId, keys);
 }
 
@@ -349,6 +386,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
     const target = before.groups.find((group) => group.id === groupId);
     if (!target) throw new FrameRemakeError("分组不存在", 404);
     if (target[kind].status === "queued") {
+        if (target[kind].submissionPaused || (automationLeaseId && (before.automation?.status !== "running" || before.automation.leaseId !== automationLeaseId))) throw new FrameRemakeError("后续步骤已暂停，请明确继续后再提交", 409);
         assertFrameRemakePromptResolved(target[kind].prompt || "");
         assertFrameRemakeRevision(before, revision);
         return before;
@@ -397,6 +435,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
         const pending: FrameRemakeTask = {
             ...group[kind],
             status: "queued",
+            submissionPaused: false,
             attemptNo: group[kind].attemptNo + 1,
             clientRequestId: `frame-remake:${randomUUID()}`,
             taskId: undefined,
@@ -479,30 +518,68 @@ export async function submitFrameRemakeGeneration(input: { userId: string; proje
     return getFrameRemakeProjectForUser(input.userId, project.id);
 }
 export async function abandonFrameRemakeGeneration(userId: string, id: string, groupId: string, kind: FrameRemakeGenerationKind) {
-    const project = await getFrameRemakeProjectForUser(userId, id);
-    const pending = project.groups.find((item) => item.id === groupId)?.[kind];
-    if (pending?.status !== "queued" || !pending.clientRequestId) throw new FrameRemakeError("没有待确认提交", 409);
-    const settings = await getAuthSettings();
+    // Pause first: even a cancellation that races a submission must stop later steps.
+    await mutateFrameRemake(userId, id, (current) => {
+        if (!current.groups.some((group) => group.id === groupId)) throw new FrameRemakeError("分组不存在", 404);
+        return changedFrameRemake(pausedFrameRemakeProject(current));
+    });
+    const project = await readFrameRemakeProjectForUser(userId, id);
+    const pending = project.groups.find((item) => item.id === groupId)![kind];
+    if (pending.status !== "queued" && pending.status !== "running") return project;
+    const type = kind === "template" ? "image" : kind;
     const result = await withGenerationConcurrencyLimit(
         userId,
-        kind === "template" ? "image" : kind,
+        type,
         10 * 60_000,
-        settings.generationConcurrency[kind === "template" ? "image" : kind],
+        // Cancellation needs the submission reservation, but must work at full capacity.
+        Number.MAX_SAFE_INTEGER,
         async () => {
-            if (await getStoredGenerationTaskByRequest(kind === "template" ? "image" : kind, userId, pending.clientRequestId!, pending.attemptNo)) return getFrameRemakeProjectForUser(userId, id);
-            return mutateFrameRemake(userId, id, (current) =>
-                changedFrameRemake({
+            const current = await readFrameRemakeProjectForUser(userId, id);
+            const latest = current.groups.find((item) => item.id === groupId)?.[kind];
+            if (!latest || latest.clientRequestId !== pending.clientRequestId || latest.attemptNo !== pending.attemptNo || !["queued", "running"].includes(latest.status)) return current;
+            const task = pending.clientRequestId ? await getStoredGenerationTaskByRequest<ImageTask | VideoTask>(type, userId, pending.clientRequestId, pending.attemptNo) : undefined;
+            const record = await getStoredGenerationTaskRecord(type, task?.id || pending.taskId || "");
+            const stored = record?.payload as ImageTask | VideoTask | undefined;
+            if (stored) {
+                if (!record || record.userId !== userId || stored.userId !== userId || stored.projectId !== id || stored.generationSlotId !== `frame-remake-${kind}:${groupId}` || (pending.clientRequestId && (record.clientRequestId !== pending.clientRequestId || record.attemptNo !== pending.attemptNo)))
+                    throw new FrameRemakeError("任务关联信息不一致，请在生成任务中检查原任务", 409);
+                if (stored.status === "success" && pending.prompt !== undefined && stored.prompt?.trim() !== pending.prompt.trim()) {
+                    return mutateFrameRemake(userId, id, (current) => {
+                        const latest = current.groups.find((item) => item.id === groupId)?.[kind];
+                        if (!latest || latest.clientRequestId !== pending.clientRequestId || latest.attemptNo !== pending.attemptNo || !["queued", "running"].includes(latest.status)) return current;
+                        return changedFrameRemake({ ...current, groups: current.groups.map((item) => item.id === groupId ? { ...item, [kind]: { ...item[kind], taskId: stored.id, status: "error", error: "已停止等待；原任务已完成但提示词与本步骤不一致，请在生成任务中查看结果" } } : item) });
+                    });
+                }
+                if (stored.status === "pending" || stored.status === "running") {
+                    const execution = cancellationExecutionPatch({ type, taskId: stored.id, userId, executionPhase: record.executionPhase, upstreamTaskId: stored.upstream?.id || record.upstreamTaskId, queryPath: record.queryPath || stored.config.advancedConfig?.queryPath, config: stored.config });
+                    const patch = { status: "cancelled" as const, error: "任务已取消", retryable: false };
+                    const cancelled = type === "image"
+                        ? await transitionImageTask(stored as ImageTask, ["pending", "running"], patch, execution)
+                        : await transitionVideoTask(stored as VideoTask, patch, execution);
+                    if (cancelled) {
+                        await mutateFrameRemake(userId, id, (current) => {
+                            const latest = current.groups.find((item) => item.id === groupId)?.[kind];
+                            if (!latest || latest.clientRequestId !== pending.clientRequestId || latest.attemptNo !== pending.attemptNo || !["queued", "running"].includes(latest.status)) return current;
+                            return changedFrameRemake({ ...current, groups: current.groups.map((item) => item.id === groupId ? { ...item, [kind]: { ...item[kind], taskId: cancelled.id, status: "error", error: "本次任务已取消，已保存的结果保留" } } : item) });
+                        });
+                    }
+                }
+                // A concurrently completed task keeps its result; refunds follow normal task recovery.
+                return getFrameRemakeProjectForUser(userId, id);
+            }
+            return mutateFrameRemake(userId, id, (current) => {
+                const latest = current.groups.find((item) => item.id === groupId)?.[kind];
+                if (!latest || latest.clientRequestId !== pending.clientRequestId || latest.attemptNo !== pending.attemptNo || !["queued", "running"].includes(latest.status)) return current;
+                return changedFrameRemake({
                     ...current,
-                    groups: current.groups.map((item) =>
-                        item.id === groupId && item[kind].clientRequestId === pending.clientRequestId && item[kind].status === "queued" ? { ...item, [kind]: { ...item[kind], status: "error", error: "已撤销未确认的提交" } } : item,
-                    ),
-                }),
-            );
+                    groups: current.groups.map((item) => item.id === groupId ? { ...item, [kind]: { ...item[kind], status: "error", error: "本次任务已取消，已保存的结果保留" } } : item),
+                });
+            });
         },
         undefined,
         pending.clientRequestId,
     );
-    if (!result) throw new FrameRemakeError("提交仍在处理中，请稍后检查", 409);
+    if (!result) throw new FrameRemakeError("提交仍在确认中，后续步骤已暂停，请稍后再次取消", 409);
     return result;
 }
 export async function validateFrameRemakeGeneration(input: {
@@ -528,6 +605,7 @@ export async function validateFrameRemakeGeneration(input: {
         !group ||
         !pending ||
         pending.status !== "queued" ||
+        pending.submissionPaused ||
         !pending.clientRequestId ||
         pending.clientRequestId !== input.clientRequestId ||
         pending.attemptNo !== input.attemptNo ||

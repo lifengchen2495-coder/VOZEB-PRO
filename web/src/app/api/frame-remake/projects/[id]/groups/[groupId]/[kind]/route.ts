@@ -3,6 +3,7 @@ import { readJsonBodyResult } from "@/lib/auth/request";
 import { abandonFrameRemakeGeneration, submitFrameRemakeGeneration } from "@/lib/server/frame-remake-project-service";
 import { resolveInternalOrigin } from "@/lib/server/internal-origin";
 import { requestRuntimeCredential } from "@/lib/server/maintenance-auth";
+import { runGenerationTaskRecoveryBatch } from "@/lib/server/generation-task-recovery-service";
 import { frameRemakeError, frameRemakeResponse, frameRemakeWriteGuard, isFrameRemakeRevision } from "../../../../../api-response";
 
 export const runtime = "nodejs";
@@ -37,8 +38,12 @@ export async function DELETE(request: Request, context: Context) {
     const { id, groupId, kind } = await context.params;
     if (kind !== "template" && kind !== "image" && kind !== "video") return frameRemakeResponse(null, "生成类型不正确", 400);
     try {
-        return frameRemakeResponse(await abandonFrameRemakeGeneration(user.id, id, groupId, kind));
+        const project = await abandonFrameRemakeGeneration(user.id, id, groupId, kind);
+        const taskId = project.groups.find((group) => group.id === groupId)?.[kind].taskId;
+        if (taskId) after(() => runGenerationTaskRecoveryBatch({ origin: resolveInternalOrigin(new URL(request.url).origin), limit: 1, taskIds: [taskId] }));
+        return frameRemakeResponse(project);
     } catch (error) {
         return frameRemakeError(error);
     }
 }
+import { after } from "next/server";

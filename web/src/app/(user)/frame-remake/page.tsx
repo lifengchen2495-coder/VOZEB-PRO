@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { App, Input, Modal, Pagination, Skeleton } from "antd";
-import { Film, Plus, RefreshCw, ScanSearch, Trash2 } from "lucide-react";
+import { Film, Pause, Plus, RefreshCw, ScanSearch, Trash2 } from "lucide-react";
 import { CompactEmptyState } from "@/components/compact-empty-state";
 import { frameRemakeTime, frameRemakeBusy, type FrameRemakeProject, type FrameRemakeProjectList } from "@/lib/frame-remake-contract";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
@@ -84,6 +84,20 @@ export default function FrameRemakePage() {
             },
         });
     };
+    const pause = async (project: FrameRemakeProject) => {
+        if (lock.current) return;
+        lock.current = true;
+        setBusy(true);
+        try {
+            const paused = await frameRemakeRequest<FrameRemakeProject>(`${frameRemakeProjectPath(project.id)}/run`, { revision: project.revision, action: "pause" });
+            setList((current) => current ? { ...current, items: current.items.map((item) => item.id === paused.id ? paused : item) } : current);
+        } catch (reason) {
+            void message.error((reason as Error).message);
+        } finally {
+            lock.current = false;
+            setBusy(false);
+        }
+    };
     return (
         <main className="h-full overflow-y-auto bg-background text-foreground">
             <div className="mx-auto w-full max-w-7xl px-2 py-2 sm:px-6 sm:py-8">
@@ -124,6 +138,7 @@ export default function FrameRemakePage() {
                             {list.items.map((project) => {
                                 const ready = frameRemakeWorkflowReadiness(project),
                                     active = frameRemakeBusy(project) || project.automation?.status === "running",
+                                    paused = project.automation?.status === "paused",
                                     failed = Boolean(project.error || project.groups.some((group) => [group.template, group.image, group.video].some((task) => task.status === "error")));
                                 return (
                                     <article key={project.id} className="min-w-0 overflow-hidden rounded-lg border bg-card">
@@ -131,7 +146,7 @@ export default function FrameRemakePage() {
                                             <div className="flex items-center justify-between gap-2">
                                                 <Film className="size-5" />
                                                 <span className="text-xs text-muted-foreground">
-                                                    {active ? "执行中" : failed ? "需要处理" : ready.production ? "已完成" : ready.images ? "待生产内容" : ready.planning ? "待分镜重绘" : ready.analysis ? "待分镜脚本" : "待来源分析"}
+                                                    {paused ? active ? "已暂停 · 任务仍在处理" : "已暂停" : active ? "执行中" : failed ? "需要处理" : ready.production ? "已完成" : ready.images ? "待生产内容" : ready.planning ? "待分镜重绘" : ready.analysis ? "待分镜脚本" : "待来源分析"}
                                                 </span>
                                             </div>
                                             <h2 className="truncate text-sm font-semibold">{project.title}</h2>
@@ -142,8 +157,17 @@ export default function FrameRemakePage() {
                                                 {project.groups.filter((group) => group.video.status === "completed").length}/{project.groups.length} 组视频已生成
                                             </p>
                                         </Link>
-                                        <div className="flex justify-end border-t px-3 py-2">
-                                            <Button variant="ghost" aria-label={`删除${project.title}`} disabled={busy || active} onClick={() => remove(project)}>
+                                        <div className="flex flex-wrap items-center justify-end gap-2 border-t px-3 py-2">
+                                            {active && (!paused || project.operation) && (
+                                                <Button variant="ghost" disabled={busy} onClick={() => void pause(project)}>
+                                                    <Pause className="size-3.5" />
+                                                    暂停执行
+                                                </Button>
+                                            )}
+                                            {active && (
+                                                <Link href={`/frame-remake/${encodeURIComponent(project.id)}`} className="text-xs underline underline-offset-2">进入项目取消任务</Link>
+                                            )}
+                                            <Button variant="ghost" aria-label={`删除${project.title}`} title={active ? "先暂停执行并取消当前任务，再删除项目" : undefined} disabled={busy || active} onClick={() => remove(project)}>
                                                 <Trash2 className="size-3.5" />
                                                 删除项目
                                             </Button>

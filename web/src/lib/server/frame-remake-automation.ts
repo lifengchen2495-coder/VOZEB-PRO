@@ -2,7 +2,7 @@ import { nextFrameRemakeStep, frameRemakeWorkflowReadiness, frameRemakeAutomatio
 export { nextFrameRemakeStep } from "@/lib/frame-remake-steps";
 import { randomUUID } from "node:crypto";
 import { frameRemakeInputError, frameRemakeBusy, idleFrameRemakeTask, resetFrameRemakeAnalysisFrom, type FrameRemakeRunOptions, type FrameRemakeWorkflowStage } from "@/lib/frame-remake-contract";
-import { changedFrameRemake, FrameRemakeError, assertFrameRemakeRevision, assertFrameRemakeAnalysisPromptReady, getFrameRemakeProjectForUser, mutateFrameRemake, startFrameRemakeOperation, submitFrameRemakeGeneration } from "./frame-remake-project-service";
+import { changedFrameRemake, pausedFrameRemakeProject, FrameRemakeError, assertFrameRemakeRevision, assertFrameRemakeAnalysisPromptReady, getFrameRemakeProjectForUser, mutateFrameRemake, startFrameRemakeOperation, submitFrameRemakeGeneration } from "./frame-remake-project-service";
 import { assertFrameRemakePromptResolved } from "@/lib/frame-remake-feishu-workflow";
 import { frameRemakeImagePrompt, frameRemakeVideoPrompt } from "@/lib/frame-remake-prompts";
 import { listRunnableFrameRemakeProjects } from "./frame-remake-project-store";
@@ -13,8 +13,9 @@ import { toSafeGenerationErrorMessage } from "./generation-errors";
 export async function controlFrameRemakeAutomation(userId: string, id: string, revision: number, action: "start" | "step" | "pause", stageScope?: FrameRemakeWorkflowStage, stopAfterPrompts = false, options: FrameRemakeRunOptions = {}) {
     if (action !== "pause" && !isWorkerTokenConfigured()) throw new FrameRemakeError("请先配置生成 Worker，才能自动执行复刻流程", 503);
     return mutateFrameRemake(userId, id, (project) => {
+        // A stop request must win over polling/worker revisions and invalidate old workers.
+        if (action === "pause") return changedFrameRemake(pausedFrameRemakeProject(project));
         assertFrameRemakeRevision(project, revision);
-        if (action === "pause") return changedFrameRemake({ ...project, automation: project.automation ? { ...project.automation, status: "paused", updatedAt: new Date().toISOString(), progress: "已暂停后续步骤，当前已提交任务会继续完成" } : undefined });
         if (!project.sourceVideo) throw new FrameRemakeError("请先上传原视频");
         if (project.automation?.status === "running") return project;
         const ready = frameRemakeWorkflowReadiness(project);
@@ -38,7 +39,7 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
                 ...Object.fromEntries(
                     (["template", "image", "video"] as const).map((kind) => [
                         kind,
-                        group[kind].status === "error" && (!stageScope || (stageScope === "images" && kind !== "video") || (stageScope === "production" && kind === "video")) ? idleFrameRemakeTask(group[kind].attemptNo) : group[kind],
+                        group[kind].status === "queued" ? { ...group[kind], submissionPaused: false } : group[kind].status === "error" && (!stageScope || (stageScope === "images" && kind !== "video") || (stageScope === "production" && kind === "video")) ? idleFrameRemakeTask(group[kind].attemptNo) : group[kind],
                     ]),
                 ),
             };

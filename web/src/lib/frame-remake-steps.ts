@@ -18,30 +18,31 @@ export function frameRemakeAutomationView(project: FrameRemakeProject) {
     return project.automation?.groupId ? { ...project, groups: project.groups.filter((g) => g.id === project.automation!.groupId) } : project;
 }
 export function nextFrameRemakeStep(project: FrameRemakeProject) {
+    const totalGroups = project.groups.length;
     project = frameRemakeAutomationView(project);
     if (!project.sourceVideo) throw new Error("请先上传原视频");
     if (project.workflowVersion !== "feishu-original-15s" || !project.durationMs || !project.groups.length) return { kind: "inspect" as const, workflowStage: "analysis" as const, label: "读取原片信息与时间线" };
     for (const group of project.groups) {
-        if (!group.analysis) return { kind: "analyze" as const, workflowStage: "analysis" as const, groupId: group.id, analysisStage: "analysis" as const, label: `第 ${group.number} / ${project.groups.length} 组：理解来源视频` };
-        if (!group.contactSheet || group.frames.some((frame) => !frame.media)) return { kind: "extract" as const, workflowStage: "analysis" as const, groupId: group.id, label: `第 ${group.number} / ${project.groups.length} 组：按分析结果拆帧` };
+        if (!group.analysis) return { kind: "analyze" as const, workflowStage: "analysis" as const, groupId: group.id, analysisStage: "analysis" as const, label: `第 ${group.number} / ${totalGroups} 组：理解来源视频` };
+        if (!group.contactSheet || group.frames.some((frame) => !frame.media)) return { kind: "extract" as const, workflowStage: "analysis" as const, groupId: group.id, label: `第 ${group.number} / ${totalGroups} 组：按分析结果拆帧` };
     }
     for (const group of project.groups) {
         for (const analysisStage of ["productScript", "imagePrompt"] as const)
             if (!frameRemakeAnalysisResult(group, analysisStage))
-                return { kind: "analyze" as const, workflowStage: "planning" as const, groupId: group.id, analysisStage, label: `第 ${group.number} / ${project.groups.length} 组：${FRAME_REMAKE_ANALYSIS_LABELS[analysisStage]}` };
+                return { kind: "analyze" as const, workflowStage: "planning" as const, groupId: group.id, analysisStage, label: `第 ${group.number} / ${totalGroups} 组：${FRAME_REMAKE_ANALYSIS_LABELS[analysisStage]}` };
     }
     for (const group of project.groups) {
         for (const kind of frameRemakeUsesTemplate(project) ? (["template", "image"] as const) : (["image"] as const)) {
             if (group[kind].status === "error") throw new Error(`第 ${group.number} 组：${group[kind].error || "生成失败"}`);
-            if (group[kind].status !== "completed") return { kind, workflowStage: "images" as const, groupId: group.id, label: `第 ${group.number} / ${project.groups.length} 组：${kind === "template" ? "还原模板与替换人物" : "生成最终分镜图"}` };
+            if (group[kind].status !== "completed") return { kind, workflowStage: "images" as const, groupId: group.id, label: `第 ${group.number} / ${totalGroups} 组：${kind === "template" ? "还原模板与替换人物" : "生成最终分镜图"}` };
         }
     }
     for (const group of project.groups) {
-        if (!group.videoPrompt) return { kind: "analyze" as const, workflowStage: "production" as const, groupId: group.id, analysisStage: "videoPrompt" as const, label: `第 ${group.number} / ${project.groups.length} 组：生成视频提示词` };
+        if (!group.videoPrompt) return { kind: "analyze" as const, workflowStage: "production" as const, groupId: group.id, analysisStage: "videoPrompt" as const, label: `第 ${group.number} / ${totalGroups} 组：生成视频提示词` };
     }
     for (const group of project.groups) {
         if (group.video.status === "error") throw new Error(`第 ${group.number} 组：${group.video.error || "生成失败"}`);
-        if (group.video.status !== "completed") return { kind: "video" as const, workflowStage: "production" as const, groupId: group.id, label: `第 ${group.number} / ${project.groups.length} 组：生成视频` };
+        if (group.video.status !== "completed") return { kind: "video" as const, workflowStage: "production" as const, groupId: group.id, label: `第 ${group.number} / ${totalGroups} 组：生成视频` };
     }
     if (!project.mergedVideo) return { kind: "merge" as const, workflowStage: "production" as const, label: "按原片时长合成视频" };
     return undefined;

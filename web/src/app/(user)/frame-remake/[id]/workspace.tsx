@@ -41,6 +41,7 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
     const [selected, setSelected] = useState("G1");
     const [working, setWorking] = useState(false),
         [saving, setSaving] = useState(false);
+    const [controlling, setControlling] = useState(false);
     const [stage, setStage] = useState<FrameRemakeWorkflowStage>();
     const [error, setError] = useState("");
     const current = useRef<FrameRemakeProject>(undefined),
@@ -49,6 +50,9 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
         inFlight = useRef<FrameRemakePatch | undefined>(undefined);
     const lock = useRef(false),
         mounted = useRef(true);
+    const controlLock = useRef(false),
+        controlEpoch = useRef(0),
+        actionEpoch = useRef(0);
     const path = frameRemakeProjectPath(id);
     const accept = useCallback(
         (value: FrameRemakeProject) => {
@@ -63,17 +67,18 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
     const refresh = useCallback(async () => accept(await frameRemakeRequest<FrameRemakeProject>(frameRemakeProjectPath(id))), [accept, id]);
     const flush = useCallback((): Promise<void> => {
         if (savingPromise.current) return savingPromise.current;
+        const epoch = controlEpoch.current;
         const pending = (async () => {
             setSaving(true);
             try {
-                while (queue.current.length && mounted.current) {
+                while (queue.current.length && mounted.current && !controlLock.current && epoch === controlEpoch.current) {
                     const patch = queue.current[0];
                     inFlight.current = patch;
                     accept(await frameRemakeRequest<FrameRemakeProject>(path, { ...patch, revision: current.current!.revision }, "PATCH"));
                     queue.current = queue.current.filter((p) => p !== patch);
                     setDrafts([...queue.current]);
                 }
-                setError("");
+                if (epoch === controlEpoch.current) setError("");
             } finally {
                 inFlight.current = undefined;
                 setSaving(false);
@@ -95,19 +100,19 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
         setDrafts([...queue.current]);
     };
     useEffect(() => {
-        if (!drafts.length || working) return;
+        if (!drafts.length || working || controlling || (project && (frameRemakeBusy(project) || project.automation?.status === "running"))) return;
         const timer = setTimeout(() => {
             void flush().catch((e) => setError(`自动保存失败：${e.message}`));
         }, 700);
         return () => clearTimeout(timer);
-    }, [drafts, working, flush]);
+    }, [drafts, working, controlling, project, flush]);
     useEffect(() => {
         mounted.current = true;
         let stopped = false;
         let timer: ReturnType<typeof setTimeout>;
         const poll = async () => {
             try {
-                if (!lock.current && !savingPromise.current && !queue.current.length) await refresh();
+                if (!lock.current && !controlLock.current) await refresh();
             } catch (e) {
                 if (!stopped) setError((e as Error).message);
             }
@@ -126,36 +131,66 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
         window.addEventListener("beforeunload", warn);
         return () => window.removeEventListener("beforeunload", warn);
     }, [drafts.length]);
-    const action = async (fn: () => Promise<unknown>) => {
-        if (lock.current) return;
+    const action = async (fn: (canContinue: () => boolean) => Promise<unknown>) => {
+        if (lock.current || controlLock.current) return;
+        const epoch = ++actionEpoch.current;
+        const canContinue = () => epoch === actionEpoch.current && mounted.current;
         lock.current = true;
         setWorking(true);
         setError("");
         try {
             await flush();
-            await fn();
+            if (canContinue()) await fn(canContinue);
+        } catch (e) {
+            if (canContinue()) {
+                setError((e as Error).message);
+                await refresh().catch(() => undefined);
+            }
+        } finally {
+            if (epoch === actionEpoch.current) {
+                lock.current = false;
+                if (mounted.current) setWorking(false);
+            }
+        }
+    };
+    // 暂停和取消不能等待草稿保存；同时阻止旧的开始请求在等待保存后继续提交。
+    const priorityControl = async (fn: () => Promise<FrameRemakeProject>) => {
+        if (controlLock.current) return;
+        controlLock.current = true;
+        controlEpoch.current++;
+        actionEpoch.current++;
+        lock.current = false;
+        setWorking(false);
+        setControlling(true);
+        setError("");
+        try {
+            accept(await fn());
         } catch (e) {
             if (mounted.current) setError((e as Error).message);
             await refresh().catch(() => undefined);
         } finally {
-            lock.current = false;
-            if (mounted.current) setWorking(false);
+            controlLock.current = false;
+            if (mounted.current) setControlling(false);
         }
     };
     const operation = (kind: FrameRemakeOperationKind, groupId?: string, analysisStage?: FrameRemakeAnalysisStage) =>
         action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/operations`, { revision: current.current!.revision, kind, groupId, analysisStage })));
-    const control = (mode: "start" | "step" | "pause", stageScope: FrameRemakeWorkflowStage, stopAfterPrompts = false, options?: FrameRemakeRunOptions) =>
-        action(async () => {
+    const control = (mode: "start" | "step" | "pause", stageScope: FrameRemakeWorkflowStage, stopAfterPrompts = false, options?: FrameRemakeRunOptions) => {
+        if (mode === "pause") return priorityControl(() => frameRemakeRequest<FrameRemakeProject>(`${path}/run`, { revision: current.current!.revision, action: "pause" }));
+        return action(async (canContinue) => {
             setStage(stageScope);
             const latest = await refresh();
+            if (!canContinue()) return;
             accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/run`, { revision: latest.revision, action: mode, stageScope, stopAfterPrompts, options }));
         });
+    };
     const generate = (groupId: string, kind: FrameRemakeGenerationKind) => action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/groups/${groupId}/${kind}`, { revision: current.current!.revision })));
-    const abandon = (groupId: string, kind: FrameRemakeGenerationKind) => action(async () => accept(await frameRemakeRequest<FrameRemakeProject>(`${path}/groups/${groupId}/${kind}`, undefined, "DELETE")));
+    const abandon = (groupId: string, kind: FrameRemakeGenerationKind) => priorityControl(() => frameRemakeRequest<FrameRemakeProject>(`${path}/groups/${groupId}/${kind}`, undefined, "DELETE"));
     const upload = (file: File, role: "product" | "character" | "background" | "video") =>
-        action(async () => {
+        action(async (canContinue) => {
             const media = await uploadFrameRemakeMedia(id, file),
                 latest = await refresh();
+            if (!canContinue()) return;
             const patch = role === "video" ? { sourceVideo: media } : { references: { ...latest.references, [role]: [media] } };
             accept(await frameRemakeRequest<FrameRemakeProject>(path, { ...patch, revision: latest.revision }, "PATCH"));
         });
@@ -173,7 +208,7 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
                 </div>
             </main>
         );
-    const editingDisabled = working || frameRemakeBusy(project) || project.automation?.status === "running";
+    const editingDisabled = working || controlling || frameRemakeBusy(project) || project.automation?.status === "running";
     const display = drafts.reduce(applyDraft, project);
     const activeStage = stage ?? recoveredFrameRemakeWorkflowStage(project);
     return (
@@ -185,15 +220,12 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
             dirty={drafts.length > 0}
             saving={saving}
             working={working}
+            controlling={controlling}
             editingDisabled={editingDisabled}
             disabled={editingDisabled}
             error={error}
             groupLocked={false}
-            onStage={(next) => {
-                void action(async () => {
-                    setStage(next);
-                });
-            }}
+            onStage={setStage}
             onGroup={setSelected}
             onChange={change}
             onEditGroup={(key, value, groupId) => {
@@ -211,7 +243,13 @@ export function FrameRemakeWorkspace({ id }: { id: string }) {
                 queue.current = queue.current.filter((p) => p === inFlight.current);
                 setDrafts([...queue.current]);
             }}
-            onRefresh={() => action(refresh)}
+            onRefresh={async () => {
+                try {
+                    await refresh();
+                } catch (e) {
+                    if (mounted.current) setError((e as Error).message);
+                }
+            }}
             onControl={(mode, stop, options) => control(mode, activeStage, stop, options)}
             onOperation={operation}
             onGenerate={generate}

@@ -13,6 +13,7 @@ export type FrameRemakeWorkflowStage = "analysis" | "planning" | "images" | "pro
 export type FrameRemakeReplacement = { product: boolean; character: boolean; background: boolean };
 export type FrameRemakeOperationKind = "inspect" | "extract" | "analyze" | "merge";
 export type FrameRemakeTask = {
+    submissionPaused?: boolean;
     status: "idle" | "queued" | "running" | "completed" | "error";
     attemptNo: number;
     clientRequestId?: string;

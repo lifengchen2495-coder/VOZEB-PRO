@@ -119,16 +119,23 @@ export async function mutateFrameRemakeProject(userId: string, id: string, mutat
     });
 }
 
-export async function deleteFrameRemakeProject(userId: string, id: string) {
+export async function deleteFrameRemakeProject(userId: string, id: string, assertDeletable?: (project: FrameRemakeProject) => void) {
     if (getDatabaseProvider() === "postgres") {
         await ensurePostgresSchema();
-        const result = await postgresQuery<{ project_json: FrameRemakeProject }>("DELETE FROM frame_remake_projects WHERE id = $1 AND user_id = $2 RETURNING project_json", [id, userId]);
-        return result.rows[0]?.project_json || null;
+        return withPostgresTransaction(async (client) => {
+            const result = await client.query<{ project_json: FrameRemakeProject }>("SELECT project_json FROM frame_remake_projects WHERE id = $1 AND user_id = $2 FOR UPDATE", [id, userId]);
+            const project = result.rows[0]?.project_json;
+            if (!project) return null;
+            assertDeletable?.(project);
+            await client.query("DELETE FROM frame_remake_projects WHERE id = $1 AND user_id = $2", [id, userId]);
+            return project;
+        });
     }
     return withFileMutation((database) => {
         let deleted: FrameRemakeProject | null = null;
         const projects = database.projects.filter((record) => {
             if (record.userId === userId && record.project.id === id) {
+                assertDeletable?.(record.project);
                 deleted = record.project;
                 return false;
             }
