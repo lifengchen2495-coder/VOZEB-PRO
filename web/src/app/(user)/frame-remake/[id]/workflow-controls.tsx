@@ -130,7 +130,7 @@ export function ScriptResult({ props, group, stage }: { props: WorkflowProps; gr
             </details>
             {(record?.prompt || !text) && (
                 <details>
-                    <summary className="cursor-pointer text-xs">{record?.prompt ? "本次执行记录的提示词" : "原表提示词预览（尚未发送）"}{record?.elapsedMs !== undefined ? ` · ${(record.elapsedMs / 1000).toFixed(1)} 秒` : ""}</summary>
+                    <summary className="cursor-pointer text-xs">{record?.prompt ? "本次执行记录的提示词" : "提示词模板预览（尚未发送）"}{record?.elapsedMs !== undefined ? ` · ${(record.elapsedMs / 1000).toFixed(1)} 秒` : ""}</summary>
                     <TextOutput title="模型输入" text={record?.prompt || frameRemakeAnalysisPrompt(props.display, group, stage)} name={`第${group.number}组-${stage}-input`} />
                 </details>
             )}

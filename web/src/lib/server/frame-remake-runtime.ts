@@ -18,6 +18,7 @@ import { deleteUserLocalMediaAssets } from "./local-media-storage";
 import { maintenanceWorkerContextHeaders } from "./maintenance-auth";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiIdempotencyKey } from "./system-ai-billing";
 import { getVideoTask } from "./video-task-store";
+import { getStoredGenerationTaskRecord } from "./generation-task-store";
 import { toSafeGenerationErrorMessage } from "./generation-errors";
 import { RemakeProductionVisionError } from "./remake-vision-request";
 
@@ -96,7 +97,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
             if (!group) throw new Error("没有待分析的分组");
             const { stage, prompt } = assertFrameRemakeAnalysisPromptReady(input.project, group.id, operation.analysisStage);
             const refs = frameRemakeActiveReferences(input.project);
-            const images = stage === "productScript" ? [...refs.character, ...refs.product] : stage === "imagePrompt" ? [group.contactSheet!] : stage === "videoPrompt" ? [group.image.result!, ...refs.character] : [];
+            const images = stage === "productScript" ? [...refs.product, ...refs.character, ...refs.background] : stage === "imagePrompt" ? [group.contactSheet!] : stage === "videoPrompt" ? [group.image.result!, ...refs.product, ...refs.character] : [];
             const settings = await getAuthSettings();
             const candidate = resolveFrameOriginalModel(settings, "text", input.project.modelSelection.analysis, { fullVideo: stage === "analysis", imageCount: images.length });
             const model = candidate.logicalModelId;
@@ -262,19 +263,21 @@ export async function createFrameRemakeContactSheet(group: FrameRemakeGroup, fra
         .toBuffer();
 }
 
-export function frameRemakeNormalizationArgs(source: string, output: string, seconds: number, hasAudio: boolean, width: number, height: number, generatedSeconds = seconds) {
-    const speed = generatedSeconds / seconds;
+export function frameRemakeNormalizationArgs(source: string, output: string, seconds: number, hasAudio: boolean, width: number, height: number, generatedSeconds = seconds, timingMode: "trim" | "fit" = "trim") {
+    // 新任务把尾段动作放在实际区间内，原速裁掉补齐部分；旧任务仍需完整缩放到原时长。
     const tempo: number[] = [];
-    let remaining = speed;
-    while (remaining > 2) {
-        tempo.push(2);
-        remaining /= 2;
+    if (timingMode === "fit") {
+        let remaining = generatedSeconds / seconds;
+        while (remaining > 2) {
+            tempo.push(2);
+            remaining /= 2;
+        }
+        while (remaining < 0.5) {
+            tempo.push(0.5);
+            remaining /= 0.5;
+        }
+        tempo.push(remaining);
     }
-    while (remaining < 0.5) {
-        tempo.push(0.5);
-        remaining /= 0.5;
-    }
-    tempo.push(remaining);
     return [
         "-y",
         "-hide_banner",
@@ -288,9 +291,9 @@ export function frameRemakeNormalizationArgs(source: string, output: string, sec
         "-map",
         hasAudio ? "0:a:0" : "1:a:0",
         "-vf",
-        `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=(PTS-STARTPTS)*${seconds / generatedSeconds},fps=30,tpad=stop_mode=clone:stop_duration=0.05`,
+        `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=${timingMode === "fit" ? `(PTS-STARTPTS)*${seconds / generatedSeconds}` : "PTS-STARTPTS"},fps=30,tpad=stop_mode=clone:stop_duration=0.05`,
         "-af",
-        `asetpts=PTS-STARTPTS,${tempo.map((factor) => `atempo=${factor}`).join(",")},apad`,
+        ["asetpts=PTS-STARTPTS", ...tempo.map((factor) => `atempo=${factor}`), "apad"].join(","),
         "-t",
         String(seconds),
         "-c:v",
@@ -315,7 +318,7 @@ export function frameRemakeNormalizationArgs(source: string, output: string, sec
     ];
 }
 export async function mergeFrameRemakeFiles(input: {
-    files: Array<{ path: string; seconds: number; generatedSeconds?: number }>;
+    files: Array<{ path: string; seconds: number; generatedSeconds?: number; timingMode?: "trim" | "fit" }>;
     directory: string;
     durationMs: number;
     width: number;
@@ -328,7 +331,7 @@ export async function mergeFrameRemakeFiles(input: {
         const probe = await inspectFrameRemakeVideo(file.path);
         if (probe.duration + 0.04 < (file.generatedSeconds ?? file.seconds)) throw new Error(`第 ${index + 1} 组视频只有 ${probe.duration} 秒，短于所需 ${file.seconds} 秒`);
         const name = `part-${index + 1}.mp4`;
-        await runFfmpeg(frameRemakeNormalizationArgs(file.path, join(input.directory, name), file.seconds, probe.hasAudio, input.width, input.height, file.generatedSeconds ?? file.seconds), { timeoutMs: 10 * 60_000 });
+        await runFfmpeg(frameRemakeNormalizationArgs(file.path, join(input.directory, name), file.seconds, probe.hasAudio, input.width, input.height, file.generatedSeconds ?? file.seconds, file.timingMode), { timeoutMs: 10 * 60_000 });
         normalized.push(name);
     }
     if (Math.abs(input.files.reduce((sum, file) => sum + file.seconds * 1000, 0) - input.durationMs) > 1) throw new Error("分组总时长与原片不一致");
@@ -367,14 +370,18 @@ async function mergeFrameRemakeVideos(input: FrameRemakeRuntimeInput, directory:
     const files = [];
     for (const group of input.project.groups) {
         const task = group.video.taskId ? await getVideoTask(group.video.taskId) : null;
+        const record = task ? await getStoredGenerationTaskRecord("video", task.id) : null;
         if (
             !task ||
+            !record ||
+            record.userId !== input.userId ||
+            record.clientRequestId !== group.video.clientRequestId ||
+            record.attemptNo !== group.video.attemptNo ||
             task.status !== "success" ||
             task.userId !== input.userId ||
             task.projectId !== input.project.id ||
             task.generationSlotId !== `frame-remake-video:${group.id}` ||
             task.clientRequestId !== group.video.clientRequestId ||
-            task.attemptNo !== group.video.attemptNo ||
             task.requestedDurationSeconds !== group.video.seconds ||
             task.prompt !== group.video.prompt ||
             task.result?.url !== group.video.result?.url
@@ -382,7 +389,7 @@ async function mergeFrameRemakeVideos(input: FrameRemakeRuntimeInput, directory:
             throw new Error(`第 ${group.number} 组视频尚未完成或与当前分组不一致`);
         const path = join(directory, `generated-${group.number}.mp4`);
         await downloadOwned(group.video.result!, path, input);
-        files.push({ path, seconds: frameRemakeSeconds(group), generatedSeconds: group.video.seconds });
+        files.push({ path, seconds: frameRemakeSeconds(group), generatedSeconds: group.video.seconds, timingMode: group.video.timingMode ?? "fit" });
     }
     const sourcePath = join(directory, "original-video");
     if (input.project.audioMode === "source") await downloadOwned(input.project.sourceVideo!, sourcePath, input);

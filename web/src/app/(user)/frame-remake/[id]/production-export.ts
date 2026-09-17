@@ -6,6 +6,7 @@ import { createZip, type ZipFile } from "@/lib/zip";
 import { assertFrameRemakeTimeline, type FrameRemakeProject, type FrameRemakeMedia } from "@/lib/frame-remake-contract";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
 import { frameRemakeTemplates } from "@/lib/frame-remake-prompt-templates";
+import { frameRemakeGroupCopyText } from "./copy-text";
 
 export async function downloadFrameRemakeProductionBundle(project: FrameRemakeProject) {
     assertFrameRemakeTimeline(project);
@@ -30,7 +31,8 @@ export async function downloadFrameRemakeProductionBundle(project: FrameRemakePr
             if (asset) media.push({ name: `${name}/${prefix}`, asset });
         for (const [name, text] of [
             ["镜头解析", g.analysis],
-            ["原文案（选填）", g.copy],
+            ["视频提取原文案", g.sourceCopy],
+            ["采用文案", frameRemakeGroupCopyText(project, g)],
             ["新产品-12分镜脚本", g.productScript],
             ["分镜脚本", g.imagePrompt],
             ["第一步完整提示词", g.template.prompt],

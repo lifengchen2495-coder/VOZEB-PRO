@@ -86,6 +86,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                 <div>
                     <p className="text-xs font-medium text-muted-foreground">阶段 01</p>
                     <h1 className="text-sm font-semibold">来源视频理解与 {frames.length || "全部"} 镜头解析</h1>
+                    {video && !ready && <p className="mt-1 text-xs text-muted-foreground">来源视频已保存，可以直接开始或继续分析。</p>}
                 </div>
                 <div className="flex items-center gap-2">
                     <Tag className="!m-0" color={ready ? "success" : "default"}>
@@ -93,7 +94,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                     </Tag>
                     {ready ? (
                         <Button size="small" onClick={() => props.onStage("planning")}>
-                            填写产品信息与人物图
+                            进入十二宫格重绘
                         </Button>
                     ) : null}
                 </div>
@@ -152,12 +153,24 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                 ),
                                 children: (
                                     <div className="h-full space-y-4 overflow-y-auto p-4">
-                                        <p className="text-xs text-muted-foreground">文案按原样传入视频提示词步骤。长视频请分别填写每组文案，留空则不指定口播。</p>
+                                        <p className="text-xs text-muted-foreground">每组会保留视频提取的原文案。可在校对框修正，留空则沿用提取结果；采用的文案会传入视频提示词步骤。</p>
+                                        {display.sourceCopy?.trim() === "不需要人物口播" && (
+                                            <div className="space-y-2">
+                                                <p role="status" className="text-xs text-muted-foreground">当前项目已设置“不需要人物口播”，提取和校对文案仅供查看，不用于生成口播。</p>
+                                                <Button size="small" disabled={props.editingDisabled} onClick={() => props.onChange({ sourceCopy: "" })}>
+                                                    恢复使用文案
+                                                </Button>
+                                            </div>
+                                        )}
                                         {display.groups.map((g) => (
-                                            <label key={g.id} className="grid gap-2 text-sm">
-                                                第 {g.number} 组 · {g.startMs / 1000}–{g.endMs / 1000} 秒
-                                                <Input.TextArea aria-label={`第${g.number}组原文案`} value={g.copy || ""} rows={5} disabled={props.editingDisabled} onChange={(event) => props.onChange({ group: { id: g.id, copy: event.target.value } })} />
-                                            </label>
+                                            <section key={g.id} className="space-y-3 rounded-lg border p-3 text-sm">
+                                                <h3 className="font-medium">第 {g.number} 组 · {g.startMs / 1000}–{g.endMs / 1000} 秒</h3>
+                                                <TextOutput title="视频提取原文案" text={g.sourceCopy?.trim() || (g.analysis ? "未检测到口播。" : "来源分析完成后显示提取结果。")} name={`${g.id}-source-copy`} />
+                                                <label className="grid gap-2">
+                                                    校对文案（可选，留空沿用提取结果）
+                                                    <Input.TextArea aria-label={`第${g.number}组校对文案`} value={g.copy || ""} rows={5} disabled={props.editingDisabled} onChange={(event) => props.onChange({ group: { id: g.id, copy: event.target.value } })} />
+                                                </label>
+                                            </section>
                                         ))}
                                     </div>
                                 ),

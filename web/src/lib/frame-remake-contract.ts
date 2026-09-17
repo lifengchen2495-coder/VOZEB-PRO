@@ -22,6 +22,7 @@ export type FrameRemakeTask = {
     model?: string;
     referenceUrls?: string[];
     seconds?: number;
+    timingMode?: "trim" | "fit";
     audioReferenceUrl?: string;
     result?: FrameRemakeMedia;
     error?: string;
@@ -116,7 +117,7 @@ export function newFrameRemakeProject(id: string, title: string): FrameRemakePro
         durationMs: 0,
         maxSegmentSeconds: 15,
         references: { product: [], character: [], background: [] },
-        replacement: { product: true, character: true, background: false },
+        replacement: { product: true, character: false, background: false },
         instructions: "",
         audioMode: "source",
         voice: "female",
@@ -175,6 +176,9 @@ export function resetFrameRemakeAnalysisFrom(group: FrameRemakeGroup, stage: Fra
     if (stage === "analysis") {
         next.sourceCopy = undefined;
         next.sourceAnalysisMode = undefined;
+        // 重新理解后镜头时间可能变化；保留校对文案，但移除旧时间区间。
+        if (group.copyBlocks?.length) next.copy = group.copyBlocks.map((block) => block.text).join("");
+        next.copyBlocks = undefined;
         next.frames = next.frames.map(({ detail: _detail, ...frame }) => frame);
     }
     if (stage === "copy") {
@@ -200,7 +204,8 @@ export function frameRemakeBusy(project: FrameRemakeProject) {
 }
 export function frameRemakeImageReferences(project: FrameRemakeProject, group: FrameRemakeGroup, kind: "template" | "image" = "image") {
     const refs = frameRemakeActiveReferences(project);
-    return (kind === "template" ? [group.contactSheet, ...refs.character] : [group.template.result, ...refs.product]).filter((media): media is FrameRemakeMedia => Boolean(media));
+    const usesTemplate = frameRemakeUsesTemplate(project);
+    return (kind === "template" ? [group.contactSheet, ...refs.character] : [usesTemplate ? group.template.result : group.contactSheet, ...refs.product, ...(!usesTemplate ? refs.character : []), ...refs.background]).filter((media): media is FrameRemakeMedia => Boolean(media));
 }
 export function frameRemakeVideoReferences(project: FrameRemakeProject, group: FrameRemakeGroup) {
     const refs = frameRemakeActiveReferences(project);
@@ -211,16 +216,17 @@ export function frameRemakeReplacement(project: FrameRemakeProject): FrameRemake
     return project.replacement ?? { product: Boolean(project.references.product.length), character: Boolean(project.references.character.length), background: Boolean(project.references.background.length) };
 }
 export function frameRemakeActiveReferences(project: FrameRemakeProject) {
-    // 原版：产品图必填，人物图可选；不把背景图混入其他表的流程。
-    return { product: project.references.product, character: project.references.character, background: [] as FrameRemakeMedia[] };
+    const replacement = frameRemakeReplacement(project);
+    return { product: replacement.product ? project.references.product : [], character: replacement.character ? project.references.character : [], background: replacement.background ? project.references.background : [] };
 }
-export function frameRemakeUsesTemplate(_project: FrameRemakeProject) {
-    return true;
+export function frameRemakeUsesTemplate(project: FrameRemakeProject) {
+    return frameRemakeReplacement(project).product;
 }
 export function frameRemakeInputError(project: FrameRemakeProject) {
-    if (!project.references.product.length) return "请上传原版流程必需的产品图";
-    if (project.references.background.length) return "当前为原版15秒拆帧流程，不包含背景图输入；请先移除旧版环境参考图";
-    if (project.references.product.length > 1 || project.references.character.length > 1) return "原版流程每次使用一张产品图和一张可选人物图，请先移除多余参考图";
+    const replacement = frameRemakeReplacement(project);
+    for (const [role, label] of [["product", "产品"], ["character", "人物"], ["background", "环境"]] as const) {
+        if (replacement[role] && !project.references[role].length) return `请上传要替换的${label}参考图`;
+    }
     return "";
 }
 export function frameRemakeAspectRatio(_project: FrameRemakeProject) {

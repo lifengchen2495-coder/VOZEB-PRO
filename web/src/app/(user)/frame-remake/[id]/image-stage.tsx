@@ -16,9 +16,9 @@ export function FrameImageStage(props: WorkflowProps) {
             <div className="mx-auto w-full max-w-[1480px] px-3 py-4 sm:px-5">
                 <header className="flex flex-wrap items-end justify-between gap-3 border-b pb-4">
                     <div>
-                        <p className="text-xs text-muted-foreground">阶段 03</p>
-                        <h2 className="mt-1 text-lg font-semibold">第一步模板图 → 最终分镜图</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按照原表，先生成第一步模板图，再融合产品图和可选人物图，生成最终十二宫格。" : "从原始分镜图直接生成最终图，只替换已选择的对象。"}</p>
+                        <p className="text-xs text-muted-foreground">阶段 02</p>
+                        <h2 className="mt-1 text-lg font-semibold">十二宫格重绘</h2>
+                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : "从原始分镜图直接生成最终图，只替换已选择的对象。"}</p>
                     </div>
                     <div className="flex flex-wrap items-end gap-2">
                         <ModelControl props={props} kind="image" label="生图模型" />
@@ -32,7 +32,7 @@ export function FrameImageStage(props: WorkflowProps) {
                 </header>
                 {!ready.planning && (
                     <div className="flex items-center justify-between gap-2 border-b py-3 text-sm">
-                        <span>请先完成新产品-12分镜脚本和1-12分镜提示词。</span>
+                        <span>请先完成分镜脚本和分镜提示词。</span>
                         <Button onClick={() => props.onStage("planning")}>返回分镜脚本</Button>
                     </div>
                 )}

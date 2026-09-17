@@ -4,8 +4,6 @@ import { Button, Input } from "antd";
 import { useState } from "react";
 import { ArrowLeft, Check, FileOutput, Images, PanelLeft, Pause, RefreshCw, Save, SlidersHorizontal, Video, WandSparkles } from "lucide-react";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
-import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
-import { FRAME_REMAKE_FEISHU_URL } from "@/lib/frame-remake-feishu-workflow";
 import { FrameSourceStage } from "./source-stage";
 import { FramePlanningStage } from "./planning-stage";
 import { FrameImageStage } from "./image-stage";
@@ -19,13 +17,12 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
     const queued = pendingTasks.some(({ group, kind }) => group[kind].status === "queued");
     const paused = project.automation?.status === "paused";
     const canPause = running || Boolean(project.operation) || (pendingTasks.length > 0 && !paused);
-    const missingPromptFields = frameRemakeMissingPromptFields();
+    const flowStage = stage === "planning" ? "images" : stage;
     const [sourceOpen, setSourceOpen] = useState(false),
         [editorOpen, setEditorOpen] = useState(false);
     const tabs = [
         { key: "analysis", label: "来源分析", icon: Video },
-        { key: "planning", label: "分镜脚本", icon: SlidersHorizontal },
-        { key: "images", label: "两步生图", icon: Images },
+        { key: "images", label: "十二宫格重绘", icon: Images },
         { key: "production", label: "生产内容", icon: FileOutput },
     ] as const;
     return (
@@ -95,16 +92,16 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     return (
                         <button
                             key={tab.key}
-                            aria-current={stage === tab.key ? "step" : undefined}
-                            className={`flex min-w-[120px] flex-1 items-center justify-center gap-2 border-b-2 px-2 text-xs font-medium transition sm:max-w-52 sm:min-w-[184px] ${stage === tab.key ? "border-foreground" : "border-transparent text-muted-foreground hover:bg-muted/30"}`}
+                            aria-current={flowStage === tab.key ? "step" : undefined}
+                            className={`flex min-w-[120px] flex-1 items-center justify-center gap-2 border-b-2 px-2 text-xs font-medium transition sm:max-w-52 sm:min-w-[184px] ${flowStage === tab.key ? "border-foreground" : "border-transparent text-muted-foreground hover:bg-muted/30"}`}
                             onClick={() => {
-                                props.onStage(tab.key);
+                                props.onStage(tab.key === "images" ? (stage === "planning" || stage === "images" ? stage : ready.planning ? "images" : "planning") : tab.key);
                                 setSourceOpen(false);
                                 setEditorOpen(false);
                             }}
                         >
                             <span
-                                className={`grid size-6 shrink-0 place-items-center rounded-full border ${ready[tab.key] ? "border-emerald-600 bg-emerald-600 text-white" : stage === tab.key ? "border-foreground bg-foreground text-background" : "border-border"}`}
+                                className={`grid size-6 shrink-0 place-items-center rounded-full border ${ready[tab.key] ? "border-emerald-600 bg-emerald-600 text-white" : flowStage === tab.key ? "border-foreground bg-foreground text-background" : "border-border"}`}
                             >
                                 {ready[tab.key] ? <Check className="size-3.5" /> : i + 1}
                             </span>
@@ -114,12 +111,6 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
                     );
                 })}
             </nav>
-            {missingPromptFields.length > 0 && (
-                <div role="status" className="max-h-24 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5 text-muted-foreground">
-                    <p>原表有 {missingPromptFields.length} 个步骤尚缺完整提示词，暂时无法生成。可以查看素材和已有结果。</p>
-                    <a href={FRAME_REMAKE_FEISHU_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2">查看对应飞书工作流</a>
-                </div>
-            )}
             {(props.error || project.error || pendingTasks.length > 0 || running || paused || project.operation) && (
                 <div className="max-h-40 shrink-0 overflow-y-auto border-b px-3 py-2 text-xs leading-5">
                     {(props.error || project.error) && (
@@ -149,10 +140,20 @@ export function FrameRemakeWorkflow(props: WorkflowProps) {
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 {stage === "analysis" ? (
                     <FrameSourceStage {...props} sourceOpen={sourceOpen} editorOpen={editorOpen} onSourceClose={() => setSourceOpen(false)} onEditorClose={() => setEditorOpen(false)} />
-                ) : stage === "planning" ? (
-                    <FramePlanningStage {...props} />
-                ) : stage === "images" ? (
-                    <FrameImageStage {...props} />
+                ) : flowStage === "images" ? (
+                    <section className="flex h-full min-h-0 flex-col" aria-label="十二宫格重绘工作区">
+                        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-card px-3 py-2" aria-label="重绘步骤">
+                            <Button size="small" type={stage === "planning" ? "primary" : "default"} onClick={() => props.onStage("planning")}>
+                                1. 分镜脚本{ready.planning ? " · 已完成" : ""}
+                            </Button>
+                            <Button size="small" type={stage === "images" ? "primary" : "default"} onClick={() => props.onStage("images")}>
+                                2. 分镜重绘{ready.images ? " · 已完成" : ""}
+                            </Button>
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-hidden">
+                            {stage === "planning" ? <FramePlanningStage {...props} /> : <FrameImageStage {...props} />}
+                        </div>
+                    </section>
                 ) : (
                     <FrameProductionStage {...props} />
                 )}

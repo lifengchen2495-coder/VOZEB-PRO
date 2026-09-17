@@ -120,20 +120,27 @@
     }
   ],
   "implementationStatus": {
+    "updatedAt": "2026-09-17",
     "complete": false,
     "deployed": false,
     "pendingDecision": null,
-    "rejectedCurrentImplementation": "Tutorial prompt shells were replaced with six field instructions read directly from the upper 15-second table. The special 8AI host/model/custom-payload dependency has been removed. Only standard configured providers are selected; unresolved source modules stop the operation before generation.",
-    "gatewayConclusion": "No universal 8AI requirement can be inferred for the upper workflows from the excluded tutorial.",
+    "selectedRoute": "Restore the existing /remake15 three-stage application workflow, using configured application models and arbitrary total duration split into independently persisted groups of at most 15 seconds.",
+    "promptSource": "Import complete constants from web/src/lib/remake15-feishu-prompts.ts without altering their bodies. That existing file is a visible-rules-and-record-samples reimplementation, not the hidden Feishu Skill bodies. Per-group timing, replacement choices and actual attachment bindings are appended separately.",
+    "feishuArchive": "The visible field text and input order above remain an unchanged inspection record. They are not the runtime prompt bodies. Lower tutorial documents remain excluded.",
+    "gatewayConclusion": "All model calls use configured application providers, billing and task handling; there is no 8AI-specific dependency.",
+    "behavior": "Source analysis, extraction, scripts, template/final images, video prompts, video tasks and merge execute independently and persist their outputs. The UI uses source analysis, storyboard redraw and production tabs. Replacement options filter attached references; only product replacement requires the template step. New tail clips are trimmed at original speed; existing clips without timingMode retain legacy fitting.",
     "validation": {
-      "liveEditorEquality": "All six normalized prompt strings matched their live editor length/hash; the archived strings equal runtime JSON.",
-      "temporaryTests": "15 provider/preflight/reference-order checks and one API 422 response check passed. Temporary test files are deleted after verification.",
-      "typecheck": "Passed with the final implementation.",
-      "eslint": "Scoped check: 0 errors; 7 existing unused-parameter warnings. Final provider, source-error and API changes also pass ESLint.",
-      "realGeneration": "Not run: full source prompt bodies remain unavailable. No deployment or commit."
-    },
-    "selectedRoute": "Retain the requested Seedance frame extraction workflow and original application steps. Completion is blocked on full prompt bodies, not on a technical route choice.",
-    "sourceBlocker": "All six fields in the upper replacement workflow still contain module references with no visible body. A request for the complete original document/link is pending. This is not a request to choose another technical route."
+      "promptAndParser": "28 temporary tests passed: unchanged imported template bodies, source JSON and legacy format, invalid timelines, replacement attachment combinations and tail instructions.",
+      "workflowAndMedia": "14 temporary regressions passed: per-step persistence, pause fencing, model/reference selection, 15/20/120-second timelines and real FFmpeg extraction/collage/20-second merge. Model responses in these tests were simulated.",
+      "legacyTail": "3 real FFmpeg tests passed for historical fitting versus new trimming with 20-second output and preserved audio.",
+      "frontend": "Three-tab navigation, replacement inputs and scrollable 120-second results checked by in-memory rendering. Scoped lint passed.",
+      "productionBuild": "Passed locally; final server candidate build and real-model verification remain pending.",
+      "realGeneration": "Pending isolated server execution through the normal authenticated API and worker. Not claimed complete.",
+      "cleanup": "Temporary unit/regression test files and media were deleted. No git commit or push.",
+      "reanalysisCopy": "One temporary regression passed: reanalysis clears obsolete timed copy blocks and preserves manually corrected text. Test file deleted.",
+      "typecheck": "Passed after final changes.",
+      "eslint": "Scoped ESLint passed with no errors; six existing/style warnings remain."
+    }
   },
   "method": "Read-only field-editor inspection. Every opened configuration was cancelled. No Feishu field was saved and no generation was triggered."
 }

@@ -10,6 +10,7 @@ import { VideoGroupCard } from "../../remake15/[id]/remake-production-stage";
 import { ModelControl, type WorkflowProps } from "./workflow-controls";
 import { downloadFrameRemakeProductionBundle } from "./production-export";
 import { Media, TextOutput } from "./outputs";
+import { frameRemakeGroupCopyText } from "./copy-text";
 export function FrameProductionStage(props: WorkflowProps) {
     const { project, display } = props,
         ready = frameRemakeWorkflowReadiness(project);
@@ -17,7 +18,7 @@ export function FrameProductionStage(props: WorkflowProps) {
     const [exporting, setExporting] = useState(false);
     const promptsReady = project.groups.length > 0 && project.groups.every((g) => g.videoPrompt);
     const productionReady = ready.images && promptsReady && project.groups.every((g) => g.video.status === "completed" && g.video.result);
-    const report = display.groups.map((g) => `=== 分镜 ${g.frames[0].number}–${g.frames.at(-1)!.number} ===\n${g.copy || ""}`).join("\n\n");
+    const report = display.groups.map((g) => `=== 分镜 ${g.frames[0].number}–${g.frames.at(-1)!.number} ===\n${frameRemakeGroupCopyText(display, g) || "不需要人物口播"}`).join("\n\n");
     const copyText = async (text: string) => {
         if (await copy(text)) void message.success("完整输出已复制");
         else void message.error("复制失败，请手动选择正文复制");
@@ -38,7 +39,7 @@ export function FrameProductionStage(props: WorkflowProps) {
             <div className="mx-auto w-full max-w-[1480px] px-3 py-4 sm:px-5 sm:py-5">
                 <div className="flex min-w-0 flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-end lg:justify-between">
                     <div className="min-w-0">
-                        <div className="text-xs font-medium text-muted-foreground">阶段 04</div>
+                        <div className="text-xs font-medium text-muted-foreground">阶段 03</div>
                         <h2 className="mt-1 text-lg font-semibold">Prompt 与独立视频</h2>
                         <p className="mt-1 text-sm text-muted-foreground">
                             {project.groups.reduce((n, g) => n + g.frames.length, 0)} 个分镜 · {project.groups.length} 条独立视频 · 原时长 {frameRemakeTime(project.durationMs)}
@@ -67,17 +68,25 @@ export function FrameProductionStage(props: WorkflowProps) {
                         ]}
                         onChange={(value) => props.onChange({ audioMode: value as typeof display.audioMode })}
                     />
-                    <p className="text-xs text-muted-foreground">原版生成15秒视频。尾段合成时使用完整视频调整到原片剩余时长，保留原声时使用原片音轨。</p>
+                    <p className="text-xs text-muted-foreground">分组生成视频后，按原片时长合成；新生成尾段按实际剩余时长保留，保持原速。保留原声时使用原片音轨。</p>
+                    {display.sourceCopy?.trim() === "不需要人物口播" && (
+                        <div className="space-y-2">
+                            <p role="status" className="text-xs text-muted-foreground">当前项目已设置“不需要人物口播”，提取和校对文案不用于生成口播。恢复使用文案后，请重新生成视频 Prompt。</p>
+                            <Button size="small" disabled={props.editingDisabled} onClick={() => props.onChange({ sourceCopy: "" })}>
+                                恢复使用文案
+                            </Button>
+                        </div>
+                    )}
                 </div>
-                {!ready.images && <div className="border-b bg-amber-50 px-3 py-2.5 text-xs text-amber-800">请先完成第一步模板图和最终分镜图，再生成视频提示词。</div>}
+                {!ready.images && <div className="border-b bg-amber-50 px-3 py-2.5 text-xs text-amber-800">请先完成十二宫格重绘，再生成视频提示词。</div>}
                 <div className="grid min-w-0 gap-4 py-4 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-                    <section className="min-w-0 rounded-lg border border-border bg-card" aria-label="原文案">
+                    <section className="min-w-0 rounded-lg border border-border bg-card" aria-label="采用文案">
                         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                             <div className="flex items-center gap-2 text-sm font-semibold">
                                 <FileText className="size-4" />
-                                原文案（选填）
+                                采用文案
                             </div>
-                            <Button type="text" size="small" icon={<Copy className="size-3.5" />} aria-label="复制原文案（选填）输出" onClick={() => copyText(report)} />
+                            <Button type="text" size="small" icon={<Copy className="size-3.5" />} aria-label="复制采用文案" onClick={() => copyText(report)} />
                         </div>
                         <div className="p-3">
                             <Input.TextArea readOnly value={report} autoSize={{ minRows: 24, maxRows: 42 }} />
@@ -105,7 +114,7 @@ export function FrameProductionStage(props: WorkflowProps) {
                                             videoPrompt: g.videoPrompt,
                                             videoPromptInstructions: undefined,
                                         }}
-                                        description={`原片 ${frameRemakeSeconds(g)} 秒 · 12个镜头 · 生成15秒 · ${frameRemakeAspectRatio(project)}`}
+                                        description={`原片 ${frameRemakeSeconds(g)} 秒 · ${g.frames.length}个镜头 · 生成15秒 · ${frameRemakeAspectRatio(project)}`}
                                         defaultInstructions={frameRemakeTemplates(display, g).video}
                                         instructionsReadOnly
                                         instructionsDisabled={true}
@@ -119,10 +128,14 @@ export function FrameProductionStage(props: WorkflowProps) {
                                         onGenerate={() => void (g.video.status === "running" && g.video.error ? props.onRefresh() : props.onGenerate(g.id, "video"))}
                                         onCopy={copyText}
                                     />
+                                    <details className="rounded border p-3">
+                                        <summary className="cursor-pointer text-xs">编辑视频提示词</summary>
+                                        <Input.TextArea className="!mt-2" aria-label={`编辑第${g.number}组视频提示词`} value={g.videoPrompt} rows={7} maxLength={30000} disabled={props.editingDisabled} onChange={(event) => props.onEditGroup("videoPrompt", event.target.value, g.id)} />
+                                    </details>
                                     {g.analysisSteps?.videoPrompt?.prompt && (
                                         <details className="rounded border p-3">
                                             <summary className="cursor-pointer text-xs">实际发送的视频提示词生成输入</summary>
-                                            <TextOutput title="原版模型输入" text={g.analysisSteps.videoPrompt.prompt} name={`${g.id}-video-prompt-input`} />
+                                            <TextOutput title="模型输入" text={g.analysisSteps.videoPrompt.prompt} name={`${g.id}-video-prompt-input`} />
                                         </details>
                                     )}
                                 </div>

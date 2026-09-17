@@ -108,7 +108,7 @@ export default function FrameRemakePage() {
                             原时长电商复刻
                         </p>
                         <h1 className="mt-2 text-xl font-semibold sm:text-2xl">复刻项目</h1>
-                        <p className="mt-2 text-xs leading-6 text-muted-foreground sm:text-sm">共 {list?.total || 0} 个项目 · 视频解析与拆帧 → 分镜脚本 → 两步生图 → 视频提示词与成片</p>
+                        <p className="mt-2 text-xs leading-6 text-muted-foreground sm:text-sm">共 {list?.total || 0} 个项目 · 来源分析 → 十二宫格重绘 → 生产内容</p>
                         <p className="text-xs leading-6 text-muted-foreground">时长跟随原片：15 秒做 15 秒，20 秒做 20 秒，120 秒做 120 秒。</p>
                     </div>
                     <Button className="shrink-0" disabled={busy} onClick={() => setCreateOpen(true)}>

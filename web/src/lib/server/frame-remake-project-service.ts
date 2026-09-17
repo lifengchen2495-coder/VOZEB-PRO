@@ -324,7 +324,7 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
     if (kind === "analyze") {
         const { stage } = assertFrameRemakeAnalysisPromptReady(before, groupId, analysisStage);
         const refs = frameRemakeActiveReferences(before);
-        const imageCount = stage === "analysis" ? 0 : stage === "productScript" ? refs.character.length + refs.product.length : stage === "videoPrompt" ? 1 + refs.character.length : 1;
+        const imageCount = stage === "analysis" ? 0 : stage === "productScript" ? refs.product.length + refs.character.length + refs.background.length : stage === "videoPrompt" ? 1 + refs.product.length + refs.character.length : 1;
         resolveFrameOriginalModel(await getAuthSettings(), "text", before.modelSelection.analysis, { fullVideo: stage === "analysis", imageCount });
     }
     return mutateFrameRemake(userId, id, (current) => {
@@ -443,6 +443,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
             error: undefined,
             model,
             seconds,
+            ...(kind === "video" ? { timingMode: "trim" as const } : {}),
             audioReferenceUrl: undefined,
             referenceUrls: references.map((media) => media.url),
             prompt,
