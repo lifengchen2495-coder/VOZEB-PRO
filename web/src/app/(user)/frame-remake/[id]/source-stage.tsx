@@ -7,16 +7,23 @@ import { RemakeUnitEditor } from "../../remake15/[id]/remake-unit-editor";
 import { RemakeSourcePanel } from "../../remake15/[id]/remake-source-panel";
 import type { RemakeFrame } from "../../remake15/remake-contract";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
-import { frameRemakeIsBasicWorkflow, type FrameRemakeFrameAnalysis } from "@/lib/frame-remake-contract";
+import { frameRemakeIsBasicWorkflow, frameRemakeSourceCopyNeedsReview as transcriptionNeedsReview, type FrameRemakeFrameAnalysis, type FrameRemakeGroup } from "@/lib/frame-remake-contract";
 import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
 import { type WorkflowProps } from "./workflow-controls";
 import { TextOutput } from "./outputs";
 import { frameRemakeSourceGroupProgress, frameRemakeSourceGroupReady } from "./source-progress";
 const emptyDetail: FrameRemakeFrameAnalysis = { subtitle: "", sellingPoint: "", shotType: "", description: "", subjectRatio: "", hasFace: false };
+const unverifiedTranscriptionMessage = "转录记录尚未通过校验，请重新转录或人工核对保存";
+function transcriptionReviewMessage(group: FrameRemakeGroup) {
+    if (group.sourceCopyStep?.error) return "本次转录失败，请重新转录或人工核对保存";
+    if (group.sourceCopyStep && !group.sourceCopyStep.completedAt) return "本次转录尚未完成，请重新转录或人工核对保存";
+    return unverifiedTranscriptionMessage;
+}
 export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; editorOpen: boolean; onSourceClose: () => void; onEditorClose: () => void }) {
     const { project, display } = props;
     const basic = frameRemakeIsBasicWorkflow(display),
         missingSource = frameRemakeMissingPromptFields(display).length > 0;
+    const isTranscribing = (group: FrameRemakeGroup) => project.operation?.kind === "transcribe" && project.operation.groupId === group.id;
     const [tab, setTab] = useState<RemakeWorkspaceTab>("frames"),
         [frameId, setFrameId] = useState(""),
         [blockId, setBlockId] = useState("");
@@ -136,6 +143,7 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                                 分析 {g.frames.filter((f) => f.detail).length}/{g.frames.length} · 抽帧 {g.frames.filter((f) => f.media?.url).length}/{g.frames.length}
                                             </p>
                                             <p className={`break-words ${progress.color === "error" ? "text-destructive" : "text-muted-foreground"}`}>{progress.detail}</p>
+                                            {!isTranscribing(g) && transcriptionNeedsReview(g) && <p role="status" className="break-words text-amber-700">{transcriptionReviewMessage(g)}</p>}
                                         </li>
                                     );
                                 })}
@@ -184,6 +192,8 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                                     <details key={g.id} className="m-3 rounded border p-3">
                                                         <summary className="cursor-pointer text-xs">第 {g.number} 组完整分析与实际提示词</summary>
                                                         <TextOutput title="视频分析" text={g.analysis} name={`${g.id}-analysis`} />
+                                                        {g.sourceAnalysisTiming && <p className="my-2 text-xs text-muted-foreground">模型报告的本组终点为 {g.sourceAnalysisTiming.reportedEndMs / 1000} 秒，拆帧终点已对齐文件实际时长 {g.sourceAnalysisTiming.alignedEndMs / 1000} 秒；原分析正文保留。</p>}
+                                                        {g.analysisSteps?.analysis?.rawOutput && <TextOutput title="模型原始分析（未通过校验）" text={g.analysisSteps.analysis.rawOutput} name={`${g.id}-analysis-raw`} />}
                                                         {g.analysisSteps?.analysis?.prompt && <TextOutput title="实际视频理解提示词" text={g.analysisSteps.analysis.prompt} name={`${g.id}-source-prompt`} />}
                                                     </details>
                                                 ),
@@ -219,8 +229,8 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                                     第 {g.number} 组 · {g.startMs / 1000}–{g.endMs / 1000} 秒
                                                 </h3>
                                                 <div className="flex flex-wrap items-center justify-between gap-2">
-                                                    <span className="text-xs text-muted-foreground">{g.sourceCopyStatus === "transcribed" ? "已完成语音转录" : g.sourceCopyStatus === "no-audio" ? "原视频无音轨" : g.sourceCopyStatus === "no-speech" ? "语音转录未识别到口播" : g.sourceCopyStatus === "provided" ? g.sourceCopy?.trim() ? "已手动填写原文案" : "已确认本组没有原文案" : g.sourceCopy?.trim() ? "已有原文案" : "尚未转录或填写原文案"}</span>
-                                                    {basic && <Button size="small" loading={project.operation?.kind === "transcribe" && project.operation.groupId === g.id} disabled={props.disabled || !project.sourceVideo || !g.analysis || missingSource} onClick={() => void props.onOperation("transcribe", g.id)}>{g.sourceCopyStatus ? "重新转录本组" : "转录本组原文案"}</Button>}
+                                                    <span role="status" className={`text-xs ${!isTranscribing(g) && transcriptionNeedsReview(g) ? "text-amber-700" : "text-muted-foreground"}`}>{isTranscribing(g) ? "正在转录本组原文案，完成后显示结果" : transcriptionNeedsReview(g) ? transcriptionReviewMessage(g) : g.sourceCopyStatus === "transcribed" ? "已完成语音转录" : g.sourceCopyStatus === "no-audio" ? "原视频无音轨" : g.sourceCopyStatus === "no-speech" ? "语音转录未识别到口播" : g.sourceCopyStatus === "provided" ? g.sourceCopy?.trim() ? "已手动填写原文案" : "已确认本组没有原文案" : g.sourceCopy?.trim() ? "已有原文案" : "尚未转录或填写原文案"}</span>
+                                                    {basic && <Button size="small" loading={isTranscribing(g)} disabled={props.disabled || !project.sourceVideo || !g.analysis || missingSource} onClick={() => void props.onOperation("transcribe", g.id)}>{g.sourceCopyStatus ? "重新转录本组" : "转录本组原文案"}</Button>}
                                                 </div>
                                                 <label className="grid gap-2">
                                                     原文案（可手动填写或校对）
@@ -235,12 +245,13 @@ export function FrameSourceStage(props: WorkflowProps & { sourceOpen: boolean; e
                                                     />
                                                 </label>
                                                 {!g.sourceCopyStatus && !g.sourceCopy?.trim() && <Button size="small" disabled={props.editingDisabled} onClick={() => props.onChange({ group: { id: g.id, sourceCopy: "" } })}>确认本组没有原文案</Button>}
-                                                {g.sourceCopy?.trim() && <TextOutput title="本组原文案" text={g.sourceCopy} name={`${g.id}-source-copy`} />}
+                                                {!isTranscribing(g) && transcriptionNeedsReview(g) && <Button size="small" disabled={props.editingDisabled} onClick={() => props.onChange({ group: { id: g.id, sourceCopy: g.sourceCopy || "" } })}>已人工核对，保存本组原文案</Button>}
+                                                {g.sourceCopy?.trim() && <TextOutput title={isTranscribing(g) ? "已有原文案（转录完成后更新）" : transcriptionNeedsReview(g) ? "原文案结果（待人工核对）" : "本组原文案"} text={g.sourceCopy} name={`${g.id}-source-copy`} />}
                                                 {g.sourceCopyStep && (
                                                     <section className="space-y-2 rounded border bg-muted/20 p-3 text-xs" aria-label={`第${g.number}组转录记录`}>
-                                                        <h4 className="font-medium">最近一次原文案转录</h4>
+                                                        <h4 className="font-medium">{isTranscribing(g) ? "本次原文案转录（进行中）" : transcriptionNeedsReview(g) ? "转录记录（待核对）" : "最近一次原文案转录"}</h4>
                                                         <p className="break-words text-muted-foreground">
-                                                            来源：{g.sourceCopyStep.source === "system-video-transcription" ? "站内模型音视频转文字" : "百炼语音转录"} · 模型：{g.sourceCopyStep.model || "未记录"}
+                                                            来源：{g.sourceCopyStep.source === "system-video-transcription" ? "站内模型音视频转文字" : "百炼语音转录"} · 逻辑模型：{g.sourceCopyStep.model || "未记录"} · 实际模型：{g.sourceCopyStep.upstreamModel || "未记录"}
                                                             {g.sourceCopyStep.elapsedMs !== undefined ? ` · 耗时 ${(g.sourceCopyStep.elapsedMs / 1000).toFixed(1)} 秒` : ""}
                                                         </p>
                                                         <p className="text-muted-foreground">

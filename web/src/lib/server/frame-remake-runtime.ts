@@ -2,7 +2,7 @@ import { frameRemakeActiveReferences, frameRemakeIsBasicWorkflow, frameRemakeSou
 import { parseFrameRemakeOriginalAnalysis, parseFrameRemakeCopy } from "@/lib/frame-remake-source";
 import { frameRemakeTemplates } from "@/lib/frame-remake-prompt-templates";
 import { transcribeBangbangVideo } from "./bangbang-asr";
-import { requestFrameRemakeTranscription, FRAME_REMAKE_TRANSCRIPTION_PROMPT } from "./frame-remake-transcription";
+import { requestFrameRemakeTranscription, resolveFrameTranscriptionModel, resolveFrameTranscriptionProtocol, FRAME_REMAKE_TRANSCRIPTION_PROMPT } from "./frame-remake-transcription";
 import { resolveFrameOriginalModel, requestFrameOriginalText, type FrameOriginalFile } from "./frame-remake-original-gateway";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -112,9 +112,9 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                 const started = Date.now();
                 if (probe.hasAudio) {
                     const useAsr = Boolean(process.env.DASHSCOPE_API_KEY?.trim() || process.env.DASHSCOPE_KEY?.trim());
-                    const candidate = useAsr ? undefined : resolveFrameOriginalModel(await getAuthSettings(), "text", input.project.modelSelection.analysis, { fullVideo: true });
+                    const candidate = useAsr ? undefined : resolveFrameTranscriptionModel(await getAuthSettings(), input.project.modelSelection.analysis);
                     model = candidate?.logicalModelId || "paraformer-v2";
-                    step = { source: useAsr ? "dashscope-asr" : "system-video-transcription", model, prompt: useAsr ? "" : FRAME_REMAKE_TRANSCRIPTION_PROMPT, startedAt: new Date().toISOString() };
+                    step = { source: useAsr ? "dashscope-asr" : "system-video-transcription", model, upstreamModel: candidate?.upstreamModel, protocol: candidate ? resolveFrameTranscriptionProtocol(candidate) ?? undefined : "dashscope-asr", prompt: useAsr ? "" : FRAME_REMAKE_TRANSCRIPTION_PROMPT, startedAt: new Date().toISOString() };
                     await apply((current) => ({ ...current, groups: current.groups.map((g) => g.id === group.id ? { ...g, sourceCopyStep: step } : g) }));
                     const clip = join(directory, useAsr ? "transcription-audio.wav" : "transcription-video.mp4");
                     const encoding = useAsr
@@ -126,6 +126,7 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                         const call = await requestFrameRemakeTranscription({ origin: input.origin, credential: input.credential, candidate, video: { type: "video", file_name: "source.mp4", file_base64: (await readFile(clip)).toString("base64"), content_type: "video/mp4" }, idempotencyKey: systemAiIdempotencyKey("frame-remake-transcribe", input.userId, input.project.id, operation.id, group.id), signal: controller.signal });
                         chargedHeaders = call.headers;
                         result = call;
+                        step = { ...step, upstreamModel: call.metadata.upstreamModel, protocol: call.metadata.protocol };
                     } else result = await transcribeBangbangVideo({ sourcePath: clip, workDirectory: directory, hasAudio: true, signal: controller.signal });
                     step = { ...step, completedAt: new Date().toISOString(), elapsedMs: Date.now() - started };
                 }
@@ -221,7 +222,17 @@ export async function runFrameRemakeOperation(input: FrameRemakeRuntimeInput) {
                     idempotencyKey: systemAiIdempotencyKey("frame-remake-original", input.userId, input.project.id, operation.id, group.id, stage),
                 });
                 chargedHeaders = call.headers;
-                const result = stage === "analysis" ? parseFrameRemakeOriginalAnalysis(call.text, group) : stage === "copy" ? parseFrameRemakeCopy(call.text, group) : { [stage]: parseFrameRemakeAnalysis(call.text, stage) };
+                let result: Partial<FrameRemakeGroup>;
+                try {
+                    result = stage === "analysis" ? parseFrameRemakeOriginalAnalysis(call.text, group) : stage === "copy" ? parseFrameRemakeCopy(call.text, group) : { [stage]: parseFrameRemakeAnalysis(call.text, stage) };
+                } catch (error) {
+                    // 结构校验失败仍保留本步正文，供用户核对；不标记完成或继续后序步骤。
+                    await apply((current) => ({
+                        ...current,
+                        groups: current.groups.map((g) => g.id === group.id ? { ...g, analysisSteps: { ...g.analysisSteps, [stage]: { ...step, rawOutput: call.text.slice(0, 100_000), elapsedMs: Date.now() - started } } } : g),
+                    }));
+                    throw error;
+                }
                 await apply((current) => ({
                     ...current,
                     modelSelection: { ...current.modelSelection, analysis: model },

@@ -14,6 +14,7 @@ const MODEL_STREAM_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 
 export type RemakeProductionVisionProtocol = "chat" | "responses" | "gemini";
 export type VisionRequestBoard = { mimeType: string; bytes: Buffer };
+export type VisionRequestAudio = { format: "wav"; bytes: Buffer };
 export type RemakeProductionVisionCall = { text: string; headers: Headers; protocol: RemakeProductionVisionProtocol; elapsedMs: number };
 
 export type ResolvedVisionProtocol = {
@@ -65,6 +66,7 @@ export async function requestRemakeVisionPrompt(input: {
     candidate: ResolvedLogicalModel;
     messages: Array<{ role: string; content: string }>;
     boards: VisionRequestBoard[];
+    audio?: VisionRequestAudio;
     headers?: HeadersInit;
     signal?: AbortSignal;
     allowTextOnly?: boolean;
@@ -75,6 +77,9 @@ export async function requestRemakeVisionPrompt(input: {
 }): Promise<RemakeProductionVisionCall> {
     const protocol = resolveRemakeVisionProtocol(input.candidate, input.boards.length);
     if (!protocol) throw new RemakeProductionVisionError("当前文本候选不支持受信任的多模态图片协议", 503);
+    if (input.audio && (protocol.kind !== "chat" || protocol.requestTemplate || input.audio.format !== "wav" || !input.audio.bytes.length)) {
+        throw new RemakeProductionVisionError("音轨转录需要原生 Chat 音频输入协议与有效 WAV 音频", 503);
+    }
     const startedAt = Date.now();
     const headers = new Headers(input.headers);
     headers.set("content-type", "application/json");
@@ -87,8 +92,8 @@ export async function requestRemakeVisionPrompt(input: {
     const localTimeoutError = (responseHeaders?: Headers) =>
         signal.aborted && signal.reason === timeoutSignal.reason && timeoutSignal.aborted ? new RemakeProductionVisionError(`模型生成超过 ${timeoutMs / 1000} 秒等待上限，请联系管理员调整当前模型的请求超时，或稍后重试。`, 504, responseHeaders) : undefined;
     const stream = input.stream !== false && protocol.kind !== "gemini";
-    const defaults = { ...buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.maxOutputTokens), ...(input.jsonMode && protocol.kind === "chat" ? { response_format: { type: "json_object" } } : {}) };
-    const body = protocol.requestTemplate ? { ...defaults, ...buildProviderRequest(protocol.requestTemplate, defaults, { ...defaults, stream }), stream } : { ...defaults, ...(stream ? { stream: true } : {}) };
+    const defaults = { ...buildVisionRequest(protocol.kind, input.candidate.upstreamModel, input.messages, input.boards, input.maxOutputTokens, input.audio), ...(input.jsonMode && protocol.kind === "chat" ? { response_format: { type: "json_object" } } : {}) };
+    const body = protocol.requestTemplate ? { ...defaults, ...buildProviderRequest(protocol.requestTemplate, defaults, { ...defaults, stream }), stream } : { ...defaults, ...(stream ? { stream: true } : input.audio ? { stream: false } : {}) };
     if (stream) headers.set("accept", "text/event-stream");
     let response: Response;
     try {
@@ -118,9 +123,11 @@ export async function requestRemakeVisionPrompt(input: {
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SyntaxError();
             payload = parsed as Record<string, unknown>;
         }
+        input.signal?.throwIfAborted();
     } catch (error) {
         const timeoutError = localTimeoutError(responseHeaders);
         if (timeoutError) throw timeoutError;
+        if (input.signal?.aborted) throw new RemakeProductionVisionError("模型请求已取消", 499, responseHeaders);
         const message = error instanceof SyntaxError ? "生产视觉规划模型返回了无效 JSON" : toSafeGenerationErrorMessage(error, "生产视觉规划模型响应读取失败");
         throw new RemakeProductionVisionError(message, error instanceof RemakeProductionVisionError ? error.status : toSafeGenerationTransportError(error, "response").status, responseHeaders);
     }
@@ -131,7 +138,7 @@ export async function requestRemakeVisionPrompt(input: {
     return { text: prompt, headers: responseHeaders, protocol: protocol.kind, elapsedMs: Date.now() - startedAt };
 }
 
-function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: VisionRequestBoard[], maxOutputTokens?: number) {
+function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: string, messages: Array<{ role: string; content: string }>, boards: VisionRequestBoard[], maxOutputTokens?: number, audio?: VisionRequestAudio) {
     const systemText = messages
         .filter((message) => message.role === "system")
         .map((message) => message.content)
@@ -172,7 +179,7 @@ function buildVisionRequest(protocol: RemakeProductionVisionProtocol, model: str
             ...(systemText ? [{ role: "system", content: systemText }] : []),
             {
                 role: "user",
-                content: [{ type: "text", text: userText }, ...boards.map((board) => ({ type: "image_url", image_url: { url: boardDataUrl(board), detail: "high" } }))],
+                content: [{ type: "text", text: userText }, ...boards.map((board) => ({ type: "image_url", image_url: { url: boardDataUrl(board), detail: "high" } })), ...(audio ? [{ type: "input_audio", input_audio: { data: audio.bytes.toString("base64"), format: audio.format } }] : [])],
             },
         ],
     };

@@ -8,7 +8,7 @@ import { maintenanceWorkerContextHeaders } from "./maintenance-auth";
 import { systemAiBillingHeaders } from "./system-ai-billing";
 import { resolveModelRequestTimeoutMs } from "./model-request-policy";
 import { RemakeProductionVisionError, requestRemakeVisionPrompt, resolveRemakeVisionProtocol } from "./remake-vision-request";
-import { requestBangbangFullVideo, supportsBangbangFullVideo } from "./bangbang-runtime-video";
+import { requestBangbangFullVideo, supportsBangbangFullVideo, supportsBangbangVideoInput } from "./bangbang-runtime-video";
 import { runFfprobe } from "./ffmpeg";
 import { toSafeGenerationErrorMessage } from "./generation-errors";
 
@@ -60,7 +60,7 @@ export async function requestFrameOriginalText(input: { origin: string; credenti
             signal: input.signal,
         });
     }
-    if (videos.length !== 1 || input.files.length !== 1 || !supportsBangbangFullVideo(input.candidate)) throw new Error("当前视频分析需单个来源视频与已配置的 Doubao Seed 2.0 Pro 完整视频理解渠道");
+    if (videos.length !== 1 || input.files.length !== 1 || !supportsBangbangVideoInput(input.candidate)) throw new Error("当前视频分析需单个来源视频与已配置的 Doubao 完整视频理解渠道");
     const started = Date.now();
     const directory = await mkdtemp(join(tmpdir(), "vozeb-frame-video-"));
     let responseHeaders: Headers | undefined;

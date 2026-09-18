@@ -1,3 +1,5 @@
+import { supportsFrameRemakeChatAudioModel, supportsFrameRemakeEmbeddedAudioModel } from "./frame-remake-transcription-capability";
+
 export type FrameRemakeMedia = { url: string; storageKey?: string; mimeType: string; originalName?: string; bytes?: number; width?: number; height?: number; duration?: number };
 export type FrameRemakeGenerationKind = "template" | "image" | "video";
 export type FrameRemakeAnalysisStage = "analysis" | "copy" | "productScript" | "imagePrompt" | "videoPrompt";
@@ -41,16 +43,17 @@ export type FrameRemakeGroup = {
     contactSheet?: FrameRemakeMedia;
     analysis: string;
     sourceAnalysisMode?: "video";
+    sourceAnalysisTiming?: { reportedEndMs: number; alignedEndMs: number };
     sourceCopy?: string;
     sourceCopyStatus?: "transcribed" | "no-audio" | "no-speech" | "provided";
-    sourceCopyStep?: { source: "system-video-transcription" | "dashscope-asr"; model: string; prompt: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string };
+    sourceCopyStep?: { source: "system-video-transcription" | "dashscope-asr"; model: string; upstreamModel?: string; protocol?: string; prompt: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string };
     sourceAudio?: FrameRemakeMedia;
     copy?: string;
     copyBlocks?: FrameRemakeCopyBlock[];
     // 旧项目的 analysis 同时包含产品脚本；新项目从空字符串开始独立执行。
     productScript?: string;
     materialAnalysis?: string;
-    analysisSteps?: Partial<Record<FrameRemakeAnalysisStage, { prompt: string; model: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string; promptSource?: FrameRemakePromptSource }>>;
+    analysisSteps?: Partial<Record<FrameRemakeAnalysisStage, { prompt: string; model: string; startedAt: string; completedAt?: string; elapsedMs?: number; error?: string; rawOutput?: string; promptSource?: FrameRemakePromptSource }>>;
     imagePrompt: string;
     videoPrompt: string;
     videoPromptInstructions?: string;
@@ -185,9 +188,20 @@ export function frameRemakeAnalysisStages(project: FrameRemakeProject): readonly
 export function nextFrameRemakeAnalysisStage(group: FrameRemakeGroup, project?: FrameRemakeProject) {
     return (project ? frameRemakeAnalysisStages(project) : FRAME_REMAKE_ANALYSIS_STAGES).find((stage) => !frameRemakeAnalysisResult(group, stage));
 }
+export function frameRemakeSourceCopyNeedsReview(group: FrameRemakeGroup) {
+    const step = group.sourceCopyStep;
+    if (!step) return group.sourceCopyStatus === "no-speech" || group.sourceCopyStatus === "transcribed";
+    if (!step.completedAt || step.error) return true;
+    if (step.source !== "system-video-transcription") return false;
+    if (!step.upstreamModel) return true;
+    return !((step.protocol === "doubao-responses-video-audio" && supportsFrameRemakeEmbeddedAudioModel(step.upstreamModel)) ||
+        (step.protocol === "openai-chat-input-audio" && supportsFrameRemakeChatAudioModel(step.upstreamModel)));
+}
 export function frameRemakeSourceCopyReady(project: FrameRemakeProject, group: FrameRemakeGroup) {
+    if (project.sourceCopy?.trim() === "不需要人物口播") return true;
+    if (frameRemakeSourceCopyNeedsReview(group)) return false;
     const entireSource = group.startMs === 0 && group.endMs === project.durationMs;
-    return project.sourceCopy?.trim() === "不需要人物口播" || Boolean(group.sourceCopyStatus || group.sourceCopy?.trim() || (entireSource && project.sourceCopy?.trim()));
+    return Boolean(group.sourceCopyStatus || group.sourceCopy?.trim() || (entireSource && project.sourceCopy?.trim()));
 }
 // 修改某一步时，仅使它和依赖它的后续结果失效。
 export function resetFrameRemakeAnalysisFrom(group: FrameRemakeGroup, stage: FrameRemakeAnalysisStage): FrameRemakeGroup {
@@ -199,6 +213,7 @@ export function resetFrameRemakeAnalysisFrom(group: FrameRemakeGroup, stage: Fra
     }
     if (stage === "analysis") {
         next.sourceAnalysisMode = undefined;
+        next.sourceAnalysisTiming = undefined;
         // 重新理解后镜头时间可能变化；保留校对文案，但移除旧时间区间。
         if (group.copyBlocks?.length) next.copy = group.copyBlocks.map((block) => block.text).join("");
         next.copyBlocks = undefined;

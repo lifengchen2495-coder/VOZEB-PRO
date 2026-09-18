@@ -6,6 +6,8 @@ import { buildDoubaoFileUploadBody, fetchDoubaoFileApi, readDoubaoJsonResponse }
 import { fetchInternalApi } from "./internal-origin";
 import type { ResolvedLogicalModel } from "./logical-model-router";
 import { readResponsesBody } from "./responses-stream";
+import { resolveTextProtocol } from "./text-protocol-resolver";
+import { supportsFrameRemakeEmbeddedAudioModel } from "@/lib/frame-remake-transcription-capability";
 
 export const BANGBANG_VIDEO_MODEL = "doubao-seed-2-0-pro-260215";
 
@@ -13,8 +15,24 @@ export function supportsBangbangFullVideo(candidate: ResolvedLogicalModel) {
     return candidate.upstreamModel.trim().replace(/^models\//i, "").toLowerCase() === BANGBANG_VIDEO_MODEL && Boolean(candidate.channel.apiKey.trim());
 }
 
+// 官方音频模型列表：https://docs.volcengine.com/docs/ark/Modellist?lang=zh#9619c0ba
+// 完整视频输入不等于音轨理解；Pro 260215 不能用于原口播转录。
+export function supportsBangbangVideoAudio(candidate: ResolvedLogicalModel) {
+    if (!supportsFrameRemakeEmbeddedAudioModel(candidate.upstreamModel) || !candidate.channel.apiKey.trim() || candidate.channel.apiFormat !== "openai") return false;
+    try {
+        const protocol = resolveTextProtocol({ model: candidate.upstreamModel, apiFormat: candidate.channel.apiFormat, advancedConfig: candidate.channel.advancedConfig, throughSystemProxy: true });
+        return (protocol.kind === "chat" || protocol.kind === "responses") && protocol.providerKind === protocol.kind;
+    } catch {
+        return false;
+    }
+}
+
+export function supportsBangbangVideoInput(candidate: ResolvedLogicalModel) {
+    return supportsBangbangFullVideo(candidate) || supportsBangbangVideoAudio(candidate);
+}
+
 export function buildBangbangVideoRequest(candidate: ResolvedLogicalModel, fileId: string, messages: Array<{ role: string; content: string }>) {
-    if (!supportsBangbangFullVideo(candidate) || !fileId) throw new Error("完整视频理解需要已配置的 Doubao Seed 2.0 Pro 与有效视频文件");
+    if (!supportsBangbangVideoInput(candidate) || !fileId) throw new Error("完整视频理解需要已配置的 Doubao 视频理解渠道与有效视频文件");
     return {
         model: candidate.upstreamModel, store: false, max_output_tokens: 24_000, stream: true,
         input: [
@@ -28,9 +46,10 @@ export async function requestBangbangFullVideo(input: {
     sourcePath: string; workDirectory: string; duration: number; candidate: ResolvedLogicalModel; origin: string;
     messages: Array<{ role: string; content: string }>; headers: Headers; signal: AbortSignal; onResponse: (headers: Headers) => void;
 }) {
+    if (!supportsBangbangVideoInput(input.candidate)) throw new Error("所选模型没有可用的 Doubao 完整视频输入渠道");
     const output = join(input.workDirectory, "whole-video.mp4");
     const bitrate = Math.max(96_000, Math.min(1_200_000, Math.floor(21 * 1024 * 1024 * 8 * 0.9 / input.duration) - 48_000));
-    // 全程转码，不使用 -ss/-t；视觉理解必须读取完整视频及原音。
+    // 全程转码，不使用 -ss/-t；保留原音轨供具备音频理解能力的模型读取。
     await runFfmpeg(["-hide_banner", "-loglevel", "error", "-i", input.sourcePath, "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=min(720\\,iw):-2,fps=12", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-b:v", String(bitrate), "-maxrate", String(bitrate), "-bufsize", String(bitrate * 2), "-c:a", "aac", "-b:a", "48000", "-ac", "1", "-ar", "24000", "-movflags", "+faststart", "-y", output], { timeoutMs: 5 * 60_000, signal: input.signal });
     const bytes = await readFile(output);
     if (!bytes.length || bytes.length > 24 * 1024 * 1024) throw new Error("完整视频转码后超过 24 MB 理解上限，请缩短视频或降低源视频复杂度后重试");

@@ -375,7 +375,7 @@ export async function startFrameRemakeOperation(userId: string, id: string, revi
             if (!stages.includes(stage)) throw new FrameRemakeError("此步骤不属于所选飞书原流程");
             if (stage !== "analysis" && frameRemakeInputError(current)) throw new FrameRemakeError(frameRemakeInputError(current));
             if ((stage === "videoPrompt" || stage === "copy") && (group.image.status !== "completed" || !group.image.result)) throw new FrameRemakeError("请先完成本组最终分镜图");
-            if (stage === "copy" && !frameRemakeSourceCopyReady(current, group)) throw new FrameRemakeError("请先转录或填写本组原文案；无口播可保存为空");
+            if ((stage === "copy" || stage === "videoPrompt") && frameRemakeIsBasicWorkflow(current) && !frameRemakeSourceCopyReady(current, group)) throw new FrameRemakeError("本组原文案尚未通过音频能力校验，请重新转录或人工核对保存后再继续；无口播可保存为空");
             if (stage === "copy" && current.copyMode === "custom" && !current.copyInstructions?.trim()) throw new FrameRemakeError("请填写原表选项B的自定义优化需求");
             if (stage !== "analysis" && (!group.contactSheet || group.frames.some((frame) => !frame.media))) throw new FrameRemakeError("请先完成本组拆帧");
             if (stages.slice(0, stages.indexOf(stage)).some((key) => !frameRemakeAnalysisResult(group!, key))) throw new FrameRemakeError("请先完成前序分析步骤");
@@ -410,6 +410,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
     const before = await getFrameRemakeProjectForUser(userId, id);
     const target = before.groups.find((group) => group.id === groupId);
     if (!target) throw new FrameRemakeError("分组不存在", 404);
+    if (kind === "video" && frameRemakeIsBasicWorkflow(before) && !frameRemakeSourceCopyReady(before, target)) throw new FrameRemakeError("本组原文案尚未通过音频能力校验，请重新转录或人工核对保存后再生成视频");
     if (target[kind].status === "queued") {
         if (target[kind].submissionPaused || (automationLeaseId && (before.automation?.status !== "running" || before.automation.leaseId !== automationLeaseId))) throw new FrameRemakeError("后续步骤已暂停，请明确继续后再提交", 409);
         assertFrameRemakePromptResolved(target[kind].prompt || "");
@@ -660,6 +661,7 @@ export async function validateFrameRemakeGeneration(input: {
         (input.kind === "video" && Number(input.seconds) !== pending.seconds)
     )
         throw new FrameRemakeError("生成参数与当前分组预留不一致，请刷新后重试", 409);
+    if (input.kind === "video" && frameRemakeIsBasicWorkflow(project) && !frameRemakeSourceCopyReady(project, group)) throw new FrameRemakeError("本组原文案尚未通过音频能力校验，请重新转录或人工核对保存后再生成视频");
     const urls = Array.isArray(input.references)
         ? input.references.map((item, index) => {
               const reference = object(item);
