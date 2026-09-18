@@ -34,11 +34,12 @@ function bindAnalyzedFrames(items: ParsedFrame[], group: FrameRemakeGroup) {
     if (group.frames.length !== 12 || items.length !== 12) throw new Error("视频分析必须返回本组完整的12个镜头");
     const frames = items.map((item, index) => {
         if (item.ordinal !== index + 1) throw new Error("视频分析分镜须使用局部编号1至12，不能重复或乱序");
-        // 实测 5 秒片段的模型终点为 4.9 秒：末帧时间并非文件结束时间。
-        // 仅补齐末镜头不超过 0.1 秒的尾差，且尾差必须小于该镜头本身；不修补中间缺口或越界。
-        const tailGap = duration - item.endMs;
-        const endMs = index === 11 && tailGap > 0 && tailGap <= 100 && tailGap < item.endMs - item.startMs ? duration : item.endMs;
-        if (!Number.isSafeInteger(item.startMs) || !Number.isSafeInteger(item.endMs) || item.startMs !== (index ? items[index - 1].endMs : 0) || item.endMs <= item.startMs || item.endMs > duration || (index === 11 && endMs !== duration)) throw new Error(`视频分析时间线必须从0连续覆盖本组真实结尾，不能跳跃、重叠或越界（分镜${item.ordinal}：${item.startMs / 1000}–${item.endMs / 1000}秒，前一终点${(index ? items[index - 1].endMs : 0) / 1000}秒，本组时长${duration / 1000}秒）`);
+        // 模型可能把 5 秒写成末帧时间 4.9 秒，也可能把 8.267 秒四舍五入为 8.3 秒。
+        // 仅对齐末镜头不超过 0.1 秒的双向尾差，且尾差须小于对齐前后的镜头长度；中间时间线仍严格校验。
+        const tailError = Math.abs(duration - item.endMs);
+        const shorterShotDuration = Math.min(item.endMs, duration) - item.startMs;
+        const endMs = index === 11 && tailError > 0 && tailError <= 100 && tailError < shorterShotDuration ? duration : item.endMs;
+        if (!Number.isSafeInteger(item.startMs) || !Number.isSafeInteger(item.endMs) || item.startMs !== (index ? items[index - 1].endMs : 0) || item.endMs <= item.startMs || endMs <= item.startMs || endMs > duration || (index === 11 && endMs !== duration)) throw new Error(`视频分析时间线必须从0连续覆盖本组真实结尾，不能跳跃、重叠或越界（分镜${item.ordinal}：${item.startMs / 1000}–${item.endMs / 1000}秒，前一终点${(index ? items[index - 1].endMs : 0) / 1000}秒，本组时长${duration / 1000}秒）`);
         const sampleMs = item.sampleMs ?? item.startMs + Math.floor((endMs - item.startMs) / 2);
         if (sampleMs < item.startMs || sampleMs >= endMs) throw new Error("视频分析抽帧时间超出镜头范围");
         return { ...group.frames[index], media: undefined, startMs: group.startMs + item.startMs, endMs: group.startMs + endMs, sampleMs: group.startMs + sampleMs, detail: item.detail };
