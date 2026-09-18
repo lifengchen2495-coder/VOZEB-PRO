@@ -19,13 +19,14 @@ export class PromptOptimizationError extends Error {
     }
 }
 
-export async function optimizeCreativePrompt(input: { origin: string; cookie: string; userId: string; requestId: string; prompt: string; mode: PromptOptimizationMode }) {
+export async function optimizeCreativePrompt(input: { origin: string; cookie: string; userId: string; requestId: string; prompt: string; mode: PromptOptimizationMode; referenceRole?: "character" | "background" }) {
     const settings = await getAuthSettings();
     const model = settings.defaultModels.textModel;
     const candidates = resolveLogicalModelCandidates(settings, "text", model);
     if (!model || !candidates.length) throw new PromptOptimizationError("后台尚未配置可用的默认文本模型", 503);
 
     let latestError: unknown;
+    const signal = input.referenceRole ? AbortSignal.timeout(60_000) : undefined;
     for (const candidate of rankTextPlanningCandidates(candidates)) {
         const idempotencyKey = systemAiIdempotencyKey("prompt-optimize", input.userId, input.requestId, candidate.channelId, candidate.upstreamModel);
         try {
@@ -33,8 +34,9 @@ export async function optimizeCreativePrompt(input: { origin: string; cookie: st
                 origin: input.origin,
                 cookie: input.cookie,
                 candidate,
+                signal,
                 messages: [
-                    { role: "system", content: promptOptimizationInstruction(input.mode, settings.site.title) },
+                    { role: "system", content: promptOptimizationInstruction(input.mode, settings.site.title, input.referenceRole) },
                     { role: "user", content: input.prompt },
                 ],
                 tool: promptOptimizationTool,
@@ -53,15 +55,21 @@ export async function optimizeCreativePrompt(input: { origin: string; cookie: st
             }
             return optimizedPrompt;
         } catch (error) {
+            if (signal?.aborted) throw new PromptOptimizationError("提示词优化超时，原描述已保留，请稍后重试", 504);
             latestError = error;
         }
     }
     throw new PromptOptimizationError(toSafeGenerationErrorMessage(latestError, "提示词优化失败，请稍后重试"));
 }
 
-function promptOptimizationInstruction(mode: PromptOptimizationMode, siteTitle: string) {
+function promptOptimizationInstruction(mode: PromptOptimizationMode, siteTitle: string, referenceRole?: "character" | "background") {
     const target = mode === "image" ? "图片" : mode === "video" ? "视频" : mode === "audio" ? "音频" : "创作";
-    return `你是 ${resolveSiteTitle(siteTitle)} 提示词编辑器。把用户原文改写为清晰、紧凑、可直接发送的中文${target}提示词。保留主体、人名、品牌、数量、尺寸、比例、时长、文字内容、参考素材要求和否定要求；不得改变用户意图，不得虚构事实或添加用户没有要求的复杂设定。只返回优化后的公开提示词，不解释修改过程，不输出内部规划、模型选择理由或思维链。`;
+    const referenceInstruction = referenceRole === "character"
+        ? "这是视频复刻用的人物参考图。按人物外貌、服装、姿态、构图、光线和画面质感整理描述，保留用户明确指定的年龄、性别、身份特征及风格；信息不足时只补充有助于清晰呈现人物的摄影描述，不擅自改变人物设定，不主动增加商品、文字、水印或拼图。"
+        : referenceRole === "background"
+          ? "这是视频复刻用的背景参考图。按场景类型、空间布局、材质、色调、光线、视角和构图整理描述，为后续人物与商品展示保留合理空间；保留用户明确要求的地点、风格和物件，不主动增加人物、人体、手部、商品、文字、水印或拼图。"
+          : "";
+    return `你是 ${resolveSiteTitle(siteTitle)} 提示词编辑器。把用户原文改写为清晰、紧凑、可直接发送的中文${target}提示词。保留主体、人名、品牌、数量、尺寸、比例、时长、文字内容、参考素材要求和否定要求；不得改变用户意图，不得虚构事实或添加用户没有要求的复杂设定。只返回优化后的公开提示词，不解释修改过程，不输出内部规划、模型选择理由或思维链。${referenceInstruction}`;
 }
 
 function parseOptimizedPrompt(value: string) {

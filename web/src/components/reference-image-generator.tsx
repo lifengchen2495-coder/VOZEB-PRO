@@ -8,6 +8,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { createFreshGenerationTaskContext } from "@/lib/generation-request-context";
 import { GenerationTaskRequestError, isDefinitiveGenerationTaskRequestFailure } from "@/services/api/generation-task-request-error";
 import { createImageGenerationTask, ImageGenerationTaskTerminalError, recoverImageGenerationTask, waitForImageGenerationTask, type ImageGenerationTask } from "@/services/api/image";
+import { optimizePrompt } from "@/services/api/prompt-optimization";
 import { parseServerMediaUrl } from "@/services/server-media-storage";
 import { selectableModelsByCapability, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -85,9 +86,12 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
     const [storageReady, setStorageReady] = useState(false);
     const [working, setWorking] = useState(false);
     const [selecting, setSelecting] = useState(false);
+    const [optimizing, setOptimizing] = useState(false);
+    const [beforeOptimization, setBeforeOptimization] = useState<string>();
     const [error, setError] = useState("");
     const controllerRef = useRef<AbortController | null>(null);
     const selectingRef = useRef(false);
+    const optimizingRef = useRef(false);
     const promptEditedRef = useRef(false);
     const mountedRef = useRef(true);
     const models = selectableModelsByCapability(config, "image");
@@ -120,7 +124,7 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
     }
 
     async function run(pending: PendingGeneration, checkOriginal = false) {
-        if (controllerRef.current) return;
+        if (controllerRef.current || optimizingRef.current) return;
         const controller = new AbortController();
         controllerRef.current = controller;
         setWorking(true);
@@ -192,7 +196,7 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
 
     function showGenerator() {
         setOpen(true);
-        if (controllerRef.current) return;
+        if (controllerRef.current || optimizingRef.current) return;
         try {
             const stored = readSavedGeneration(storageKey);
             setSaved(stored);
@@ -213,7 +217,7 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
     }
 
     async function generate() {
-        if (disabled || working || selectingRef.current || !storageReady || !prompt.trim() || !activeModel) return;
+        if (disabled || working || optimizingRef.current || selectingRef.current || !storageReady || !prompt.trim() || !activeModel) return;
         try {
             if (!navigator.locks) throw new Error("当前浏览器无法保护生成记录，请使用最新版 Chrome 或 Edge 后重试。");
             // 仅锁定请求身份的保存，防止多个标签页同时创建不同的付费任务。
@@ -243,8 +247,28 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
         }
     }
 
+    async function optimizeDescription() {
+        const source = prompt.trim();
+        if (!source || disabled || working || saved.pending || selectingRef.current || optimizingRef.current) return;
+        optimizingRef.current = true;
+        promptEditedRef.current = true;
+        setOptimizing(true);
+        setError("");
+        try {
+            const optimized = await optimizePrompt({ requestId: `reference-prompt-${crypto.randomUUID()}`, prompt: source, mode: "image", referenceRole: role });
+            if (!mountedRef.current) return;
+            setBeforeOptimization(prompt);
+            setPrompt(optimized);
+        } catch (reason) {
+            if (mountedRef.current) setError(reason instanceof Error ? reason.message : "优化失败，原描述已保留。");
+        } finally {
+            optimizingRef.current = false;
+            if (mountedRef.current) setOptimizing(false);
+        }
+    }
+
     async function selectCandidate() {
-        if (!selected || disabled || working || selectingRef.current) return;
+        if (!selected || disabled || working || optimizingRef.current || selectingRef.current) return;
         selectingRef.current = true;
         setSelecting(true);
         setError("");
@@ -271,8 +295,13 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
                     <p className="text-sm text-muted-foreground">没有现成的{label}也可以直接生成。修改下面的描述，生成后选一张用于当前项目。</p>
                     <label className="block space-y-2 text-sm">
                         <span>{label}描述</span>
-                        <Input.TextArea value={prompt} onChange={(event) => { promptEditedRef.current = true; setPrompt(event.target.value); }} autoSize={{ minRows: 5, maxRows: 10 }} maxLength={6000} disabled={working || Boolean(saved.pending) || selecting || disabled} />
+                        <Input.TextArea value={prompt} onChange={(event) => { promptEditedRef.current = true; setBeforeOptimization(undefined); setPrompt(event.target.value); }} autoSize={{ minRows: 5, maxRows: 10 }} maxLength={6000} disabled={working || optimizing || Boolean(saved.pending) || selecting || disabled} />
                     </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button size="small" icon={<Sparkles size={14} />} loading={optimizing} disabled={disabled || working || Boolean(saved.pending) || selecting || !prompt.trim()} onClick={() => void optimizeDescription()}>AI 优化提示词</Button>
+                        {beforeOptimization !== undefined && <Button size="small" disabled={disabled || working || optimizing || Boolean(saved.pending) || selecting} onClick={() => { setPrompt(beforeOptimization); setBeforeOptimization(undefined); }}>撤销优化</Button>}
+                        <span className="text-xs text-muted-foreground">使用系统文字模型，按模型规则计费；优化后可继续修改。</span>
+                    </div>
                     <fieldset disabled={working || Boolean(saved.pending) || selecting || disabled} className="space-y-2">
                         <legend className="mb-2 text-sm">图片模型</legend>
                         <ModelPicker config={config} value={saved.pending?.model || activeModel} onChange={setModel} capability="image" fullWidth />
@@ -281,7 +310,7 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
                     {error && <Alert type="error" showIcon title={error} />}
                     {saved.pending && <Alert type="info" showIcon title={working ? "正在生成，可关闭窗口稍后回来查看。" : "原任务尚未确认结束，请先检查原任务。"} />}
                     <div className="flex flex-wrap items-center gap-3">
-                        <Button type="primary" icon={<Sparkles size={14} />} loading={working} disabled={disabled || selecting || !storageReady || (!saved.pending && (!activeModel || !prompt.trim()))} onClick={() => saved.pending ? void run(saved.pending, true) : void generate()}>
+                        <Button type="primary" icon={<Sparkles size={14} />} loading={working} disabled={disabled || optimizing || selecting || !storageReady || (!saved.pending && (!activeModel || !prompt.trim()))} onClick={() => saved.pending ? void run(saved.pending, true) : void generate()}>
                             {working ? "正在生成" : saved.pending ? "检查原任务" : saved.candidates.length ? "再生成一张" : "生成一张"}
                         </Button>
                         <span className="text-xs text-muted-foreground">生成按所选模型扣积分，采用图片不再扣费。</span>
@@ -300,7 +329,7 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
                                     ))}
                                 </div>
                             )}
-                            <Button type="primary" block loading={selecting} disabled={disabled || working} onClick={() => void selectCandidate()}>用作{label}</Button>
+                            <Button type="primary" block loading={selecting} disabled={disabled || working || optimizing} onClick={() => void selectCandidate()}>用作{label}</Button>
                         </div>
                     )}
                 </div>

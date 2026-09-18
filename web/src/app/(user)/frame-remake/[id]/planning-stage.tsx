@@ -1,6 +1,7 @@
 "use client";
 import { Button, Checkbox, Input } from "antd";
 import { useRef } from "react";
+import { ReferenceImageGenerator } from "@/components/reference-image-generator";
 import { frameRemakeInputError, frameRemakeIsBasicWorkflow, frameRemakeReplacement, frameRemakeTime, frameRemakeWorkflowSource } from "@/lib/frame-remake-contract";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
 import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
@@ -27,7 +28,8 @@ export function FramePlanningStage(props: WorkflowProps) {
                 <header className="border-b pb-4">
                     <p className="text-xs text-muted-foreground">阶段 02</p>
                     <h2 className="mt-1 text-lg font-semibold">{basic ? "替换素材" : "分镜脚本与替换素材"}</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">{basic ? "按所选飞书流程上传素材，使用原文提示词直接生成分镜图。每组独立执行并保留结果。" : "此流程需先补齐飞书脚本与生图提示词正文，已有结果可继续查看。"}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{basic ? "按所选飞书流程准备素材，使用原文提示词直接生成分镜图。每组独立执行并保留结果。" : "此流程需先补齐飞书脚本与生图提示词正文，已有结果可继续查看。"}</p>
+                    {slots.some((slot) => slot.key !== "product") && <p className="mt-1 text-sm text-muted-foreground">人物图和背景图可手动上传，也可点击“AI 生成”，预览后采用并自动保存。</p>}
                 </header>
                 {!basic && <fieldset className="space-y-2" disabled={props.editingDisabled}>
                     <legend className="mb-2 text-sm font-medium">本次替换</legend>
@@ -40,7 +42,7 @@ export function FramePlanningStage(props: WorkflowProps) {
                     </div>
                     <p className="text-xs text-muted-foreground">未勾选的内容沿用原视频。关闭选项会保留已上传素材，重新勾选即可继续使用。</p>
                 </fieldset>}
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className={`grid gap-3 ${slots.length === 2 ? "md:grid-cols-2" : "md:grid-cols-3"}`}>
                     {slots.map((slot) => (
                         <ReferenceSlot
                             key={slot.key}
@@ -52,6 +54,21 @@ export function FramePlanningStage(props: WorkflowProps) {
                             disabled={props.editingDisabled}
                             onChoose={() => inputs.current[slot.key]?.click()}
                             onRemove={() => props.onChange({ references: { ...display.references, [slot.key]: [] } })}
+                            generateAction={slot.key !== "product" ? (
+                                <ReferenceImageGenerator
+                                    projectId={project.id}
+                                    role={slot.key}
+                                    context={display.productInfo}
+                                    imageModel={display.modelSelection.image}
+                                    disabled={props.editingDisabled}
+                                    className="!h-7 !px-1.5"
+                                    onSelect={async (asset) => {
+                                        if (props.editingDisabled) throw new Error("请等待当前操作完成后再采用参考图");
+                                        props.onChange({ references: { ...display.references, [slot.key]: [asset] } });
+                                        await props.onSave();
+                                    }}
+                                />
+                            ) : undefined}
                         >
                             <input
                                 ref={(node) => {

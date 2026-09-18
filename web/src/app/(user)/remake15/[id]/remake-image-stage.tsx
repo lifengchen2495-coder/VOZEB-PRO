@@ -454,6 +454,7 @@ export function ReferenceSlot({
     disabled,
     onChoose,
     onRemove,
+    generateAction,
     children,
 }: {
     label: string;
@@ -464,6 +465,7 @@ export function ReferenceSlot({
     disabled: boolean;
     onChoose: () => void;
     onRemove: () => void;
+    generateAction?: React.ReactNode;
     children: React.ReactNode;
 }) {
     return (
@@ -483,10 +485,11 @@ export function ReferenceSlot({
                     </Tag>
                 </div>
                 <div className="mt-0.5 truncate text-xs text-muted-foreground">{asset?.originalName || detail}</div>
-                <div className="mt-1.5 flex items-center gap-1">
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
                     <Button size="small" type="text" className="!h-7 !px-1.5" icon={<Upload className="size-3.5" />} loading={loading} disabled={disabled} onClick={onChoose}>
                         {asset ? "替换" : "上传"}
                     </Button>
+                    {generateAction}
                     {asset ? <Button size="small" type="text" danger className="!size-7 !min-w-0 !p-0" icon={<Trash2 className="size-3.5" />} disabled={disabled} aria-label={`移除${label}`} onClick={onRemove} /> : null}
                 </div>
             </div>

@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 2400;
 
-type PromptOptimizationBody = { requestId?: unknown; prompt?: unknown; mode?: unknown };
+type PromptOptimizationBody = { requestId?: unknown; prompt?: unknown; mode?: unknown; referenceRole?: unknown };
 const modes = new Set(["agent", "image", "video", "audio"]);
 
 export async function POST(request: Request) {
@@ -30,8 +30,15 @@ export async function POST(request: Request) {
         throw error;
     }
     const requestId = text(body.requestId, 160);
-    const prompt = text(body.prompt, CREATE_AGENT_PROMPT_MAX_LENGTH);
     const mode = modes.has(String(body.mode || "")) ? (body.mode as "agent" | CreativeGenerationMode) : "agent";
+    if (body.referenceRole !== undefined && (mode !== "image" || (body.referenceRole !== "character" && body.referenceRole !== "background"))) {
+        return NextResponse.json({ code: 400, data: null, msg: "参考图类型不正确" }, { status: 400 });
+    }
+    const referenceRole = body.referenceRole as "character" | "background" | undefined;
+    if (referenceRole && typeof body.prompt === "string" && body.prompt.trim().length > 6000) {
+        return NextResponse.json({ code: 400, data: null, msg: "参考图描述不能超过 6000 字" }, { status: 400 });
+    }
+    const prompt = text(body.prompt, referenceRole ? 6000 : CREATE_AGENT_PROMPT_MAX_LENGTH);
     if (!requestId || !prompt) return NextResponse.json({ code: 400, data: null, msg: "请先输入需要优化的提示词" }, { status: 400 });
 
     try {
@@ -42,6 +49,7 @@ export async function POST(request: Request) {
             requestId,
             prompt,
             mode,
+            referenceRole,
         });
         return NextResponse.json({ code: 0, data: { prompt: optimizedPrompt }, msg: "OK" });
     } catch (error) {
