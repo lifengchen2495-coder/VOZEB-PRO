@@ -66,6 +66,8 @@ const MAX_INLINE_VIDEO_BYTES = 24 * 1024 * 1024;
 const FRAME_BATCH_SIZE = 12;
 const FRAME_EXTRACTION_CONCURRENCY = 4;
 const FRAME_PERSISTENCE_CONCURRENCY = 4;
+// Allow one frame at the analysis video's 12 fps plus timestamp rounding, only at the final boundary.
+const VIDEO_END_TOLERANCE_MS = 100;
 const CONTACT_SHEET_COLUMNS = 3;
 const CONTACT_SHEET_ROWS = 4;
 const CONTACT_SHEET_WIDTH = 1_080;
@@ -232,12 +234,7 @@ async function probeSourceVideo(sourcePath: string): Promise<ProbeResult> {
 async function resolveAnalysisModels() {
     const settings = await getAuthSettings();
     const doubaoLogicalIds = settings.logicalModels
-        .filter(
-            (logical) =>
-                logical.enabled &&
-                logical.capability === "text" &&
-                logical.bindings.some((binding) => binding.enabled && normalizedModelId(binding.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL),
-        )
+        .filter((logical) => logical.enabled && logical.capability === "text" && logical.bindings.some((binding) => binding.enabled && normalizedModelId(binding.upstreamModel) === DOUBAO_VIDEO_UNDERSTANDING_MODEL))
         .map((logical) => logical.id);
     const requestedVideoModels = Array.from(new Set([settings.defaultModels.textModel, ...doubaoLogicalIds, DOUBAO_VIDEO_UNDERSTANDING_MODEL].filter(Boolean)));
     const videoCandidates = rankTextPlanningCandidates(
@@ -430,7 +427,8 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
     }
 }
 
-function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
+export function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
+    const endTimestamp = formatTimestamp(durationMs / 1_000);
     const runtimeContract = [
         "## 【当前记录执行合同】",
         "完整观看已上传的视频，并按时间顺序严格拆解为恰好 48 个编号分镜，四部分各 12 个。",
@@ -438,7 +436,8 @@ function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
         "每个分镜必须给出真实语义起止时间、画面可见字幕、卖点、镜头类型、画面描述、人物占比和是否包含清晰人脸。无字幕且无卖点的纯过渡画面应与相邻镜头合并，不得为了凑数虚构画面。",
         "画面描述必须包含景别或构图、人物性别、动作、节奏、展示目的和环境背景。",
         "除视频原语言字幕和 sourceCopy 外，所有分析字段使用简体中文。sourceCopy 必须按视频中的原语言逐字返回，不得翻译、概括、改写、遗漏或重复；无口播时返回空字符串。",
-        `视频实际时长为 ${formatTimestamp(durationMs / 1_000)}。`,
+        `视频实际时长为 ${endTimestamp}（${(durationMs / 1_000).toFixed(3)} 秒）。以此处原视频探测时长为准，不要按 60 秒模板或转码后的视频时长取整。`,
+        `startTime 和 endTime 使用 m:ss.xxx 格式，保留毫秒精度。第 48 个分镜的 endTime 必须原样填写 "${endTimestamp}"。`,
         "只输出一个 JSON 对象，不要输出 Markdown 代码围栏、解释或前后缀。JSON 必须严格符合以下 Schema：",
         JSON.stringify(remakeVideoTool.parameters),
     ].join("\n\n");
@@ -506,7 +505,10 @@ function doubaoEndpoint(candidate: ResolvedLogicalModel, path: string) {
 }
 
 function normalizedModelId(value: string) {
-    return value.trim().replace(/^models\//i, "").toLowerCase();
+    return value
+        .trim()
+        .replace(/^models\//i, "")
+        .toLowerCase();
 }
 
 function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
@@ -519,7 +521,7 @@ function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
     });
 }
 
-function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
+export function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
     let payload: Record<string, unknown>;
     try {
         payload = JSON.parse(argumentsText) as Record<string, unknown>;
@@ -537,7 +539,13 @@ function parseVideoUnderstanding(argumentsText: string, durationMs: number): Vid
         if (!ordinal || byOrdinal.has(ordinal)) throw new Error("视频理解模型返回了重复或无效的镜头编号");
         const rawStart = parseTimestamp(item.startTime);
         const rawEnd = parseTimestamp(item.endTime);
-        if (rawStart === null || rawEnd === null || rawStart < 0 || rawEnd <= rawStart || rawEnd > durationSeconds) throw new Error(`镜头 ${ordinal} 的时间字段不合格`);
+        if (rawStart === null || rawEnd === null || !Number.isFinite(rawStart) || !Number.isFinite(rawEnd) || rawStart < 0 || rawEnd <= rawStart) throw new Error(`镜头 ${ordinal} 的时间字段不合格`);
+        const time = roundedSeconds(rawStart);
+        let endTime = roundedSeconds(rawEnd);
+        if (ordinal === REMAKE_FRAME_COUNT && Math.abs(Math.round(endTime * 1_000) - durationMs) <= VIDEO_END_TOLERANCE_MS) endTime = durationSeconds;
+        if (endTime <= time || endTime > durationSeconds) {
+            throw new Error(`镜头 ${ordinal} 的时间字段不合格（开始 ${time} 秒，结束 ${endTime} 秒，视频时长 ${durationSeconds} 秒）`);
+        }
         const subtitle = strictText(item.subtitle, 2_000, true);
         const sellingPoint = strictText(item.sellingPoint, 2_000, true);
         const shotType = strictText(item.shotType, 200);
@@ -546,8 +554,6 @@ function parseVideoUnderstanding(argumentsText: string, durationMs: number): Vid
         if (subtitle === null || sellingPoint === null || !shotType || !description || !subjectRatio || typeof item.hasFace !== "boolean") {
             throw new Error(`镜头 ${ordinal} 的分析字段不完整`);
         }
-        const time = roundedSeconds(rawStart);
-        const endTime = roundedSeconds(rawEnd);
         byOrdinal.set(ordinal, { ordinal, time, endTime, subtitle, sellingPoint, shotType, description, subjectRatio, hasFace: item.hasFace });
     }
     const frames = Array.from(byOrdinal.values()).sort((left, right) => left.ordinal - right.ordinal);
@@ -1150,8 +1156,8 @@ const remakeVideoTool = {
                     type: "object",
                     properties: {
                         ordinal: { type: "integer", minimum: 1, maximum: REMAKE_FRAME_COUNT },
-                        startTime: { type: "string", description: "镜头起始时间，格式 m:ss.xx" },
-                        endTime: { type: "string", description: "镜头结束时间，格式 m:ss.xx" },
+                        startTime: { type: "string", description: "镜头起始时间，格式 m:ss.xxx，保留毫秒精度" },
+                        endTime: { type: "string", description: "镜头结束时间，格式 m:ss.xxx，保留毫秒精度；最后一段必须使用给定的原视频实际结尾" },
                         subtitle: { type: "string" },
                         sellingPoint: { type: "string" },
                         shotType: { type: "string" },
