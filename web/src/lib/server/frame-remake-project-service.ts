@@ -510,7 +510,7 @@ export async function submitFrameRemakeGeneration(input: { userId: string; proje
                 "x-vozeb-pro-attempt-no": String(pending.attemptNo),
             },
             body: JSON.stringify({
-                kind: "generation",
+                kind: input.kind !== "video" ? "edit" : "generation",
                 prompt: pending.prompt,
                 title: `${project.title} · 第${group.number}组`,
                 source: "drama",

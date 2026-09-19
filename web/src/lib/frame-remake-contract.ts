@@ -244,10 +244,20 @@ export function frameRemakeGrid(count: number) {
 export function frameRemakeBusy(project: FrameRemakeProject) {
     return Boolean(project.operation || project.groups.some((group) => [group.template, group.image, group.video].some((task) => task.status === "queued" || task.status === "running")));
 }
+export function frameRemakePersonImageInputs(project: FrameRemakeProject, group: FrameRemakeGroup) {
+    const refs = frameRemakeActiveReferences(project);
+    // 跟品原文要求 12 张独立分镜图；预览拼图会缩小、裁切产品细节，不能代替原帧。
+    return [
+        ...group.frames.map((frame, index) => ({ field: `12张分镜图片：分镜${index + 1}`, media: frame.media })),
+        ...refs.background.map((media) => ({ field: "背景图", media })),
+        ...refs.character.map((media) => ({ field: "人物六宫格图", media })),
+    ].filter((input): input is { field: string; media: FrameRemakeMedia } => Boolean(input.media));
+}
 export function frameRemakeImageReferences(project: FrameRemakeProject, group: FrameRemakeGroup, kind: "template" | "image" = "image") {
     const refs = frameRemakeActiveReferences(project);
+    if (frameRemakeWorkflowSource(project) === "person-basic") return frameRemakePersonImageInputs(project, group).map((input) => input.media);
     if (frameRemakeIsBasicWorkflow(project)) {
-        const images = frameRemakeWorkflowSource(project) === "product-basic" ? [...refs.product, group.contactSheet] : [group.contactSheet, ...refs.character, ...refs.background];
+        const images = [...refs.product, group.contactSheet];
         return images.filter((media): media is FrameRemakeMedia => Boolean(media));
     }
     const usesTemplate = frameRemakeUsesTemplate(project);

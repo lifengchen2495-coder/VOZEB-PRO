@@ -179,6 +179,8 @@ export async function POST(request: Request) {
                     await validateFrameRemakeReferenceImageRequest({ userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context.generationSlotId });
                 } else {
                     await validateFrameRemakeGeneration({ kind: "image", userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context?.generationSlotId || "", clientRequestId: resolvedBody.context?.clientRequestId, attemptNo: resolvedBody.context?.attemptNo, prompt: (resolvedBody.prompt || "").trim(), references: resolvedBody.references, model: resolvedBody.config?.model, size: resolvedBody.config?.size });
+                    // 分镜重绘必须走图生图；兼容旧调用方的 generation 标记，防止上游漏传参考图。
+                    resolvedBody.kind = "edit";
                 }
             } catch (error) {
                 if (error instanceof FrameRemakeError) return NextResponse.json({ error: error.message }, { status: error.status });

@@ -1,8 +1,8 @@
-import { frameRemakeActiveReferences, frameRemakeHasNarration, frameRemakeSeconds, frameRemakeWorkflowSource, type FrameRemakeAnalysisStage, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
+import { frameRemakeActiveReferences, frameRemakeHasNarration, frameRemakePersonImageInputs, frameRemakeSeconds, frameRemakeWorkflowSource, type FrameRemakeAnalysisStage, type FrameRemakeGroup, type FrameRemakeProject } from "./frame-remake-contract";
 import { assertFrameRemakePromptResolved, frameRemakeBindFields } from "./frame-remake-feishu-workflow";
 import { frameRemakeTemplates } from "./frame-remake-prompt-templates";
 
-export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-17.feishu-original-fields.1";
+export const FRAME_REMAKE_PROMPT_VERSION = "2026-09-19.feishu-original-fields.2";
 
 function groupInput(project: FrameRemakeProject, group: FrameRemakeGroup) {
     return {
@@ -56,6 +56,8 @@ export function frameRemakeImagePrompt(project: FrameRemakeProject, group: Frame
     const source = frameRemakeWorkflowSource(project);
     const roles = source === "product-basic"
         ? [...refs.product.map(() => "产品图"), ...(group.contactSheet ? ["1-12拼图"] : [])]
+        : source === "person-basic"
+          ? frameRemakePersonImageInputs(project, group).map((input) => input.field)
         : [ ...(group.contactSheet ? ["1-12拼图"] : []), ...refs.character.map(() => "人物图"), ...refs.background.map(() => "背景图") ];
     return frameRemakeBindFields(kind === "template" ? templates.replacement : templates.storyboard, {
         "1-12分镜提示词": group.imagePrompt,

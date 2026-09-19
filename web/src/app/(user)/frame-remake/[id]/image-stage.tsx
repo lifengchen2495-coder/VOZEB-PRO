@@ -2,7 +2,7 @@
 import { Button, Tag } from "antd";
 import { Check } from "lucide-react";
 import { frameRemakeWorkflowReadiness } from "@/lib/frame-remake-steps";
-import { frameRemakeGrid, frameRemakeInputError, frameRemakeIsBasicWorkflow, frameRemakeSeconds, frameRemakeUsesTemplate } from "@/lib/frame-remake-contract";
+import { frameRemakeGrid, frameRemakeInputError, frameRemakeIsBasicWorkflow, frameRemakeSeconds, frameRemakeUsesTemplate, frameRemakeWorkflowSource } from "@/lib/frame-remake-contract";
 import { frameRemakeImagePrompt } from "@/lib/frame-remake-prompts";
 import { frameRemakeMissingPromptFields } from "@/lib/frame-remake-prompt-templates";
 import { RemakeGroupCard } from "../../remake15/[id]/remake-image-stage";
@@ -14,6 +14,7 @@ export function FrameImageStage(props: WorkflowProps) {
         ready = frameRemakeWorkflowReadiness(project),
         twoStep = frameRemakeUsesTemplate(display),
         basic = frameRemakeIsBasicWorkflow(display),
+        personBasic = frameRemakeWorkflowSource(display) === "person-basic",
         inputError = frameRemakeInputError(display),
         missingSource = frameRemakeMissingPromptFields(display).length > 0;
     const disabled = props.disabled || !ready.planning || Boolean(inputError) || missingSource;
@@ -24,7 +25,7 @@ export function FrameImageStage(props: WorkflowProps) {
                     <div>
                         <p className="text-xs text-muted-foreground">阶段 02</p>
                         <h2 className="mt-1 text-lg font-semibold">十二宫格重绘</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : "使用所选飞书流程的原文提示词，从原分镜拼图单步生成最终图。"}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : personBasic ? "使用飞书原文提示词和每组 12 张独立原帧，保留原产品与分镜动作，替换背景；提供人物图时替换人物外貌和服装。左侧拼图仅用于预览。" : "使用所选飞书流程的原文提示词，从原分镜拼图单步生成最终图。"}</p>
                     </div>
                     <div className="flex flex-wrap items-end gap-2">
                         <ModelControl props={props} kind="image" label="生图模型" />
@@ -36,6 +37,9 @@ export function FrameImageStage(props: WorkflowProps) {
                         </Tag>
                     </div>
                 </header>
+                {personBasic && display.groups.some((group) => group.image.result && (group.image.referenceUrls?.length || 0) < 13) && (
+                    <p role="status" className="border-b py-3 text-sm text-amber-700">部分旧结果尚无 12 张独立原帧的输入记录。请对相应分组重新生图；已有结果不会自动改变。</p>
+                )}
                 {(!ready.planning || inputError) && (
                     <div className="flex items-center justify-between gap-2 border-b py-3 text-sm">
                         <span>{inputError || (basic ? "请先完成来源分析与拆帧。" : "请先完成分镜脚本和分镜提示词。")}</span>
