@@ -45,11 +45,11 @@ export const FRAME_REMAKE_TRANSCRIPTION_PROMPT = [
 
 export function parseFrameRemakeTranscription(raw: string) {
     const response = raw.trim();
-    // 仅去掉包裹完整 JSON 的代码框，保留逐字转录内容，不修补截断内容或将说明文字当作口播。
+    // 仅处理代码框和字符串内未转义的控制字符，不补齐截断内容或将说明文字当作口播。
     const fence = response.match(/^(`{3,}|~{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1$/i);
     let value: unknown;
     try {
-        value = JSON.parse(fence?.[2] ?? response);
+        value = JSON.parse(escapeJsonStringControls(fence?.[2] ?? response));
     } catch {
         throw new Error("原文案转录未返回完整 JSON，未保存转录结果");
     }
@@ -61,6 +61,24 @@ export function parseFrameRemakeTranscription(raw: string) {
     return result.sourceCopy.trim()
         ? { status: "transcribed" as const, text: result.sourceCopy }
         : { status: "no-speech" as const, text: "" };
+}
+
+function escapeJsonStringControls(raw: string) {
+    let result = "";
+    let inString = false;
+    let escaped = false;
+    for (const character of raw) {
+        // 模型可能把真实换行直接写进 sourceCopy 引号内；只修正编码，解析后的字符完全保留。
+        if (inString && !escaped && character.charCodeAt(0) < 0x20) {
+            result += JSON.stringify(character).slice(1, -1);
+            continue;
+        }
+        result += character;
+        if (escaped) escaped = false;
+        else if (inString && character === "\\") escaped = true;
+        else if (character === '"') inString = !inString;
+    }
+    return result;
 }
 
 export async function requestFrameRemakeTranscription(input: {
