@@ -172,10 +172,14 @@ export async function POST(request: Request) {
                 throw error;
             }
         }
-        if (resolvedBody.context?.projectId?.startsWith("frame-remake-") || resolvedBody.context?.generationSlotId?.startsWith("frame-remake-image:") || resolvedBody.context?.generationSlotId?.startsWith("frame-remake-template:")) {
-            const { validateFrameRemakeGeneration, FrameRemakeError } = await import("@/lib/server/frame-remake-project-service");
+        if (resolvedBody.context?.projectId?.startsWith("frame-remake-") || resolvedBody.context?.generationSlotId?.startsWith("frame-remake-image:") || resolvedBody.context?.generationSlotId?.startsWith("frame-remake-template:") || resolvedBody.context?.generationSlotId?.startsWith("reference-image:frame-remake-")) {
+            const { validateFrameRemakeGeneration, validateFrameRemakeReferenceImageRequest, FrameRemakeError } = await import("@/lib/server/frame-remake-project-service");
             try {
-                await validateFrameRemakeGeneration({ kind: "image", userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context?.generationSlotId || "", clientRequestId: resolvedBody.context?.clientRequestId, attemptNo: resolvedBody.context?.attemptNo, prompt: (resolvedBody.prompt || "").trim(), references: resolvedBody.references, model: resolvedBody.config?.model, size: resolvedBody.config?.size });
+                if (resolvedBody.context?.generationSlotId?.startsWith("reference-image:")) {
+                    await validateFrameRemakeReferenceImageRequest({ userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context.generationSlotId });
+                } else {
+                    await validateFrameRemakeGeneration({ kind: "image", userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context?.generationSlotId || "", clientRequestId: resolvedBody.context?.clientRequestId, attemptNo: resolvedBody.context?.attemptNo, prompt: (resolvedBody.prompt || "").trim(), references: resolvedBody.references, model: resolvedBody.config?.model, size: resolvedBody.config?.size });
+                }
             } catch (error) {
                 if (error instanceof FrameRemakeError) return NextResponse.json({ error: error.message }, { status: error.status });
                 throw error;

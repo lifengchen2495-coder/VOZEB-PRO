@@ -628,6 +628,16 @@ async function settleFrameRemakeCancellation(userId: string, id: string, groupId
         return changedFrameRemake({ ...current, error, automation });
     });
 }
+export async function validateFrameRemakeReferenceImageRequest(input: { userId: string; projectId: string; slotId: string }) {
+    const project = await getFrameRemakeProjectForUser(input.userId, input.projectId);
+    if (input.slotId !== `reference-image:${project.id}:character` && input.slotId !== `reference-image:${project.id}:background`) {
+        throw new FrameRemakeError("参考图生成位置与当前项目不一致，请刷新后重试", 400);
+    }
+    assertFrameRemakeIdle(project);
+    // 参考图先生成候选，用户采用时再校验素材归属并保存；不占用分镜分组预留。
+    // 模型、图片参数与计费继续由通用生图任务入口校验和处理。
+}
+
 export async function validateFrameRemakeGeneration(input: {
     userId: string;
     projectId: string;
