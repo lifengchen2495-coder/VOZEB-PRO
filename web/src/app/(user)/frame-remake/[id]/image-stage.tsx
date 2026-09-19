@@ -25,7 +25,7 @@ export function FrameImageStage(props: WorkflowProps) {
                     <div>
                         <p className="text-xs text-muted-foreground">阶段 02</p>
                         <h2 className="mt-1 text-lg font-semibold">十二宫格重绘</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : personBasic ? "使用飞书原文提示词和每组 12 张独立原帧，保留原产品与分镜动作，替换背景；提供人物图时替换人物外貌和服装。左侧拼图仅用于预览。" : "使用所选飞书流程的原文提示词，从原分镜拼图单步生成最终图。"}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{twoStep ? "按已确认的分镜脚本，先生成模板图，再生成最终分镜图。每一步的图片和提示词都会保留。" : personBasic ? "使用飞书原文提示词和每组 12 张独立原帧，保留原产品与分镜动作，替换背景；提供人物图时替换人物外貌和服装，并按原文做人脸模糊。原镜头有人就保留人物，不能删人或改成纯产品镜头。左侧拼图仅用于预览。" : "使用所选飞书流程的原文提示词，从原分镜拼图单步生成最终图。"}</p>
                     </div>
                     <div className="flex flex-wrap items-end gap-2">
                         <ModelControl props={props} kind="image" label="生图模型" />

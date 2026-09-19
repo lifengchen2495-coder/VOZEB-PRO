@@ -425,9 +425,8 @@ export async function buildJsonImageEditBodies(
     return [
         { ...base, images: imageUrlObjects, ref_assets: imageUrlObjects, image_urls: imageUrlObjects },
         { ...base, ...(images.length === 1 ? { image: first } : {}), images, ref_assets: images, image_urls: images },
-        { ...base, image_url: first },
-        { ...base, input_image: first },
-        { ...base, image: first },
+        // 多参考图任务不能降级成仅发送第一张，分镜和目标人物都必须保留。
+        ...(images.length === 1 ? [{ ...base, image_url: first }, { ...base, input_image: first }, { ...base, image: first }] : []),
         { ...base, images: imageObjects, ref_assets: imageObjects, image_urls: imageObjects },
     ];
 }

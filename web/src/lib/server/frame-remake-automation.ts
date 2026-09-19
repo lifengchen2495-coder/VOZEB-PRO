@@ -18,13 +18,13 @@ export async function controlFrameRemakeAutomation(userId: string, id: string, r
         assertFrameRemakeRevision(project, revision);
         if (!project.sourceVideo) throw new FrameRemakeError("请先上传原视频");
         if (project.automation?.status === "running") return project;
+        if (stageScope !== "analysis" && frameRemakeInputError(project)) throw new FrameRemakeError(frameRemakeInputError(project));
         const ready = frameRemakeWorkflowReadiness(project);
         if ((stageScope === "planning" && !ready.analysis) || (stageScope === "images" && !ready.planning) || (stageScope === "production" && !ready.images)) throw new FrameRemakeError("请先完成前一个阶段，再开始本阶段");
         if (options.restartFrom && frameRemakeBusy(project)) throw new FrameRemakeError("请等待当前步骤完成后再开始", 409);
         if (options.groupId && !project.groups.some((g) => g.id === options.groupId)) throw new FrameRemakeError("分组不存在", 404);
         const restartStage = options.restartFrom === "productScript" ? "planning" : options.restartFrom === "images" ? "images" : options.restartFrom === "videoPrompt" ? "production" : "analysis";
         if (options.restartFrom && restartStage !== stageScope) throw new FrameRemakeError("重新生成的步骤与当前阶段不一致");
-        if (stageScope !== "analysis" && frameRemakeInputError(project)) throw new FrameRemakeError(frameRemakeInputError(project));
         if (!frameRemakeIsBasicWorkflow(project) && options.restartFrom === "images" && project.groups.filter((g) => !options.groupId || g.id === options.groupId).some((g) => !g.productScript?.trim() || !g.imagePrompt.trim()))
             throw new FrameRemakeError("请先完成新产品脚本和分镜提示词，再开始两步生图");
         // 继续由用户明确发起。仅重置失败步骤，已提交的未知结果继续复用原请求。

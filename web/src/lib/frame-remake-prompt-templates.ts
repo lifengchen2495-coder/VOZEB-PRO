@@ -21,6 +21,13 @@ function original(tableId: string, field: string) {
     return originalRecord(tableId, field).prompt;
 }
 
+export function frameRemakeImagePromptSource(project: FrameRemakeProject) {
+    const source = frameRemakeWorkflowSource(project);
+    if (source === "combined-original") return undefined;
+    const record = originalRecord(source === "person-basic" ? personTable : productTable, "1-12 生图");
+    return { tableId: record.tableId, field: record.field, url: record.sourceUrl };
+}
+
 export function frameRemakeMissingPromptFields(project?: FrameRemakeProject) {
     if (project && frameRemakeWorkflowSource(project) !== "combined-original") return [];
     return Object.values(FRAME_REMAKE_SOURCE_FIELDS);

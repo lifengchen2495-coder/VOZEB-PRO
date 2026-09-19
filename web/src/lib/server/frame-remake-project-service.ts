@@ -411,6 +411,7 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
     const target = before.groups.find((group) => group.id === groupId);
     if (!target) throw new FrameRemakeError("分组不存在", 404);
     if (kind === "video" && frameRemakeIsBasicWorkflow(before) && !frameRemakeSourceCopyReady(before, target)) throw new FrameRemakeError("本组原文案尚未通过音频能力校验，请重新转录或人工核对保存后再生成视频");
+    if (frameRemakeInputError(before)) throw new FrameRemakeError(frameRemakeInputError(before));
     if (target[kind].status === "queued") {
         if (target[kind].submissionPaused || (automationLeaseId && (before.automation?.status !== "running" || before.automation.leaseId !== automationLeaseId))) throw new FrameRemakeError("后续步骤已暂停，请明确继续后再提交", 409);
         assertFrameRemakePromptResolved(target[kind].prompt || "");
@@ -422,7 +423,6 @@ async function reserveGeneration(userId: string, id: string, revision: number, g
     assertFrameRemakeIdle(before, automationLeaseId);
     if (before.workflowVersion !== "feishu-original-15s") throw new FrameRemakeError("请先按原版流程重新分析来源视频");
     assertFrameRemakeTimeline(before);
-    if (frameRemakeInputError(before)) throw new FrameRemakeError(frameRemakeInputError(before));
     if (!frameRemakeIsBasicWorkflow(before) && !target.productScript) throw new FrameRemakeError("请先完成新产品分镜脚本");
     if (kind === "template" && !frameRemakeUsesTemplate(before)) throw new FrameRemakeError("当前替换组合直接生成最终分镜图");
     if (kind !== "video" && (!target.analysis || !target.contactSheet || target.frames.some((frame) => !frame.media) || (!frameRemakeIsBasicWorkflow(before) && !target.imagePrompt))) throw new FrameRemakeError("请先完成本组分析、拆帧及所选流程的前序步骤");
@@ -653,6 +653,7 @@ export async function validateFrameRemakeGeneration(input: {
 }) {
     assertFrameRemakePromptResolved(input.prompt);
     const project = await getFrameRemakeProjectForUser(input.userId, input.projectId);
+    if (frameRemakeInputError(project)) throw new FrameRemakeError(frameRemakeInputError(project));
     const stage = input.kind === "image" && input.slotId.startsWith("frame-remake-template:") ? "template" : input.kind;
     const group = project.groups.find((item) => `frame-remake-${stage}:${item.id}` === input.slotId);
     const pending = group?.[stage];

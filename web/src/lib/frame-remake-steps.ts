@@ -1,8 +1,8 @@
-import { FRAME_REMAKE_ANALYSIS_LABELS, frameRemakeAnalysisResult, frameRemakeUsesTemplate, frameRemakeIsBasicWorkflow, frameRemakeSourceCopyReady, type FrameRemakeProject } from "./frame-remake-contract";
+import { FRAME_REMAKE_ANALYSIS_LABELS, frameRemakeAnalysisResult, frameRemakeInputError, frameRemakeUsesTemplate, frameRemakeIsBasicWorkflow, frameRemakeSourceCopyReady, type FrameRemakeProject } from "./frame-remake-contract";
 
 export function frameRemakeWorkflowReadiness(project: FrameRemakeProject) {
     const analysis = project.workflowVersion === "feishu-original-15s" && project.groups.length > 0 && project.groups.every((group) => group.contactSheet && group.frames.every((frame) => frame.media) && group.analysis && (!frameRemakeIsBasicWorkflow(project) || frameRemakeSourceCopyReady(project, group)));
-    const planning = analysis && (frameRemakeIsBasicWorkflow(project) || project.groups.every((group) => frameRemakeAnalysisResult(group, "productScript") && group.imagePrompt));
+    const planning = analysis && !frameRemakeInputError(project) && (frameRemakeIsBasicWorkflow(project) || project.groups.every((group) => frameRemakeAnalysisResult(group, "productScript") && group.imagePrompt));
     const images = planning && project.groups.every((group) => (!frameRemakeUsesTemplate(project) || (group.template.status === "completed" && group.template.result)) && group.image.status === "completed" && group.image.result);
     return { analysis, planning, images, production: Boolean(project.mergedVideo) };
 }

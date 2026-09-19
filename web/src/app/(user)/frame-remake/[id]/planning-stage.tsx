@@ -20,7 +20,7 @@ export function FramePlanningStage(props: WorkflowProps) {
     const slots = source === "product-basic"
         ? [{ key: "product" as const, label: "新产品图", detail: "原文按此图替换人物手持的产品", required: true }]
         : source === "person-basic"
-          ? [{ key: "character" as const, label: "人物图（可选）", detail: "提供时采用此人物；留空按原提示词处理", required: false }, { key: "background" as const, label: "背景图", detail: "原工作流要求的背景参考图", required: true }]
+          ? [{ key: "character" as const, label: "人物图（可选）", detail: "指定人物时上传或生成后采用；原提示词仅在提供此图时替换人物外貌和服装", required: false }, { key: "background" as const, label: "背景图", detail: "此飞书原流程包含背景替换，原文要求必填", required: true }]
           : ([{ key: "product", label: "新产品图", detail: "换品时必填，用于确定新产品外观", required: true }, { key: "character", label: "人物图", detail: "换人时必填，用于确定目标人物", required: true }, { key: "background", label: "环境图", detail: "换环境时必填，用于确定目标场景", required: true }] as const).filter((slot) => replacement[slot.key]);
     return (
         <section className="h-full min-h-0 overflow-y-auto" aria-label="分镜脚本与替换素材">

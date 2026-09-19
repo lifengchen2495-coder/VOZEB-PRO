@@ -293,6 +293,7 @@ function ReferenceImageGeneratorSession({ projectId, role, context, imageModel, 
             <Modal title={`AI 生成${label}`} open={open} onCancel={() => !selecting && setOpen(false)} footer={null} width={680} centered>
                 <div className="space-y-4 py-2">
                     <p className="text-sm text-muted-foreground">没有现成的{label}也可以直接生成。修改下面的描述，生成后选一张用于当前项目。</p>
+                    {projectId.startsWith("frame-remake-") && <p className="text-xs text-muted-foreground">此处的默认描述是系统提供的参考图示例，AI 优化会改写此处描述；两者均非飞书原文，不修改后续分镜流程的飞书提示词。</p>}
                     <label className="block space-y-2 text-sm">
                         <span>{label}描述</span>
                         <Input.TextArea value={prompt} onChange={(event) => { promptEditedRef.current = true; setBeforeOptimization(undefined); setPrompt(event.target.value); }} autoSize={{ minRows: 5, maxRows: 10 }} maxLength={6000} disabled={working || optimizing || Boolean(saved.pending) || selecting || disabled} />
