@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RemakeAnalysisTask } from "./remake-person-analysis-task-store";
 import { normalizeRemakeProjectWorkflow, type RemakeProject } from "./remake-person-project-contract";
+import { normalizeRemakeProject } from "@/app/(user)/remake-person/remake-contract";
 
 const store = vi.hoisted(() => ({ mutate: vi.fn() }));
 vi.mock("./remake-person-project-store", async (importOriginal) => ({
@@ -37,22 +38,35 @@ describe("failed person analysis diagnostics", () => {
     });
 
     it("does not overwrite a newer analysis with a late failure", async () => {
-        project.analysis = { status: "running", taskId: "new-task", runId: "new-run", raw: "新任务返回" };
+        project.analysis = { status: "running", taskId: "new-task", runId: "new-run", raw: "新任务返回", transcriptionRaw: "新转录返回" };
         const previous = project;
-        await failRemakeProjectAnalysis(task, "旧任务失败", "旧模型返回");
+        await failRemakeProjectAnalysis(task, "旧任务失败", "旧模型返回", "旧转录返回");
         expect(project).toBe(previous);
     });
 
     it("clears previous response text when starting a new attempt", async () => {
         project.analysis.status = "error";
+        project.analysis.transcriptionRaw = "旧转录返回";
         await markRemakeProjectAnalysisRunning(task);
         expect(project.analysis).toMatchObject({ status: "running", raw: "" });
         await failRemakeProjectAnalysis(task, "本次连接失败，未收到返回");
         expect(project.analysis.raw).toBe("");
+        expect(project.analysis.transcriptionRaw).toBeUndefined();
     });
 
     it("bounds the diagnostic text stored on the project", async () => {
-        await failRemakeProjectAnalysis(task, "分析不完整", "x".repeat(500_001));
+        await failRemakeProjectAnalysis(task, "分析不完整", "x".repeat(500_001), "y".repeat(500_001));
         expect(project.analysis.raw).toHaveLength(500_000);
+        expect(project.analysis.transcriptionRaw).toHaveLength(500_000);
+    });
+
+    it("keeps the failed transcription distinct from the successful shot analysis through to the UI", async () => {
+        const raw = "\n分镜1:\n时间: 0:00-0:00.75\n";
+        const transcriptionRaw = '\n```json\n{"sourceCopy":"被截断的口播';
+        await failRemakeProjectAnalysis(task, "原文案转录未返回完整 JSON", raw, transcriptionRaw);
+        const hydrated = normalizeRemakeProjectWorkflow(project);
+        const displayed = normalizeRemakeProject(hydrated);
+        expect(displayed.analysis).toMatchObject({ status: "error", raw, transcriptionRaw });
+        expect(project.sourceCopy).toBe("");
     });
 });

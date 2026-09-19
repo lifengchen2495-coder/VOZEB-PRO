@@ -40,7 +40,7 @@ export function RemakeAnalysisBoard({
                     {taskActive ? (
                         <div className="grid grid-cols-[minmax(0,1fr)_minmax(100px,220px)] items-center gap-3">
                             <div className="min-w-0">
-                                <div className="truncate text-xs font-medium">{task.stage || "正在分析来源视频"}</div>
+                                <div className="truncate text-xs font-medium">{task.stage === "analyzing" ? "正在转录原视频口播" : task.stage || "正在分析来源视频"}</div>
                                 <div className="mt-0.5 text-[11px] text-muted-foreground">后台任务会在离开页面后继续执行</div>
                             </div>
                             <Progress className="!mb-0" percent={task.progress} size="small" status="active" />
@@ -55,9 +55,15 @@ export function RemakeAnalysisBoard({
                     ) : warning ? (
                         <Alert showIcon type="warning" className="!py-1.5" title={warning.title} description={warning.detail} />
                     ) : null}
+                    {!taskActive && taskError && project.analysis.transcriptionRaw ? (
+                        <details className="mt-2 text-xs">
+                            <summary className="cursor-pointer font-medium">查看口播转录原始返回</summary>
+                            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/30 p-3 font-mono leading-5">{project.analysis.transcriptionRaw}</pre>
+                        </details>
+                    ) : null}
                     {!taskActive && taskError && project.analysis.raw ? (
                         <details className="mt-2 text-xs">
-                            <summary className="cursor-pointer font-medium">查看模型原始返回</summary>
+                            <summary className="cursor-pointer font-medium">查看48镜头分析原始返回</summary>
                             <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/30 p-3 font-mono leading-5">{project.analysis.raw}</pre>
                         </details>
                     ) : null}

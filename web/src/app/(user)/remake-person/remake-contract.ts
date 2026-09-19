@@ -88,6 +88,7 @@ export type RemakeAnalysis = {
     warning?: string;
     error?: string;
     raw?: string;
+    transcriptionRaw?: string;
     timestamps: number[];
 };
 
@@ -592,6 +593,7 @@ export function normalizeRemakeProject(value: unknown): RemakeProject {
         warning: stringValue(firstDefined(analysisRecord.warning, project.analysisWarning, project.analysis_warning)) || undefined,
         error: stringValue(firstDefined(analysisRecord.error, project.analysisError, project.analysis_error)) || undefined,
         raw: stringValue(firstDefined(analysisRecord.raw, analysisRecord.rawReport, analysisRecord.raw_report)) || undefined,
+        transcriptionRaw: stringValue(analysisRecord.transcriptionRaw) || undefined,
         timestamps: arrayValue(firstDefined(analysisRecord.timestamps, project.timestamps)).map((timestamp) => secondsValue(timestamp)),
     };
     return {

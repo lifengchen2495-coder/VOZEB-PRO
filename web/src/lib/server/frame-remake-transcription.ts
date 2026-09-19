@@ -44,9 +44,12 @@ export const FRAME_REMAKE_TRANSCRIPTION_PROMPT = [
 ].join("\n\n");
 
 export function parseFrameRemakeTranscription(raw: string) {
+    const response = raw.trim();
+    // 仅去掉包裹完整 JSON 的代码框，保留逐字转录内容，不修补截断内容或将说明文字当作口播。
+    const fence = response.match(/^(`{3,}|~{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1$/i);
     let value: unknown;
     try {
-        value = JSON.parse(raw);
+        value = JSON.parse(fence?.[2] ?? response);
     } catch {
         throw new Error("原文案转录未返回完整 JSON，未保存转录结果");
     }
@@ -67,6 +70,7 @@ export async function requestFrameRemakeTranscription(input: {
     video: FrameOriginalFile;
     idempotencyKey: string;
     signal?: AbortSignal;
+    onResponse?: (raw: string) => void;
 }) {
     input.signal?.throwIfAborted();
     const protocol = resolveFrameTranscriptionProtocol(input.candidate);
@@ -83,6 +87,7 @@ export async function requestFrameRemakeTranscription(input: {
     });
     try {
         input.signal?.throwIfAborted();
+        input.onResponse?.(call.text);
         return {
             ...parseFrameRemakeTranscription(call.text),
             headers: call.headers,
@@ -130,6 +135,7 @@ async function requestChatAudioTranscription(input: {
             defaultTimeoutMs: 600_000,
             signal: input.signal,
             stream: false,
+            jsonMode: true,
         });
     } finally {
         // 清理失败不能覆盖带计费头的响应或原错误，否则运行层无法正确结算/退款。

@@ -86,6 +86,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
     const pendingRefunds = new Map<string, PendingAnalysisRefund>();
     let committed = false;
     let analysisRaw: string | undefined;
+    let transcriptionRaw: string | undefined;
     try {
         const project = await markRemakeProjectAnalysisRunning(task);
         if (isStrictAnalysisComplete(project)) {
@@ -136,6 +137,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
         let sourceCopy = remakeSourceCopyForAnalysis(project, understanding.sourceCopy);
         if (!sourceCopy && probe.hasAudio && project.sourceCopy.trim() !== REMAKE_NO_NARRATION_TEXT && project.copy?.optionRaw !== REMAKE_NO_NARRATION_TEXT) {
             // 原文案是独立的输入字段；原版48镜头提示词不承担音轨转录。
+            await updateRemakeAnalysisTaskProgress(task, { stage: "analyzing", progress: 38 });
             if (process.env.DASHSCOPE_API_KEY?.trim() || process.env.DASHSCOPE_KEY?.trim()) {
                 const transcript = await transcribeBangbangVideo({ sourcePath, workDirectory, hasAudio: true });
                 sourceCopy = transcript.status === "transcribed" ? transcript.text : "";
@@ -144,7 +146,8 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
                 const key = systemAiIdempotencyKey("remake-person-transcription", task.userId, task.id);
                 try {
                     const transcript = await requestFrameRemakeTranscription({ origin: input.origin, credential, candidate,
-                        video: { type: "video", file_name: "source.mp4", file_base64: inlineVideo.toString("base64"), content_type: "video/mp4" }, idempotencyKey: key });
+                        video: { type: "video", file_name: "source.mp4", file_base64: inlineVideo.toString("base64"), content_type: "video/mp4" }, idempotencyKey: key,
+                        onResponse: (raw) => { transcriptionRaw = raw; } });
                     sourceCopy = transcript.text;
                     trackAnalysisCharge(pendingRefunds, task, candidate.logicalModelId, "transcription", transcript.headers);
                 } catch (error) {
@@ -212,7 +215,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
         return warning ? { status: "completed" as const, warning } : { status: "completed" as const };
     } catch (error) {
         const message = toSafeGenerationErrorMessage(error, "视频分析失败，请稍后重试").slice(0, 500);
-        if (!(error instanceof RemakeAnalysisSupersededError)) await Promise.resolve(failRemakeProjectAnalysis(task, message, analysisRaw)).catch(() => null);
+        if (!(error instanceof RemakeAnalysisSupersededError)) await Promise.resolve(failRemakeProjectAnalysis(task, message, analysisRaw, transcriptionRaw)).catch(() => null);
         // 页面在任务终止后立即重新读取项目，先保存原始返回，避免读到旧诊断。
         await Promise.resolve(failRemakeAnalysisTask(task, message)).catch(() => null);
         return { status: error instanceof RemakeAnalysisSupersededError ? ("superseded" as const) : ("failed" as const), error: message };

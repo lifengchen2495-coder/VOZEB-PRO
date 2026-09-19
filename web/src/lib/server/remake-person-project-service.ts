@@ -677,13 +677,18 @@ function mediaIdentity(value?: string) {
     return localMediaStorageKeyFromValue(value) || value.trim().replace(/[?#].*$/u, "");
 }
 
-export async function failRemakeProjectAnalysis(task: Pick<RemakeAnalysisTask, "id" | "userId" | "projectId" | "runId">, error: string, analysisRaw?: string) {
+export async function failRemakeProjectAnalysis(task: Pick<RemakeAnalysisTask, "id" | "userId" | "projectId" | "runId">, error: string, analysisRaw?: string, transcriptionRaw?: string) {
     return mutateRemakeProject(task.userId, task.projectId, (current) => {
         const normalized = normalizeRemakeProjectWorkflow(current);
         if (normalized.analysis.taskId !== task.id) return current;
         const message = cleanText(error, 500) || "视频分析失败";
         return withRevision(normalized, {
-            analysis: { status: "error", taskId: task.id, runId: task.runId, error: message, raw: analysisRaw === undefined ? normalized.analysis.raw : analysisRaw.slice(0, 500_000), timestamps: normalized.analysis.timestamps },
+            analysis: {
+                status: "error", taskId: task.id, runId: task.runId, error: message,
+                raw: analysisRaw === undefined ? normalized.analysis.raw : analysisRaw.slice(0, 500_000),
+                transcriptionRaw: transcriptionRaw === undefined ? normalized.analysis.transcriptionRaw : transcriptionRaw.slice(0, 500_000),
+                timestamps: normalized.analysis.timestamps,
+            },
             pipeline: withPipelineStep(normalized.pipeline, "analysis", "error", "failed", task.id, message),
         });
     });

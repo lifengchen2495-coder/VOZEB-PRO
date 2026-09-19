@@ -186,6 +186,7 @@ export type RemakeProjectAnalysis = {
     warning?: string;
     error?: string;
     raw?: string;
+    transcriptionRaw?: string;
     timestamps?: number[];
 };
 
@@ -606,6 +607,7 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
         analysis: {
             ...project.analysis,
             raw: typeof project.analysis.raw === "string" ? project.analysis.raw.slice(0, 500_000) : "",
+            transcriptionRaw: typeof project.analysis.transcriptionRaw === "string" ? project.analysis.transcriptionRaw.slice(0, 500_000) : undefined,
             timestamps: timestamps.length ? timestamps : timestampFallback,
         },
         pipeline: normalizeRemakePipeline(project.pipeline, pipelineFallback),
