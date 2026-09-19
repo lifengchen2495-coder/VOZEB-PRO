@@ -145,7 +145,7 @@ function assertCompleteProductionBundle(project: RemakeProject) {
     if (!project.references.background?.url) missing.push("背景图");
     if (!noNarration && !project.references.audio?.url) missing.push("原视频音频");
     if (!project.copy.rawReport.trim()) missing.push("文案预处理报告");
-    if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (noNarration ? Boolean(block.sourceText.trim() || block.text.trim()) : !block.sourceText.trim() || !block.text.trim()))) {
+    if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (noNarration ? Boolean(block.sourceText.trim() || block.text.trim()) : Boolean(block.sourceText.trim()) !== Boolean(block.text.trim())))) {
         missing.push(noNarration ? "无口播分镜预处理" : "16 个文案区间");
     }
     if (

@@ -575,7 +575,7 @@ export function RemakeWorkspace() {
         project.copy.checks.sequential &&
         project.copy.checks.noDuplicates &&
         project.copy.checks.noSkips &&
-        project.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim()))) &&
+        project.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim()))) &&
         (noNarration || Boolean(project.references.audio?.url)) &&
         project.groups.every((group) => group.sourceContactSheet?.url);
     const imagesReady = remakeImagesReady(project);

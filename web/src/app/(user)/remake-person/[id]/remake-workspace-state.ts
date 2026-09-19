@@ -180,7 +180,7 @@ export function isRemakeCopyPlanReady(project: Pick<RemakeProject, "sourceCopy" 
         project.copy.checks.noDuplicates &&
         project.copy.checks.noSkips &&
         project.copyBlocks.length === 16 &&
-        project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())))
+        project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())))
     );
 }
 

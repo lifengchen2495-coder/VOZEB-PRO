@@ -76,7 +76,6 @@ export async function buildRemakeProductionVisualBoards(input: {
     cookie: string;
     background: RemakeProductionVisionAsset;
     character?: RemakeProductionVisionAsset;
-    characterSupplement?: RemakeProductionVisionAsset;
     redrawnContactSheets: Array<{ groupOrdinal: number; frameOrdinals: number[]; asset: RemakeProductionVisionAsset }>;
 }): Promise<RemakeProductionVisualBoard[]> {
     const groups = [...input.redrawnContactSheets].sort((left, right) => left.groupOrdinal - right.groupOrdinal);
@@ -87,7 +86,6 @@ export async function buildRemakeProductionVisualBoards(input: {
     const budget = { remaining: REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES };
     const background = await readProductionImage(input.background, "背景图", input.origin, input.cookie, budget);
     const character = input.character ? await readProductionImage(input.character, "人物图", input.origin, input.cookie, budget) : undefined;
-    const supplement = input.characterSupplement ? await readProductionImage(input.characterSupplement, "人物补充", input.origin, input.cookie, budget) : undefined;
     const redrawnContactSheets: LoadedImage[] = [];
     for (const group of groups) {
         const label = `第 ${group.groupOrdinal} 组重绘十二宫格`;
@@ -97,7 +95,7 @@ export async function buildRemakeProductionVisualBoards(input: {
         redrawnContactSheets.push(image);
     }
 
-    const referenceBoard = await createReferenceBoard(background, character, supplement);
+    const referenceBoard = await createReferenceBoard(background, character);
     const contactSheetBoard = await createContactSheetBoard(redrawnContactSheets, groups);
     if (referenceBoard.bytes.length + contactSheetBoard.bytes.length > REMAKE_PRODUCTION_VISUAL_BOARDS_TOTAL_MAX_BYTES) {
         throw new RemakeProductionVisionError("生产视觉板总大小超过模型输入上限，请压缩参考图后重试", 413);
@@ -190,9 +188,9 @@ function resolveImageTarget(value: string, origin: string) {
     return { internal: false as const, url: parsed.toString() };
 }
 
-async function createReferenceBoard(background: LoadedImage, character?: LoadedImage, supplement?: LoadedImage): Promise<RemakeProductionVisualBoard> {
-    const images = [{ image: character, label: "CHARACTER", role: "character" as const }, { image: supplement, label: "CHARACTER SUPPLEMENT", role: "character-supplement" as const }, { image: background, label: "BACKGROUND", role: "background" as const }];
-    const tileWidth = REFERENCE_BOARD_WIDTH / 3;
+async function createReferenceBoard(background: LoadedImage, character?: LoadedImage): Promise<RemakeProductionVisualBoard> {
+    const images = [{ image: character, label: "CHARACTER", role: "character" as const }, { image: background, label: "BACKGROUND", role: "background" as const }];
+    const tileWidth = REFERENCE_BOARD_WIDTH / 2;
     const overlays: OverlayOptions[] = [];
     for (const [index, item] of images.entries()) {
         if (item.image) overlays.push({ input: await fitImage(item.image.bytes, tileWidth, REFERENCE_BOARD_HEIGHT - LABEL_HEIGHT), left: index * tileWidth, top: LABEL_HEIGHT });
@@ -201,8 +199,8 @@ async function createReferenceBoard(background: LoadedImage, character?: LoadedI
     const bytes = await renderBoard(REFERENCE_BOARD_WIDTH, REFERENCE_BOARD_HEIGHT, overlays);
     return {
         ordinal: 1, id: "reference-board", mimeType: "image/jpeg", width: REFERENCE_BOARD_WIDTH, height: REFERENCE_BOARD_HEIGHT, bytes,
-        description: "从左到右为人物外貌与服装参考、人物补充、目标背景。空白人物位表示沿用原人物；产品和所有动作只以原分镜为准。",
-        layout: images.map((item, index) => ({ order: index + 1, role: item.role, label: item.label, position: ["left", "center", "right"][index], provided: Boolean(item.image) })),
+        description: "从左到右为人物图、背景图。",
+        layout: images.map((item, index) => ({ order: index + 1, role: item.role, label: item.label, position: ["left", "right"][index], provided: Boolean(item.image) })),
     };
 }
 

@@ -428,8 +428,8 @@ export async function completeRemakeProductionForUser(userId: string, id: string
         const promptsReady = groups.every((group) => Boolean(group.videoPrompt));
         if (!promptsReady && input.groupId === undefined) throw new RemakeProjectServiceError("4 组视频提示词尚未完整生成", 409);
         const noNarration = isRemakeNoNarrationCopy(normalized.sourceCopy);
-        const copyReady = copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));
-        if (!copyReady) throw new RemakeProjectServiceError(noNarration ? "无口播视频的 16 个语义文案区间必须保持为空" : "16 个语义文案区间存在空内容", 409);
+        const copyReady = copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
+        if (!copyReady) throw new RemakeProjectServiceError(noNarration ? "无口播视频的 16 个语义文案区间必须保持为空" : "16 个语义文案区间的空字幕与原文分配不一致", 409);
         const imagesReady = groups.every((group) => group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result));
         const stage = promptsReady ? (imagesReady ? "ready" : "prompts-ready") : "prompts";
         let pipeline = withPipelineStep(normalized.pipeline, "copy", "completed", stage, copy.taskId);
@@ -542,7 +542,7 @@ async function authoritativeRemakeImageGeneration(input: {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的十二宫格必须由 9:16 图片编辑任务生成`, 409);
     }
     const taskModel = task.config.logicalModel || task.config.model;
-    if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references)) {
+    if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references, input.frames)) {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务输入与当前参考素材不一致`, 409);
     }
     if (task.status === "pending" || task.status === "running") return { ...resolveRemakeActiveImageTaskState({ taskId: task.id, requested: input.requested, execution: taskRecord || undefined }), taskId: task.id, model: taskModel, prompt, attemptNo };
@@ -571,8 +571,8 @@ function authoritativeImageAsset(task: ImageTask, groupId: string): RemakeMediaA
     };
 }
 
-function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences) {
-    const expected = remakeStoryboardPromptReferences({ sourceContactSheet: group.sourceContactSheet, character: references.character, characterSupplement: references.characterSupplement, background: references.background }).map((reference) => reference.asset.url!);
+function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[]) {
+    const expected = remakeStoryboardPromptReferences({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), character: references.character, background: references.background }).map((reference) => reference.asset.url!);
     const actual = task.references.map((reference) => reference.serverUrl || reference.remoteUrl || reference.url || reference.dataUrl);
     return actual.length === expected.length && expected.every((value, index) => mediaIdentity(value) === mediaIdentity(actual[index]));
 }
@@ -654,7 +654,7 @@ function deriveRemakePipeline(input: {
     const imageError = input.groups.some((group) => group.imageGeneration.status === "error");
     const noNarration = isRemakeNoNarrationCopy(input.sourceCopy);
     const copyReady =
-        input.copy.status === "completed" && input.copyBlocks.length === REMAKE_COPY_BLOCK_COUNT && input.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));
+        input.copy.status === "completed" && input.copyBlocks.length === REMAKE_COPY_BLOCK_COUNT && input.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
     const promptsReady = input.groups.length === 4 && input.groups.every((group) => Boolean(group.videoPrompt.trim()));
     pipeline.steps.references.status = referencesReady ? "completed" : "pending";
     pipeline.steps.images.status = imagesReady ? "completed" : imageError ? "error" : imageActive ? "running" : "pending";

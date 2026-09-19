@@ -41,8 +41,7 @@ export type RemakeGroupPatch = {
 
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 const REFERENCE_SLOTS: Array<{ key: ReferenceKey; label: string; detail: string; required: boolean }> = [
-    { key: "character", label: "人物图", detail: "可选，只参考外貌与服装款式", required: false },
-    { key: "characterSupplement", label: "人物补充", detail: "可选，补充同一人物的外貌细节", required: false },
+    { key: "character", label: "人物六宫格图", detail: "可选，只参考外貌与服装款式", required: false },
     { key: "background", label: "背景图", detail: "必需，用于替换背景场景", required: true },
 ];
 
@@ -218,7 +217,7 @@ export function RemakeImageStage({
             }
             if (!current.modelSelection.image) emitModelChange(model);
             const prompt = buildRemakeImagePrompt(current, group);
-            const references = remakeGroupReferenceImages(group, current.references);
+            const references = remakeGroupReferenceImages(group, current.references, current.frames);
             const inputVersion = remakeGroupInputVersion(group, current.references, stage, current.productInfo);
             const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage, { model, prompt, quality: imageConfig.quality });
             const previousAttempt = generation.attemptNo ?? 0;
@@ -424,7 +423,7 @@ function RemakeGroupCard({ project, group, disabled, onGenerate }: { project: Re
     const { message } = App.useApp();
     const active = activeGeneration(group);
     const imageError = group.imageGeneration.error ? friendlyAgentError(group.imageGeneration.error, "图片生成失败，请稍后重试") : "";
-    const storyboardPrompt = group.imageGeneration.prompt || buildRemakeImagePrompt(project, group);
+    const storyboardPrompt = buildRemakeImagePrompt(project, group);
     return (
         <article className="min-w-0 overflow-hidden rounded-lg border border-border bg-card" aria-label={`分镜 ${group.id} 十二宫格`}>
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">

@@ -96,7 +96,6 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
         {
             role: "user",
             content: JSON.stringify({
-                "保留产品规则": "严格保留来源十二宫格中的原产品外观、颜色、标识、数量、位置、角度、状态和人物互动。人物图只参考外貌和服装，背景按背景图。",
                 [`分镜${groupId}生图（十二宫格图）`]: {
                     ...input.contactSheets.find((sheet) => sheet.groupOrdinal === groupOrdinal)?.redrawnContactSheet,
                     visualBoardOrdinal: 2,
@@ -110,7 +109,6 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
                     })),
                 },
                 "人物图（可选）": input.referenceAssets.character,
-                "人物补充（可选）": input.referenceAssets.characterSupplement,
                 "背景图": input.referenceAssets.background,
                 "参考音频（可选）": input.hasNarration ? input.referenceAssets.audio : { available: false },
                 "配音选择": input.hasNarration ? (input.voice === "male" ? "男性配音" : "女性配音") : "无配音",
@@ -121,7 +119,6 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
 }
 
 export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProductionPromptInput, "copyBlocks" | "hasNarration" | "voice" | "referenceAssets">, groupId: RemakeProductionGroupId) {
-    if (value.includes("@产品图")) throw new Error("换人不换品提示词不能引用产品替换图");
     if (value.includes("@人物图") && !input.referenceAssets.character.available) throw new Error("未提供人物图时不能引用人物素材");
     if (value.includes("@人物补充") && !input.referenceAssets.characterSupplement.available) throw new Error("未提供人物补充时不能引用补充素材");
     if (!value.trim() || value.length > 100_000) throw new Error(`分镜 ${groupId} 的视频提示词为空或超过长度上限`);
@@ -139,7 +136,7 @@ export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProduct
         const speaker = input.voice === "male" ? "旁白" : "人物";
         intervals.forEach((match, index) => {
             const interval = value.slice(match.index, intervals[index + 1]?.index);
-            if (!blocks[index].text.trim() || !interval.includes(blocks[index].text) || !new RegExp(`口播[（(][^）)\\n]*[，,]\\s*${speaker}\\s*[，,]`, "u").test(interval)) {
+            if (blocks[index].text.trim() && (!interval.includes(blocks[index].text) || !new RegExp(`口播[（(][^）)\\n]*[，,]\\s*${speaker}\\s*[，,]`, "u").test(interval))) {
                 throw new Error(`分镜 ${groupId} 的第 ${index + 1} 个区间未保留原文案或所选配音格式`);
             }
         });
@@ -156,7 +153,7 @@ export function renderRemakeCopyReport(input: RemakeProductionCopyReportInput) {
     const mappings = [...input.mappings].sort((left, right) => left.blockOrdinal - right.blockOrdinal);
     assertSemanticCopyData(input.sourceCopy, blocks, paragraphs, mappings);
     if (input.stats.paragraphCount !== paragraphs.length) throw new Error("文案段落统计与语义段落数量不一致");
-    if (input.rawReport && isDetailedCopyReport(input.rawReport, input)) return fenced(input.rawReport);
+    if (input.rawReport) return input.rawReport;
 
     const mappingByBlock = new Map(mappings.map((mapping) => [mapping.blockOrdinal, mapping]));
     const allocationRows = blocks
@@ -236,7 +233,7 @@ export function assertRemakeCopyCoverage(sourceCopy: string, blocks: RemakeProdu
         if (blocks.some((block) => block.sourceText.trim() || block.text.trim())) throw new Error("无口播视频的文案区间必须保持为空");
         return;
     }
-    if (blocks.some((block) => !block.sourceText.trim() || !block.text.trim())) throw new Error("文案预处理必须包含连续且非空的 16 个区间");
+    if (blocks.some((block) => Boolean(block.sourceText.trim()) !== Boolean(block.text.trim()))) throw new Error("文案预处理的空字幕区间与原文分配不一致");
     const assigned = [...blocks]
         .sort((left, right) => left.ordinal - right.ordinal)
         .map((block) => block.sourceText)
@@ -271,7 +268,7 @@ function assertSemanticCopyData(sourceCopy: string, blocks: RemakeProductionCopy
     if (!paragraphs.length || paragraphs.some((paragraph, index) => paragraph.ordinal !== index + 1 || !paragraph.text.trim()) || paragraphs.map((paragraph) => paragraph.text).join("") !== sourceCopy) {
         throw new Error("文案段落没有按原顺序逐字符完整覆盖原文案");
     }
-    if (mappings.length !== 16 || mappings.some((mapping, index) => mapping.blockOrdinal !== index + 1 || !mapping.paragraphOrdinals.length)) {
+    if (mappings.length !== 16 || mappings.some((mapping, index) => mapping.blockOrdinal !== index + 1 || (Boolean(mapping.sourceText.trim()) !== Boolean(mapping.paragraphOrdinals.length)))) {
         throw new Error("文案预处理必须保留连续的 16 个段落映射");
     }
     const flattenedOrdinals = mappings.flatMap((mapping) => mapping.paragraphOrdinals);
@@ -286,25 +283,6 @@ function assertSemanticCopyData(sourceCopy: string, blocks: RemakeProductionCopy
     ) {
         throw new Error("文案段落映射与 16 个口播区间不一致");
     }
-}
-
-function isDetailedCopyReport(report: string, input: RemakeProductionCopyReportInput) {
-    const expectedFilled = input.stats.completedBlocks;
-    const compactReport = report.replace(/\s+/gu, "");
-    return [
-        `文案段落数量：${input.paragraphs.length}个`,
-        "平均每区间对应段落：",
-        "段落分配表：",
-        "文案内容（前20字符）",
-        `保持不变：${input.stats.unchangedBlocks}个区间`,
-        `补全字幕：${expectedFilled}个区间`,
-        `校对修正：${input.stats.correctedBlocks}个区间`,
-        `字幕为空：${input.stats.emptyBlocks}个区间`,
-        "0-15秒",
-        "15-30秒",
-        "30-45秒",
-        "45-60秒",
-    ].every((section) => compactReport.includes(section.replace(/\s+/gu, "")));
 }
 
 function chineseOrdinal(value: number) {

@@ -33,10 +33,13 @@ import {
 import { completeRemakeProjectAnalysis, failRemakeProjectAnalysis, markRemakeProjectAnalysisRunning, RemakeAnalysisSupersededError } from "@/lib/server/remake-person-project-service";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { rankTextPlanningCandidates } from "@/lib/server/text-planning-runtime";
-import { requestRemakeCopyPlanning } from "@/lib/server/remake-copy-planning-runtime";
+import { requestRemakeVisionPrompt, RemakeProductionVisionError } from "./remake-vision-request";
+import { parseRemakePersonAnalysisBody, parseRemakePersonCopyBody } from "@/lib/remake-person-original-output";
+import { transcribeBangbangVideo } from "./bangbang-asr";
+import { requestFrameRemakeTranscription, resolveFrameTranscriptionModel } from "./frame-remake-transcription";
 import { deleteUserMediaAssetsCascade } from "@/lib/server/user-media-deletion-service";
 
-type ProbeResult = { durationMs: number; width: number; height: number; ratio: string };
+type ProbeResult = { hasAudio: boolean; durationMs: number; width: number; height: number; ratio: string };
 type VideoFrameAnalysis = Pick<RemakeFrame, "subtitle" | "sellingPoint" | "shotType" | "description" | "subjectRatio" | "hasFace"> & {
     ordinal: number;
     time: number;
@@ -128,7 +131,26 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             onCharge: (headers: Headers) => trackAnalysisCharge(pendingRefunds, task, models.videoModel, "video-understanding", headers),
         });
 
-        const sourceCopy = remakeSourceCopyForAnalysis(project, understanding.sourceCopy);
+        let sourceCopy = remakeSourceCopyForAnalysis(project, understanding.sourceCopy);
+        if (!sourceCopy && probe.hasAudio && project.sourceCopy.trim() !== REMAKE_NO_NARRATION_TEXT && project.copy?.optionRaw !== REMAKE_NO_NARRATION_TEXT) {
+            // 原文案是独立的输入字段；原版48镜头提示词不承担音轨转录。
+            if (process.env.DASHSCOPE_API_KEY?.trim() || process.env.DASHSCOPE_KEY?.trim()) {
+                const transcript = await transcribeBangbangVideo({ sourcePath, workDirectory, hasAudio: true });
+                sourceCopy = transcript.status === "transcribed" ? transcript.text : "";
+            } else {
+                const candidate = resolveFrameTranscriptionModel(await getAuthSettings());
+                const key = systemAiIdempotencyKey("remake-person-transcription", task.userId, task.id);
+                try {
+                    const transcript = await requestFrameRemakeTranscription({ origin: input.origin, credential, candidate,
+                        video: { type: "video", file_name: "source.mp4", file_base64: inlineVideo.toString("base64"), content_type: "video/mp4" }, idempotencyKey: key });
+                    sourceCopy = transcript.text;
+                    trackAnalysisCharge(pendingRefunds, task, candidate.logicalModelId, "transcription", transcript.headers);
+                } catch (error) {
+                    if (error instanceof RemakeProductionVisionError && error.responseHeaders) await refundInvalidResponse(task.userId, candidate.logicalModelId, error.responseHeaders);
+                    throw error;
+                }
+            }
+        }
         if (audioExtractionFailed && !isRemakeNoNarrationCopy(sourceCopy)) throw new Error("无法从原视频提取音色参考音频，请确认视频包含有效音轨");
         const warning = isRemakeNoNarrationCopy(sourceCopy) ? (audioExtractionFailed ? "未检测到人物口播，且未生成音色参考音频" : `未检测到人物口播，${REMAKE_NO_NARRATION_TEXT}`) : undefined;
 
@@ -228,7 +250,7 @@ async function probeSourceVideo(sourcePath: string): Promise<ProbeResult> {
     let height = positiveInteger(video.height);
     if (!width || !height) throw new Error("无法读取原视频画幅");
     if (videoRotation(video) % 180 !== 0) [width, height] = [height, width];
-    return { durationMs: Math.max(1, Math.round(durationSeconds * 1_000)), width, height, ratio: aspectRatio(width, height) };
+    return { hasAudio: streams.some((stream) => stream.codec_type === "audio"), durationMs: Math.max(1, Math.round(durationSeconds * 1_000)), width, height, ratio: aspectRatio(width, height) };
 }
 
 async function resolveAnalysisModels() {
@@ -420,6 +442,7 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
             credential: input.credential,
             idempotencyKey: input.idempotencyKey,
             body,
+            allowNaturalLanguage: true,
             onInvalidResponse: (headers) => refundInvalidResponse(input.task.userId, input.model, headers),
         });
     } finally {
@@ -428,20 +451,8 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
 }
 
 export function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
-    const endTimestamp = formatTimestamp(durationMs / 1_000);
-    const runtimeContract = [
-        "## 【当前记录执行合同】",
-        "完整观看已上传的视频，并按时间顺序严格拆解为恰好 48 个编号分镜，四部分各 12 个。",
-        "48 个分镜必须完整、连续覆盖视频：第一段从 0:00 开始，后一段的开始时间必须等于前一段的结束时间，禁止时间跳跃、重叠、重复或乱序；最后一段结束时间必须等于视频实际结尾。",
-        "每个分镜必须给出真实语义起止时间、画面可见字幕、卖点、镜头类型、画面描述、人物占比和是否包含清晰人脸。无字幕且无卖点的纯过渡画面应与相邻镜头合并，不得为了凑数虚构画面。",
-        "画面描述必须包含景别或构图、人物性别、动作、节奏、展示目的和环境背景。",
-        "除视频原语言字幕和 sourceCopy 外，所有分析字段使用简体中文。sourceCopy 必须按视频中的原语言逐字返回，不得翻译、概括、改写、遗漏或重复；无口播时返回空字符串。",
-        `视频实际时长为 ${endTimestamp}（${(durationMs / 1_000).toFixed(3)} 秒）。以此处原视频探测时长为准，不要按 60 秒模板或转码后的视频时长取整。`,
-        `startTime 和 endTime 使用 m:ss.xxx 格式，保留毫秒精度。第 48 个分镜的 endTime 必须原样填写 "${endTimestamp}"。`,
-        "只输出一个 JSON 对象，不要输出 Markdown 代码围栏、解释或前后缀。JSON 必须严格符合以下 Schema：",
-        JSON.stringify(remakeVideoTool.parameters),
-    ].join("\n\n");
-    return `${REMAKE_FEISHU_ANALYSIS_PROMPT}\n\n---\n\n${runtimeContract}`;
+    if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error("原视频时长无效");
+    return REMAKE_FEISHU_ANALYSIS_PROMPT;
 }
 
 async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer) {
@@ -524,7 +535,7 @@ function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
 export function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
     let payload: Record<string, unknown>;
     try {
-        payload = JSON.parse(argumentsText) as Record<string, unknown>;
+        payload = argumentsText.trim().startsWith("{") ? JSON.parse(argumentsText) as Record<string, unknown> : parseRemakePersonAnalysisBody(argumentsText);
     } catch {
         throw new Error("视频理解模型返回的分析不是有效 JSON");
     }
@@ -673,68 +684,34 @@ async function planSemanticCopy(input: {
         const baseKey = systemAiIdempotencyKey("remake-person-copy-planning", input.task.userId, input.task.id, candidate.channelId, candidate.upstreamModel);
         const workerHeaders = maintenanceWorkerContextHeaders(input.credential) || {};
         try {
-            const call = await requestRemakeCopyPlanning({
+            const call = await requestRemakeVisionPrompt({
                 origin: input.origin,
                 cookie: Object.keys(workerHeaders).length ? "" : input.credential,
                 candidate,
                 messages: [
-                    {
-                        role: "system",
-                        content: REMAKE_FEISHU_COPY_PROMPT,
-                    },
-                    {
-                        role: "system",
-                        content:
-                            "当前系统执行合同：先把 sourceCopy 连续切成不少于 16 个非空语义段落，再根据每 3 帧的时间、字幕、卖点、镜头类型以及场景动作，把连续段落依次映射到恰好 16 个非空区间，分别对应分镜 1-3、4-6，依此类推直到 46-48。paragraphs.sourceText 和 blocks.sourceText 必须按原语言、原顺序完整连续覆盖 sourceCopy，禁止翻译、重排、遗漏或重复任何原文字符。每个 block 还必须返回最终 text：仅可依据视频口播和可见字幕补全缺失内容、纠正明显 ASR 错字或标点，不得改变语言、品牌、商品、卖点、价格、数量、规格、事实或表达意图，不得润色和营销改写。每个段落只能归入一个区间。必须调用 build_remake_copy_plan。",
-                    },
-                    { role: "user", content: JSON.stringify(copyPlanningInput(input.sourceCopy, input.frames)) },
+                    { role: "system", content: REMAKE_FEISHU_COPY_PROMPT },
+                    { role: "user", content: JSON.stringify({ "48镜头解析": renderFeishuVideoAnalysis(input.frames), "原文案": input.sourceCopy, "用户选择": "选项A：保持原文" }) },
                 ],
-                tool: remakeCopyTool,
-                headers: planningHeaders(input.model, candidate, `${baseKey}:tool`, workerHeaders),
-                fallbackHeaders: planningHeaders(input.model, candidate, `${baseKey}:json`, workerHeaders),
-                preferNativeTools: true,
-                validateArguments: (argumentsText) => parseCopySegments(argumentsText, input.sourceCopy) !== null,
-                onInvalidResponse: (headers) => refundInvalidResponse(input.task.userId, input.model, headers),
+                boards: [],
+                allowTextOnly: true,
+                maxOutputTokens: 24_000,
+                headers: planningHeaders(input.model, candidate, baseKey, workerHeaders),
             });
-            const segments = parseCopySegments(call.arguments, input.sourceCopy);
-            if (!segments) {
+            let plan: CopyPlan;
+            try {
+                plan = parseOriginalCopyPlan(call.text, input.sourceCopy, input.frames);
+            } catch (error) {
                 await refundInvalidResponse(input.task.userId, input.model, call.headers);
-                throw new Error("文案模型没有完整、连续地覆盖原文");
+                throw error;
             }
-            const plan = buildCopyPlan(segments, input.frames);
             input.onCharge(call.headers);
             return plan;
         } catch (error) {
+            if (error instanceof RemakeProductionVisionError && error.responseHeaders) await refundInvalidResponse(input.task.userId, input.model, error.responseHeaders);
             latestError = error;
         }
     }
     throw new Error(`原文案切分失败：${toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的 16 段语义切分")}`);
-}
-
-function copyPlanningInput(sourceCopy: string, frames: ExtractedFrame[]) {
-    return {
-        sourceCopy,
-        frameGroups: Array.from({ length: REMAKE_COPY_BLOCK_COUNT }, (_, index) => {
-            const groupFrames = frames.slice(index * 3, index * 3 + 3);
-            return {
-                blockOrdinal: index + 1,
-                frameOrdinals: groupFrames.map((frame) => frame.ordinal),
-                startTime: groupFrames[0]?.time,
-                endTime: groupFrames.at(-1)?.endTime,
-                frames: groupFrames.map((frame) => ({
-                    ordinal: frame.ordinal,
-                    startTime: frame.time,
-                    endTime: frame.endTime,
-                    subtitle: frame.subtitle,
-                    sellingPoint: frame.sellingPoint,
-                    shotType: frame.shotType,
-                    sceneAndAction: frame.description,
-                    subjectRatio: frame.subjectRatio,
-                    hasFace: frame.hasFace,
-                })),
-            };
-        }),
-    };
 }
 
 function planningHeaders(model: string, candidate: ResolvedLogicalModel, idempotencyKey: string, workerHeaders: Record<string, string>) {
@@ -747,89 +724,24 @@ function planningHeaders(model: string, candidate: ResolvedLogicalModel, idempot
     };
 }
 
-function parseCopySegments(argumentsText: string, sourceCopy: string): CopySegmentation | null {
-    let payload: Record<string, unknown>;
-    try {
-        payload = JSON.parse(argumentsText) as Record<string, unknown>;
-    } catch {
-        return null;
-    }
-    const items = records(payload.blocks);
-    if (items.length !== REMAKE_COPY_BLOCK_COUNT) return null;
-    const planned = new Map<number, { sourceText: string; text: string; paragraphOrdinals?: number[] }>();
-    for (const item of items) {
-        const ordinal = strictOrdinal(item.ordinal, REMAKE_COPY_BLOCK_COUNT);
-        if (!ordinal || planned.has(ordinal) || typeof item.sourceText !== "string" || item.sourceText.length > 20_000 || !normalizeCoverageText(item.sourceText) || typeof item.text !== "string" || item.text.length > 20_000 || !item.text.trim())
-            return null;
-        const hasParagraphOrdinals = Object.prototype.hasOwnProperty.call(item, "paragraphOrdinals");
-        const parsedParagraphOrdinals = hasParagraphOrdinals ? strictOrdinalList(item.paragraphOrdinals, 500) : undefined;
-        const paragraphOrdinals = parsedParagraphOrdinals || undefined;
-        if (hasParagraphOrdinals && !paragraphOrdinals?.length) return null;
-        planned.set(ordinal, { sourceText: item.sourceText, text: item.text, paragraphOrdinals });
-    }
-    const ordered = Array.from({ length: REMAKE_COPY_BLOCK_COUNT }, (_, index) => planned.get(index + 1));
-    if (ordered.some((value) => value === undefined)) return null;
-    const complete = ordered as Array<{ sourceText: string; text: string; paragraphOrdinals?: number[] }>;
-    const normalized = complete.map((value) => normalizeCoverageText(value.sourceText));
-    if (normalized.some((value) => !value)) return null;
-    if (normalized.join("") !== normalizeCoverageText(sourceCopy)) return null;
-    const restored = restoreExactSourceSegments(
-        sourceCopy,
-        normalized.map((value) => Array.from(value).length),
-    );
-    if (!restored || restored.some((value, index) => value.length > 20_000 || !value.trim() || normalizeCoverageText(value) !== normalized[index])) return null;
-
-    const hasParagraphs = Object.prototype.hasOwnProperty.call(payload, "paragraphs");
-    if (!hasParagraphs) {
-        if (complete.some((value) => value.paragraphOrdinals !== undefined)) return null;
-        return {
-            segments: restored,
-            texts: complete.map((value) => value.text),
-            paragraphs: restored.map((text, index) => ({ ordinal: index + 1, text })),
-            paragraphOrdinalsByBlock: restored.map((_, index) => [index + 1]),
-        };
-    }
-
-    const paragraphItems = records(payload.paragraphs);
-    if (paragraphItems.length < REMAKE_COPY_BLOCK_COUNT || paragraphItems.length > 500) return null;
-    const plannedParagraphs = new Map<number, string>();
-    for (const item of paragraphItems) {
-        const ordinal = strictOrdinal(item.ordinal, paragraphItems.length);
-        if (!ordinal || plannedParagraphs.has(ordinal) || typeof item.sourceText !== "string" || item.sourceText.length > 20_000 || !normalizeCoverageText(item.sourceText)) return null;
-        plannedParagraphs.set(ordinal, item.sourceText);
-    }
-    const orderedParagraphs = Array.from({ length: paragraphItems.length }, (_, index) => plannedParagraphs.get(index + 1));
-    if (orderedParagraphs.some((value) => value === undefined)) return null;
-    const normalizedParagraphs = (orderedParagraphs as string[]).map(normalizeCoverageText);
-    if (normalizedParagraphs.join("") !== normalizeCoverageText(sourceCopy)) return null;
-    const restoredParagraphs = restoreExactSourceSegments(
-        sourceCopy,
-        normalizedParagraphs.map((value) => Array.from(value).length),
-    );
-    if (!restoredParagraphs || restoredParagraphs.some((value, index) => value.length > 20_000 || !value.trim() || normalizeCoverageText(value) !== normalizedParagraphs[index])) return null;
-
-    const paragraphOrdinalsByBlock = complete.map((value) => value.paragraphOrdinals || []);
-    const flattenedOrdinals = paragraphOrdinalsByBlock.flat();
-    if (flattenedOrdinals.length !== restoredParagraphs.length || flattenedOrdinals.some((ordinal, index) => ordinal !== index + 1)) return null;
-    if (
-        paragraphOrdinalsByBlock.some((ordinals, blockIndex) => {
-            const text = ordinals.map((ordinal) => restoredParagraphs[ordinal - 1]).join("");
-            return normalizeCoverageText(text) !== normalized[blockIndex];
-        })
-    )
-        return null;
-    return {
-        segments: restored,
-        texts: complete.map((value) => value.text),
-        paragraphs: restoredParagraphs.map((text, index) => ({ ordinal: index + 1, text })),
-        paragraphOrdinalsByBlock,
-    };
-}
-
-function strictOrdinalList(value: unknown, maximum: number) {
-    if (!Array.isArray(value) || !value.length || value.length > maximum) return null;
-    const ordinals = value.map((item) => strictOrdinal(item, maximum));
-    return ordinals.every(Boolean) && new Set(ordinals).size === ordinals.length ? ordinals : null;
+export function parseOriginalCopyPlan(raw: string, sourceCopy: string, frames: RemakeFrame[]): CopyPlan {
+    const texts = parseRemakePersonCopyBody(raw);
+    const lengths = texts.map((text) => Array.from(normalizeCoverageText(text)).length);
+    if (texts.map(normalizeCoverageText).join("") !== normalizeCoverageText(sourceCopy)) throw new Error("选项A的字幕表没有按原顺序完整覆盖原文案");
+    const nonempty = lengths.flatMap((length, index) => length ? [index] : []);
+    const restored = restoreExactSourceSegments(sourceCopy, nonempty.map((index) => lengths[index]));
+    if (!restored) throw new Error("文案预处理无法对应原文区间");
+    const segments = texts.map(() => "");
+    nonempty.forEach((index, ordinal) => { segments[index] = restored[ordinal]; });
+    const paragraphs: CopySegmentation["paragraphs"] = [];
+    const paragraphOrdinalsByBlock = segments.map((text) => {
+        if (!text.trim()) return [];
+        paragraphs.push({ ordinal: paragraphs.length + 1, text });
+        return [paragraphs.length];
+    });
+    const plan = buildCopyPlan({ segments, texts, paragraphs, paragraphOrdinalsByBlock }, frames);
+    plan.copy.rawReport = raw;
+    return plan;
 }
 
 function restoreExactSourceSegments(source: string, normalizedLengths: number[]) {
@@ -854,7 +766,7 @@ function restoreExactSourceSegments(source: string, normalizedLengths: number[])
     return cursor === characters.length ? segments : null;
 }
 
-function buildCopyPlan(segmentation: CopySegmentation, frames: ExtractedFrame[]): CopyPlan {
+function buildCopyPlan(segmentation: CopySegmentation, frames: RemakeFrame[]): CopyPlan {
     if (segmentation.segments.length !== REMAKE_COPY_BLOCK_COUNT || segmentation.texts.length !== REMAKE_COPY_BLOCK_COUNT || segmentation.paragraphOrdinalsByBlock.length !== REMAKE_COPY_BLOCK_COUNT || frames.length !== REMAKE_FRAME_COUNT) {
         throw new Error("无法生成完整的 16 个文案区间");
     }
@@ -874,7 +786,6 @@ function buildCopyPlan(segmentation: CopySegmentation, frames: ExtractedFrame[])
         };
     });
     const hasNarration = blocks.some((block) => block.sourceText.trim());
-    if (hasNarration && blocks.some((block) => !block.sourceText.trim() || !block.text.trim())) throw new Error("文案模型必须返回完整的 16 个非空文案区间");
     if (!hasNarration && blocks.some((block) => block.sourceText.trim() || block.text.trim())) throw new Error("无口播视频的文案区间必须保持为空");
     const mappings = blocks.map((block, index) => ({
         blockOrdinal: block.ordinal,
@@ -914,7 +825,7 @@ function emptyCopySegmentation(): CopySegmentation {
     };
 }
 
-function classifyCopyBlock(block: RemakeCopyBlock, frames: ExtractedFrame[]): CopyBlockStatus {
+function classifyCopyBlock(block: RemakeCopyBlock, frames: RemakeFrame[]): CopyBlockStatus {
     if (!block.text.trim()) return "empty";
     const sourceText = normalizeCopyComparisonText(block.sourceText);
     const finalText = normalizeCopyComparisonText(block.text);
@@ -990,7 +901,7 @@ async function refundInvalidResponse(userId: string, model: string, headers: Hea
     if (hasSystemAiCharge(billing)) await refundUserPoints(userId, model, billing.pointsCost, "text", 1, undefined, billing.pointsRecordId);
 }
 
-function trackAnalysisCharge(pendingRefunds: Map<string, PendingAnalysisRefund>, task: RemakeAnalysisTask, model: string, stage: "video-understanding" | "copy-planning", headers: Headers) {
+function trackAnalysisCharge(pendingRefunds: Map<string, PendingAnalysisRefund>, task: RemakeAnalysisTask, model: string, stage: "video-understanding" | "copy-planning" | "transcription", headers: Headers) {
     const billing = readSystemAiBilling(headers);
     if (!hasSystemAiCharge(billing) || pendingRefunds.has(billing.pointsRecordId)) return;
     pendingRefunds.set(billing.pointsRecordId, {
@@ -1140,84 +1051,3 @@ function records(value: unknown): Record<string, unknown>[] {
 function object(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
-
-const remakeVideoTool = {
-    name: "analyze_remake_video",
-    description: "完整分析电商视频，按视频原语言逐字返回口播原文及固定 48 个镜头单元",
-    parameters: {
-        type: "object",
-        properties: {
-            sourceCopy: { type: "string", description: "按视频原语言逐字转写的完整口播，不得翻译；无口播时返回空字符串" },
-            frames: {
-                type: "array",
-                minItems: REMAKE_FRAME_COUNT,
-                maxItems: REMAKE_FRAME_COUNT,
-                items: {
-                    type: "object",
-                    properties: {
-                        ordinal: { type: "integer", minimum: 1, maximum: REMAKE_FRAME_COUNT },
-                        startTime: { type: "string", description: "镜头起始时间，格式 m:ss.xxx，保留毫秒精度" },
-                        endTime: { type: "string", description: "镜头结束时间，格式 m:ss.xxx，保留毫秒精度；最后一段必须使用给定的原视频实际结尾" },
-                        subtitle: { type: "string" },
-                        sellingPoint: { type: "string" },
-                        shotType: { type: "string" },
-                        description: { type: "string" },
-                        subjectRatio: { type: "string" },
-                        hasFace: { type: "boolean" },
-                    },
-                    required: ["ordinal", "startTime", "endTime", "subtitle", "sellingPoint", "shotType", "description", "subjectRatio", "hasFace"],
-                    additionalProperties: false,
-                },
-            },
-        },
-        required: ["sourceCopy", "frames"],
-        additionalProperties: false,
-    },
-};
-
-const remakeCopyTool = {
-    name: "plan_remake_copy",
-    description: "保留原文切片，并依据 48 帧上下文输出仅补全字幕或校对明显 ASR 错误后的 16 个最终文案区间",
-    parameters: {
-        type: "object",
-        properties: {
-            paragraphs: {
-                type: "array",
-                minItems: REMAKE_COPY_BLOCK_COUNT,
-                maxItems: 500,
-                items: {
-                    type: "object",
-                    properties: {
-                        ordinal: { type: "integer", minimum: 1, maximum: 500 },
-                        sourceText: { type: "string" },
-                    },
-                    required: ["ordinal", "sourceText"],
-                    additionalProperties: false,
-                },
-            },
-            blocks: {
-                type: "array",
-                minItems: REMAKE_COPY_BLOCK_COUNT,
-                maxItems: REMAKE_COPY_BLOCK_COUNT,
-                items: {
-                    type: "object",
-                    properties: {
-                        ordinal: { type: "integer", minimum: 1, maximum: REMAKE_COPY_BLOCK_COUNT },
-                        paragraphOrdinals: {
-                            type: "array",
-                            minItems: 1,
-                            maxItems: 500,
-                            items: { type: "integer", minimum: 1, maximum: 500 },
-                        },
-                        sourceText: { type: "string", description: "sourceCopy 的原语言连续切片，禁止改写、翻译、遗漏或重排" },
-                        text: { type: "string", description: "最终文案；只允许依据视频补全缺失字幕或纠正明显 ASR/标点错误，不得更改品牌、商品、卖点、价格、数量、规格、事实、语言或表达意图" },
-                    },
-                    required: ["ordinal", "paragraphOrdinals", "sourceText", "text"],
-                    additionalProperties: false,
-                },
-            },
-        },
-        required: ["paragraphs", "blocks"],
-        additionalProperties: false,
-    },
-};

@@ -13,6 +13,7 @@ export async function requestDoubaoVideoResponse(input: {
     credential: string;
     idempotencyKey: string;
     body: { model: string; input: unknown[]; store: boolean; max_output_tokens: number };
+    allowNaturalLanguage?: boolean;
     onInvalidResponse: (headers: Headers) => Promise<void>;
 }) {
     const headers = new Headers({
@@ -37,7 +38,7 @@ export async function requestDoubaoVideoResponse(input: {
         const text = await readResponsesBody(response, (headers) => {
             billedHeaders = headers;
         });
-        const argumentsText = strictJsonObjectText(text);
+        const argumentsText = input.allowNaturalLanguage ? text : strictJsonObjectText(text);
         if (!argumentsText) throw new Error("Doubao 视频理解没有返回完整的结构化分析");
         return { arguments: argumentsText, headers: billedHeaders };
     } catch (error) {

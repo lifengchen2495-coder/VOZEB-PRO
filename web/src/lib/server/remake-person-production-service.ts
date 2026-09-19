@@ -71,7 +71,6 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
             cookie: input.cookie,
             background: project.references.background!,
             character: project.references.character,
-            characterSupplement: project.references.characterSupplement,
             redrawnContactSheets: project.groups.map((group) => ({
                 groupOrdinal: group.ordinal,
                 frameOrdinals: group.frameOrdinals,
@@ -98,7 +97,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
         copyBlocks: project.copyBlocks.map((block) => ({ ordinal: block.ordinal, frameOrdinals: block.frameOrdinals, sourceText: block.sourceText, text: block.text })),
         referenceAssets: {
             character: productionAssetMetadata(project.references.character),
-            characterSupplement: productionAssetMetadata(project.references.characterSupplement),
+            characterSupplement: { available: false },
             background: productionAssetMetadata(project.references.background),
             audio: productionAssetMetadata(project.references.audio),
         },
@@ -198,7 +197,7 @@ async function assertProductionReady(userId: string, project: Awaited<ReturnType
         throw new RemakeProductionError("请先使用视频理解完成全部 48 个镜头解析", 409);
     }
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
-    if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (hasNarration ? !block.sourceText.trim() || !block.text.trim() : Boolean(block.sourceText.trim() || block.text.trim())))) {
+    if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (hasNarration ? Boolean(block.sourceText.trim()) !== Boolean(block.text.trim()) : Boolean(block.sourceText.trim() || block.text.trim())))) {
         throw new RemakeProductionError("请先完成 16 个语义文案区间", 409);
     }
     if (project.copy.status !== "completed" || !project.copy.checks.sequential || !project.copy.checks.noDuplicates || !project.copy.checks.noSkips) {

@@ -10,15 +10,14 @@ export function buildRemakeImagePrompt(project: Pick<RemakeProject, "frames" | "
     return remakeStoryboardPrompt(group.id, project.frames, project.productInfo);
 }
 
-export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
-    return remakeStoryboardPromptReferences({ sourceContactSheet: group.sourceContactSheet, character: references.character, characterSupplement: references.characterSupplement, background: references.background }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets, frames: RemakeProject["frames"]): ReferenceImage[] {
+    return remakeStoryboardPromptReferences<RemakeMediaAsset>({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl, mimeType: "image/jpeg" })), character: references.character, background: references.background }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
 }
 
 export function remakeVideoReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
     return [
         group.imageGeneration.result ? mediaAssetReferenceImage(`${group.id}-storyboard`, `分镜 ${group.id} 最终十二宫格`, group.imageGeneration.result) : null,
         references.character ? mediaAssetReferenceImage(`${group.id}-character`, "人物图", references.character) : null,
-        references.characterSupplement ? mediaAssetReferenceImage(`${group.id}-characterSupplement`, "人物补充", references.characterSupplement) : null,
         references.background ? mediaAssetReferenceImage(`${group.id}-background`, "背景图", references.background) : null,
     ].filter((item): item is ReferenceImage => Boolean(item));
 }
@@ -71,7 +70,7 @@ export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo"
         project.copy.checks.noSkips &&
         Boolean(project.copy.rawReport.trim()) &&
         project.copyBlocks.length === 16 &&
-        project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim() && block.text.trim())));
+        project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
     const referencesReady = Boolean(project.references.background?.url && (noNarration || project.references.audio?.url));
     const promptsReady = project.groups.length === 4 && project.groups.every((group, index) => group.ordinal === index + 1 && Boolean(group.sourceContactSheet?.url && group.videoPrompt.trim()));
     const voiceReady = noNarration || project.voice === "female" || project.voice === "male";

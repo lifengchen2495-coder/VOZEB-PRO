@@ -5,7 +5,6 @@ import { App, Button, Image, Input, Segmented, Tag, Tooltip } from "antd";
 import { Check, Copy, Download, FileAudio, FileText, LoaderCircle, Play, RefreshCw, Sparkles, Video, VolumeX } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
-import { VideoPromptInstructionEditor } from "@/components/video-prompt-instruction-editor";
 import { remakeVideoPromptInstructions } from "@/lib/remake-person-video-prompt-instructions";
 import { browserReadableMediaUrl } from "@/lib/browser-media-url";
 import { mediaDownloadFileName } from "@/lib/media-file";
@@ -485,7 +484,7 @@ export function RemakeProductionStage({
                                     building={isPromptBuilding(group.id)}
                                     promptDisabled={isPromptBuilding(group.id) || !prerequisites.ready || isVideoActive(group) || startingGroupsRef.current.has(group.id)}
                                     disabled={hasInstructionChanges(group) || !group.videoPrompt.trim() || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !project.references.background?.url || startingGroupsRef.current.has(group.id)}
-                                    instructionValue={instructionDrafts[group.id] ?? group.videoPromptInstructions}
+                                    instructionValue={remakeVideoPromptInstructions(group.id)}
                                     instructionsDirty={hasInstructionChanges(group)}
                                     instructionsDisabled={sharedBusy}
                                     onInstructionsChange={(value) => {
@@ -521,7 +520,7 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, building, promptDisabled, disabled, instructionValue, instructionsDirty, instructionsDisabled, onInstructionsChange, onSaveInstructions, onBuild, onGenerate, onCopy }: {
+function VideoGroupCard({ group, building, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
     group: RemakeRangeGroup;
     building: boolean;
     promptDisabled: boolean;
@@ -561,19 +560,10 @@ function VideoGroupCard({ group, building, promptDisabled, disabled, instruction
                 </div>
             </div>
             <div className="p-3">
-                <VideoPromptInstructionEditor
-                    label={`分镜 ${group.id} 视频提示词生成指令`}
-                    defaultText={remakeVideoPromptInstructions(group.id)}
-                    value={instructionValue}
-                    dirty={instructionsDirty}
-                    disabled={instructionsDisabled}
-                    hasOutput={Boolean(group.videoPrompt)}
-                    onChange={onInstructionsChange}
-                    onSave={onSaveInstructions}
-                    onGenerate={onBuild}
-                    generationDisabled={promptDisabled}
-                />
-                <p className="mt-2 text-xs leading-5 text-muted-foreground">修改只重置本组视频提示词和视频结果，已生成的图片与文案会保留。输出仍按 15 秒、四个三帧区间及素材引用格式生成。</p>
+                <details>
+                    <summary className="cursor-pointer text-xs font-medium">分镜 {group.id} 视频提示词生成指令（表格原文）</summary>
+                    <Input.TextArea readOnly value={remakeVideoPromptInstructions(group.id)} autoSize={{ minRows: 9, maxRows: 20 }} />
+                </details>
             </div>
             <div className="grid min-w-0 gap-3 p-3 sm:grid-cols-[110px_minmax(0,1fr)]">
                 <div className="relative aspect-[9/16] w-[110px] overflow-hidden rounded-md border border-border bg-[#15181c]">

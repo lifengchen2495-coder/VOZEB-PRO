@@ -553,7 +553,7 @@ export function normalizeRemakeCopyBlocks(value: unknown, input: { frames: Remak
                       frameOrdinals: [ordinal * 3 - 2, ordinal * 3 - 1, ordinal * 3] as [number, number, number],
                       startTime: nonNegativeNumber(source.startTime),
                       endTime: nonNegativeNumber(source.endTime),
-                      sourceText: cleanText(source.sourceText, 20_000),
+                      sourceText: sourceSegment(source.sourceText),
                       text: cleanText(source.text, 20_000),
                   },
               ];
@@ -589,7 +589,7 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
         copy.checks.noSkips &&
         copy.mappings.length === REMAKE_COPY_BLOCK_COUNT &&
         copy.mappings.every(
-            (mapping, index) => mapping.blockOrdinal === index + 1 && (noNarration ? !mapping.sourceText.trim() && !mapping.text.trim() && mapping.paragraphOrdinals.length === 0 : Boolean(mapping.sourceText.trim()) && Boolean(mapping.text.trim())),
+            (mapping, index) => mapping.blockOrdinal === index + 1 && (noNarration ? !mapping.sourceText.trim() && !mapping.text.trim() && mapping.paragraphOrdinals.length === 0 : Boolean(mapping.sourceText.trim()) === Boolean(mapping.text.trim())),
         );
     const copyBlocks = trustedSemanticCopy ? normalizedCopyBlocks : normalizedCopyBlocks.map((block) => ({ ...block, sourceText: "", text: "" }));
     const timestampFallback = frames.length === REMAKE_FRAME_COUNT ? frames.map((frame) => frame.time) : [];
@@ -627,8 +627,8 @@ function normalizeCopyParagraphs(value: unknown): RemakeCopyParagraph[] {
     for (const item of value.slice(0, 500)) {
         const source = object(item);
         const ordinal = integerInRange(source.ordinal, 1, 500);
-        const text = cleanText(source.text, 20_000);
-        if (ordinal && text && !paragraphs.has(ordinal)) paragraphs.set(ordinal, { ordinal, text });
+        const text = sourceSegment(source.text);
+        if (ordinal && text.trim() && !paragraphs.has(ordinal)) paragraphs.set(ordinal, { ordinal, text });
     }
     return Array.from(paragraphs.values()).sort((left, right) => left.ordinal - right.ordinal);
 }
@@ -643,7 +643,7 @@ function normalizeCopyMappings(value: unknown): RemakeCopyMapping[] {
         mappings.set(blockOrdinal, {
             blockOrdinal,
             paragraphOrdinals: uniquePositiveIntegers(source.paragraphOrdinals, 500),
-            sourceText: cleanText(source.sourceText, 20_000),
+            sourceText: sourceSegment(source.sourceText),
             text: cleanText(source.text, 20_000),
         });
     }
@@ -704,6 +704,11 @@ function nonNegativeInteger(value: unknown) {
 
 function object(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+// 原文区间需要逐字符拼回 sourceCopy，不能 trim 掉区间交界处的空格或换行。
+function sourceSegment(value: unknown) {
+    return typeof value === "string" ? value.slice(0, 20_000) : "";
 }
 
 function cleanText(value: unknown, maxLength = 20_000) {

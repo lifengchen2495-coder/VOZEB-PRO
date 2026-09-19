@@ -1,3 +1,5 @@
+import { REMAKE_PERSON_PROMPT_VERSION } from "./remake-person-feishu-prompts";
+
 type MediaInput = {
     url: string;
     storageKey?: string;
@@ -49,6 +51,7 @@ export type RemakeProductionInputProject = {
 export function remakeProductionInputSnapshot(project: RemakeProductionInputProject, groupIds?: readonly string[]): string {
     const selected = groupIds === undefined ? undefined : new Set(groupIds);
     return JSON.stringify({
+        promptVersion: REMAKE_PERSON_PROMPT_VERSION,
         id: project.id,
         sourceVideo: { asset: mediaInput(project.sourceVideo), durationMs: project.sourceVideo?.durationMs ?? null },
         sourceCopy: project.sourceCopy,
