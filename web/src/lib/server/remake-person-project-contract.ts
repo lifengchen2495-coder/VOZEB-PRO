@@ -605,7 +605,7 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
         copyBlocks,
         analysis: {
             ...project.analysis,
-            raw: cleanText(project.analysis.raw, 500_000),
+            raw: typeof project.analysis.raw === "string" ? project.analysis.raw.slice(0, 500_000) : "",
             timestamps: timestamps.length ? timestamps : timestampFallback,
         },
         pipeline: normalizeRemakePipeline(project.pipeline, pipelineFallback),

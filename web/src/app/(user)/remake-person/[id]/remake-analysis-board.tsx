@@ -47,13 +47,19 @@ export function RemakeAnalysisBoard({
                         </div>
                     ) : taskError ? (
                         <div className="flex items-center justify-between gap-3 text-xs text-rose-700 dark:text-rose-300">
-                            <span className="min-w-0 truncate">{taskError}</span>
+                            <span className="min-w-0 break-words">{taskError}</span>
                             <Button size="small" className="shrink-0" icon={<RefreshCw className="size-3.5" />} onClick={onRetry}>
                                 重试分析
                             </Button>
                         </div>
                     ) : warning ? (
                         <Alert showIcon type="warning" className="!py-1.5" title={warning.title} description={warning.detail} />
+                    ) : null}
+                    {!taskActive && taskError && project.analysis.raw ? (
+                        <details className="mt-2 text-xs">
+                            <summary className="cursor-pointer font-medium">查看模型原始返回</summary>
+                            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/30 p-3 font-mono leading-5">{project.analysis.raw}</pre>
+                        </details>
                     ) : null}
                 </div>
             )}

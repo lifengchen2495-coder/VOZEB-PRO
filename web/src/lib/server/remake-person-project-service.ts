@@ -312,7 +312,7 @@ export async function markRemakeProjectAnalysisRunning(task: RemakeAnalysisTask)
         if (normalized.analysis.taskId !== task.id) return current;
         if (normalized.analysis.status === "completed") return current;
         return withRevision(normalized, {
-            analysis: { status: "running", taskId: task.id, runId: task.runId, raw: normalized.analysis.raw, timestamps: normalized.analysis.timestamps },
+            analysis: { status: "running", taskId: task.id, runId: task.runId, raw: "", timestamps: normalized.analysis.timestamps },
             pipeline: withPipelineStep(normalized.pipeline, "analysis", "running", "analysis", task.id),
         });
     });
@@ -370,7 +370,7 @@ export async function completeRemakeProjectAnalysis(input: {
                 runId: input.task.runId,
                 mode: input.mode,
                 warning: cleanText(input.warning, 2_000) || undefined,
-                raw: cleanText(input.analysisRaw, 500_000),
+                raw: typeof input.analysisRaw === "string" ? input.analysisRaw.slice(0, 500_000) : "",
                 timestamps,
             },
         });
@@ -677,13 +677,13 @@ function mediaIdentity(value?: string) {
     return localMediaStorageKeyFromValue(value) || value.trim().replace(/[?#].*$/u, "");
 }
 
-export async function failRemakeProjectAnalysis(task: Pick<RemakeAnalysisTask, "id" | "userId" | "projectId" | "runId">, error: string) {
+export async function failRemakeProjectAnalysis(task: Pick<RemakeAnalysisTask, "id" | "userId" | "projectId" | "runId">, error: string, analysisRaw?: string) {
     return mutateRemakeProject(task.userId, task.projectId, (current) => {
         const normalized = normalizeRemakeProjectWorkflow(current);
         if (normalized.analysis.taskId !== task.id) return current;
         const message = cleanText(error, 500) || "视频分析失败";
         return withRevision(normalized, {
-            analysis: { status: "error", taskId: task.id, runId: task.runId, error: message, raw: normalized.analysis.raw, timestamps: normalized.analysis.timestamps },
+            analysis: { status: "error", taskId: task.id, runId: task.runId, error: message, raw: analysisRaw === undefined ? normalized.analysis.raw : analysisRaw.slice(0, 500_000), timestamps: normalized.analysis.timestamps },
             pipeline: withPipelineStep(normalized.pipeline, "analysis", "error", "failed", task.id, message),
         });
     });

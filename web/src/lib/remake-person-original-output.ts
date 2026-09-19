@@ -1,31 +1,32 @@
 // 解析表格提示词原本要求的正文，不通过追加指令要求模型改成 JSON。
-function field(section: string, labels: string, required = true) {
-    const match = section.match(new RegExp(`(?:^|\\n)\\s*(?:[-*]\\s+)?(?:\\*\\*)?(?:${labels})(?:\\*\\*)?\\s*[:：]\\s*(?:\\*\\*)?([^\\n]*)`));
-    if (!match && required) throw new Error("视频分析镜头字段不完整");
-    let value = (match?.[1] || "").trim().replace(/^\*\*|\*\*$/g, "").trim();
+function field(section: string, labels: string, ordinal?: number) {
+    const match = section.match(new RegExp(`(?:^|\\n)[ \\t]*(?:[-*][ \\t]+)?(?:\\*\\*|__)?(?:${labels})(?:\\*\\*|__)?[ \\t]*[:：][ \\t]*(?:\\*\\*|__)?([^\\r\\n]*)`));
+    if (!match && ordinal !== undefined) throw new Error(`分镜${ordinal}缺少「${labels.split("|")[0]}」字段`);
+    let value = (match?.[1] || "").trim().replace(/^(?:\*\*|__)|(?:\*\*|__)$/g, "").trim();
     if (/^["“‘']/.test(value)) value = value.slice(1).replace(/["”’'][,，]?$/, "");
     return value.trim();
 }
 
 export function parseRemakePersonAnalysisBody(raw: string) {
-    const headings = [...raw.matchAll(/(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?分镜\s*(\d+)\s*(?:\*\*)?\s*[:：](?:\*\*)?/gu)];
-    if (headings.length !== 48) throw new Error("视频理解模型必须返回完整的 48 条镜头分析");
+    const headings = [...raw.matchAll(/^[ \t]*(?:#{1,6}[ \t]*)?(?:[-*][ \t]+)?(?:\*\*|__)?分镜[ \t]*(\d+)[ \t]*(?:\*\*|__)?[ \t]*[:：]?[ \t]*(?:\*\*|__)?[ \t]*\r?$/gmu)];
+    if (headings.length !== 48) throw new Error(`视频理解模型返回了 ${headings.length} 个分镜，必须返回完整的 48 条镜头分析`);
     const frames = headings.map((heading, index) => {
         if (Number(heading[1]) !== index + 1) throw new Error("视频分析镜头编号必须从1至48连续排列");
+        const ordinal = Number(heading[1]);
         const section = raw.slice(heading.index! + heading[0].length, headings[index + 1]?.index ?? raw.length);
-        const times = field(section, "时间").split(/\s*[-–—~～至]\s*/);
-        if (times.length !== 2) throw new Error("视频分析每个分镜必须包含完整的起止时间");
-        const face = field(section, "是否包含人脸|是否出现人脸|是否有人脸|包含人脸").replace(/^[\s🔴🟢✅❌]+/u, "");
-        if (!/^(?:是|有|否|无|true|false)$/i.test(face)) throw new Error("视频分析人脸判断须明确为是或否");
+        const times = field(section, "时间", ordinal).split(/\s*[-–—~～至]\s*/);
+        if (times.length !== 2) throw new Error(`分镜${ordinal}必须包含完整的起止时间`);
+        const face = field(section, "是否包含人脸|是否出现人脸|是否有人脸|包含人脸", ordinal).replace(/^[\s🔴🟢✅❌]+/u, "");
+        if (!/^(?:是|有|否|无|true|false)$/i.test(face)) throw new Error(`分镜${ordinal}的人脸判断须明确为是或否`);
         return {
-            ordinal: Number(heading[1]), startTime: times[0], endTime: times[1],
-            subtitle: field(section, "字幕"), sellingPoint: field(section, "卖点"),
-            shotType: field(section, "镜头类型|景别"), description: field(section, "画面描述"),
-            subjectRatio: field(section, "人物占比|主体占比"), hasFace: /^(?:是|有|true)$/i.test(face),
+            ordinal, startTime: times[0], endTime: times[1],
+            subtitle: field(section, "字幕", ordinal), sellingPoint: field(section, "卖点", ordinal),
+            shotType: field(section, "镜头类型|景别", ordinal), description: field(section, "画面描述", ordinal),
+            subjectRatio: field(section, "人物占比|主体占比", ordinal), hasFace: /^(?:是|有|true)$/i.test(face),
         };
     });
     // 原文没有要求返回口播全文；不把字幕拼接后冒充音轨转录。
-    return { sourceCopy: field(raw, "sourceCopy|原文案", false), frames };
+    return { sourceCopy: field(raw, "sourceCopy|原文案"), frames };
 }
 
 export function parseRemakePersonCopyBody(raw: string) {

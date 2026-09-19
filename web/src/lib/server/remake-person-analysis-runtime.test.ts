@@ -112,3 +112,71 @@ describe("person remake video analysis timing", () => {
         expect(buildDoubaoVideoUnderstandingPrompt(59_967)).toBe(REMAKE_FEISHU_ANALYSIS_PROMPT);
     });
 });
+
+describe("36-second video analysis in the original prompt format", () => {
+    function originalAnalysis(count = 48) {
+        return Array.from({ length: count }, (_, index) => [
+            `分镜${index + 1}:`,
+            `时间: "0:${(index * 0.75).toFixed(3)}-0:${((index + 1) * 0.75).toFixed(3)}"`,
+            '字幕: "-"',
+            '卖点: "产品外观"',
+            '镜头类型: "产品特写"',
+            '画面描述: "特写镜头，牙膏位于桌面中心。"',
+            '人物占比: "-"',
+            '是否包含人脸: "否"',
+        ].join("\n")).join("\n\n");
+    }
+
+    it("keeps all 48 subsecond shots within the actual 36 seconds", () => {
+        const result = parseVideoUnderstanding(originalAnalysis(), 36_000);
+        expect(result.frames).toHaveLength(48);
+        expect(result.frames.every((frame) => frame.endTime - frame.time === 0.75)).toBe(true);
+        expect(result.frames[0].time).toBe(0);
+        expect(result.frames.at(-1)?.endTime).toBe(36);
+        expect(buildDoubaoVideoUnderstandingPrompt(36_000)).toBe(REMAKE_FEISHU_ANALYSIS_PROMPT);
+    });
+
+    it.each(["heading", "bold", "underline", "code-fence", "crlf"])("accepts %s presentation without changing the shot content", (style) => {
+        let raw = originalAnalysis();
+        if (style === "heading") raw = raw.replace(/^分镜(\d+):/gm, "### 分镜 $1");
+        if (style === "bold") raw = raw.replace(/^分镜(\d+):/gm, "**分镜$1：**").replace(/^(时间|字幕|卖点|镜头类型|画面描述|人物占比|是否包含人脸):/gm, "- **$1：**");
+        if (style === "underline") raw = raw.replace(/^分镜(\d+):/gm, "__分镜$1__").replace(/^(时间|字幕|卖点|镜头类型|画面描述|人物占比|是否包含人脸):/gm, "__$1__：");
+        if (style === "code-fence") raw = `\`\`\`text\n${raw}\n\`\`\``;
+        if (style === "crlf") raw = raw.replaceAll("\n", "\r\n");
+        expect(parseVideoUnderstanding(raw, 36_000).frames).toEqual(parseVideoUnderstanding(originalAnalysis(), 36_000).frames);
+    });
+
+    it("accepts decimal seconds with Chinese punctuation and units", () => {
+        const raw = originalAnalysis().replace(/0:(\d+\.\d+)/g, "0：$1秒");
+        expect(parseVideoUnderstanding(raw, 36_000).frames.at(-1)?.endTime).toBe(36);
+    });
+
+    it("reports the actual shot count instead of blaming JSON", () => {
+        expect(() => parseVideoUnderstanding(originalAnalysis(36), 36_000)).toThrow("返回了 36 个分镜");
+        expect(() => parseVideoUnderstanding("该视频时长不足60秒。", 36_000)).toThrow("返回了 0 个分镜");
+    });
+
+    it("identifies a missing field and its shot", () => {
+        const raw = originalAnalysis().replace('画面描述: "特写镜头，牙膏位于桌面中心。"\n', "");
+        expect(() => parseVideoUnderstanding(raw, 36_000)).toThrow("分镜1缺少「画面描述」字段");
+    });
+
+    it("does not consume the next field as an empty subtitle", () => {
+        const raw = originalAnalysis().replace('字幕: "-"', "字幕:");
+        expect(parseVideoUnderstanding(raw, 36_000).frames[0]).toMatchObject({ subtitle: "", sellingPoint: "产品外观" });
+    });
+
+    it("rejects timecodes beyond 36 seconds instead of extending the source", () => {
+        const raw = originalAnalysis().replace('0:35.250-0:36.000', '0:35.250-1:00.000');
+        expect(() => parseVideoUnderstanding(raw, 36_000)).toThrow("视频时长 36 秒");
+    });
+
+    it("accepts fenced legacy JSON with optional sourceCopy and diagnoses malformed JSON separately", () => {
+        const payload = videoAnalysis();
+        payload.frames.forEach((frame, index) => { frame.startTime = index * 0.75; frame.endTime = (index + 1) * 0.75; });
+        const raw = JSON.stringify({ frames: payload.frames });
+        expect(parseVideoUnderstanding(`\`\`\`json\n${raw}\n\`\`\``, 36_000)).toMatchObject({ sourceCopy: "" });
+        expect(() => parseVideoUnderstanding('{"frames":', 36_000)).toThrow("JSON 格式不完整");
+        expect(() => parseVideoUnderstanding("[]", 36_000)).toThrow("包含 frames 的对象");
+    });
+});

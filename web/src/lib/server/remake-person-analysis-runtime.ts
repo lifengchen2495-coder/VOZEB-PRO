@@ -85,6 +85,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
     const writtenStorageKeys = new Set<string>();
     const pendingRefunds = new Map<string, PendingAnalysisRefund>();
     let committed = false;
+    let analysisRaw: string | undefined;
     try {
         const project = await markRemakeProjectAnalysisRunning(task);
         if (isStrictAnalysisComplete(project)) {
@@ -128,6 +129,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             origin: input.origin,
             credential,
             task,
+            onResponse: (raw) => { analysisRaw = raw; },
             onCharge: (headers: Headers) => trackAnalysisCharge(pendingRefunds, task, models.videoModel, "video-understanding", headers),
         });
 
@@ -198,7 +200,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             sourceCopy,
             mode: "video",
             warning,
-            analysisRaw: renderFeishuVideoAnalysis(understanding.frames),
+            analysisRaw: analysisRaw ?? renderFeishuVideoAnalysis(understanding.frames),
             timestamps: understanding.frames.map((frame) => frame.time),
             contactSheets,
             copyBlocks: copyPlan.blocks,
@@ -210,8 +212,9 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
         return warning ? { status: "completed" as const, warning } : { status: "completed" as const };
     } catch (error) {
         const message = toSafeGenerationErrorMessage(error, "视频分析失败，请稍后重试").slice(0, 500);
+        if (!(error instanceof RemakeAnalysisSupersededError)) await Promise.resolve(failRemakeProjectAnalysis(task, message, analysisRaw)).catch(() => null);
+        // 页面在任务终止后立即重新读取项目，先保存原始返回，避免读到旧诊断。
         await Promise.resolve(failRemakeAnalysisTask(task, message)).catch(() => null);
-        if (!(error instanceof RemakeAnalysisSupersededError)) await Promise.resolve(failRemakeProjectAnalysis(task, message)).catch(() => null);
         return { status: error instanceof RemakeAnalysisSupersededError ? ("superseded" as const) : ("failed" as const), error: message };
     } finally {
         if (!committed && pendingRefunds.size) await refundPendingAnalysisCharges(pendingRefunds);
@@ -393,6 +396,7 @@ async function understandVideo(input: {
     origin: string;
     credential: string;
     task: RemakeAnalysisTask;
+    onResponse: (raw: string) => void;
     onCharge: (headers: Headers) => void;
 }): Promise<VideoUnderstandingResult> {
     let latestError: unknown;
@@ -400,6 +404,7 @@ async function understandVideo(input: {
         const idempotencyKey = systemAiIdempotencyKey("remake-person-video-understanding", input.task.userId, input.task.id, candidate.channelId, candidate.upstreamModel);
         try {
             const call = await requestDoubaoVideoUnderstanding({ ...input, candidate, idempotencyKey });
+            input.onResponse(call.arguments);
             try {
                 const understanding = parseVideoUnderstanding(call.arguments, input.durationMs);
                 input.onCharge(call.headers);
@@ -533,16 +538,27 @@ function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
 }
 
 export function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
+    const response = argumentsText.trim();
+    const fence = response.match(/^```(?:json|text|markdown|yaml)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
+    const text = (fence?.[1] ?? response).trim();
     let payload: Record<string, unknown>;
-    try {
-        payload = argumentsText.trim().startsWith("{") ? JSON.parse(argumentsText) as Record<string, unknown> : parseRemakePersonAnalysisBody(argumentsText);
-    } catch {
-        throw new Error("视频理解模型返回的分析不是有效 JSON");
+    if (text.startsWith("{") || text.startsWith("[")) {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            throw new Error("模型返回的 JSON 格式不完整，请展开原始返回查看");
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("模型返回的 JSON 须为包含 frames 的对象");
+        payload = parsed as Record<string, unknown>;
+    } else {
+        // 正文缺分镜或字段时保留具体原因，不能误报成 JSON 错误。
+        payload = parseRemakePersonAnalysisBody(text);
     }
-    if (typeof payload.sourceCopy !== "string" || payload.sourceCopy.length > 200_000) throw new Error("视频理解模型缺少完整 sourceCopy");
-    const sourceCopy = payload.sourceCopy.trim();
+    if (payload.sourceCopy !== undefined && (typeof payload.sourceCopy !== "string" || payload.sourceCopy.length > 200_000)) throw new Error("视频理解模型返回的原文案字段无效");
+    const sourceCopy = typeof payload.sourceCopy === "string" ? payload.sourceCopy.trim() : "";
     const items = records(payload.frames);
-    if (items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`);
+    if (items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型返回了 ${items.length} 个分镜，必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`);
     const durationSeconds = roundedSeconds(durationMs / 1_000);
     const byOrdinal = new Map<number, VideoFrameAnalysis>();
     for (const item of items) {
@@ -572,9 +588,9 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
     if (frames[0]?.time !== 0) throw new Error("视频理解模型的第一段必须从视频开头开始");
     for (const [index, frame] of frames.entries()) {
         const previous = frames[index - 1];
-        if (previous && frame.time !== previous.endTime) throw new Error("视频理解模型的 48 段时间线必须连续且无重叠");
+        if (previous && frame.time !== previous.endTime) throw new Error(`分镜${frame.ordinal}从${frame.time}秒开始，上一分镜在${previous.endTime}秒结束；48段时间线必须连续且无重叠`);
     }
-    if (frames.at(-1)?.endTime !== durationSeconds) throw new Error("视频理解模型的最后一段必须精确结束于视频结尾");
+    if (frames.at(-1)?.endTime !== durationSeconds) throw new Error(`最后一个分镜结束于${frames.at(-1)?.endTime}秒，必须精确结束于视频实际结尾${durationSeconds}秒`);
     return { frames, sourceCopy };
 }
 
@@ -981,7 +997,7 @@ async function mapConcurrent<T, R>(items: T[], limit: number, run: (item: T, ind
 function parseTimestamp(value: unknown) {
     if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : null;
     if (typeof value !== "string" || !value.trim()) return null;
-    const text = value.trim();
+    const text = value.trim().replace(/：/g, ":").replace(/\s*(?:秒|s)$/i, "");
     if (!text.includes(":")) {
         const number = Number(text);
         return Number.isFinite(number) && number >= 0 ? number : null;
