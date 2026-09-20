@@ -50,6 +50,8 @@ export function synchronizeLogicalModelsWithChannels(existingModels: LogicalMode
     return Array.from(catalog.entries()).map(([modelKey, catalogModel]) => {
         const matchingModels = existingModels.filter((model) => model.bindings?.some((binding) => normalizeModelName(binding.upstreamModel) === modelKey));
         const existing = matchingModels.find((model) => normalizeModelName(model.id) === modelKey && !usedExistingIds.has(model.id.toLowerCase())) || matchingModels.find((model) => !usedExistingIds.has(model.id.toLowerCase()));
+        // Earlier versions inferred banana-2 as text and persisted that fallback in the logical catalog.
+        const correctLegacyBanana2 = modelKey === "banana-2" && existing?.capability === "text" && catalogModel.capability === "image";
         if (existing) usedExistingIds.add(existing.id.toLowerCase());
         const id = uniqueLogicalModelId(existing?.id || catalogModel.upstreamModel, usedModelIds);
         const bindings = catalogModel.bindings
@@ -71,7 +73,7 @@ export function synchronizeLogicalModelsWithChannels(existingModels: LogicalMode
         return {
             id,
             name: text(existing?.name, 120) || catalogModel.upstreamModel,
-            capability: catalogModel.authoritative || !existing ? catalogModel.capability : normalizeCapability(existing.capability),
+            capability: catalogModel.authoritative || !existing || correctLegacyBanana2 ? catalogModel.capability : normalizeCapability(existing.capability),
             enabled: existing?.enabled !== false,
             bindings,
         };
