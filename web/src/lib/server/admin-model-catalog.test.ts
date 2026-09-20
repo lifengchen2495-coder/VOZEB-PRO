@@ -86,6 +86,27 @@ describe("admin model catalog", () => {
         ]);
     });
 
+    it("recognizes the banana-2 alias in manually entered and upstream model catalogs", () => {
+        const models = ["banana-2", "banana-pro"];
+        expect(configuredModelCatalog(models, {})).toEqual([
+            { id: "banana-2", capability: "image", source: "configured" },
+            { id: "banana-pro", capability: "image", source: "configured" },
+        ]);
+        expect(parseModelCatalog({ data: models.map((id) => ({ id, object: "model" })) }, "provider", "custom")).toEqual([
+            { id: "banana-2", capability: "image", source: "provider" },
+            { id: "banana-pro", capability: "image", source: "provider" },
+        ]);
+    });
+
+    it("keeps explicit capability metadata ahead of the banana-2 name fallback", () => {
+        expect(parseModelCatalog({ data: [{ id: "banana-2", capability: "text" }] }, "provider", "custom")).toEqual([
+            { id: "banana-2", capability: "text", source: "provider" },
+        ]);
+        expect(configuredModelCatalog(["banana-2"], { "banana-2": "text" })).toEqual([
+            { id: "banana-2", capability: "text", source: "configured" },
+        ]);
+    });
+
     it("uses a single-capability protocol catalog before model-name inference", () => {
         const payload = { data: [{ id: "opaque-model", object: "model" }] };
 
