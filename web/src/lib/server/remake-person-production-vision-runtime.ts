@@ -34,7 +34,7 @@ export type RemakeProductionVisionAsset = {
 
 export type RemakeProductionVisualBoardLayoutItem = {
     order: number;
-    role: "character" | "character-supplement" | "background" | "redrawn-contact-sheet";
+    role: "product" | "character" | "character-supplement" | "background" | "redrawn-contact-sheet";
     label: string;
     position: string;
     provided: boolean;
@@ -76,6 +76,7 @@ export async function buildRemakeProductionVisualBoards(input: {
     cookie: string;
     background: RemakeProductionVisionAsset;
     character?: RemakeProductionVisionAsset;
+    product?: RemakeProductionVisionAsset;
     redrawnContactSheets: Array<{ groupOrdinal: number; frameOrdinals: number[]; asset: RemakeProductionVisionAsset }>;
 }): Promise<RemakeProductionVisualBoard[]> {
     const groups = [...input.redrawnContactSheets].sort((left, right) => left.groupOrdinal - right.groupOrdinal);
@@ -86,6 +87,7 @@ export async function buildRemakeProductionVisualBoards(input: {
     const budget = { remaining: REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES };
     const background = await readProductionImage(input.background, "背景图", input.origin, input.cookie, budget);
     const character = input.character ? await readProductionImage(input.character, "人物图", input.origin, input.cookie, budget) : undefined;
+    const product = input.product ? await readProductionImage(input.product, "原产品参考图", input.origin, input.cookie, budget) : undefined;
     const redrawnContactSheets: LoadedImage[] = [];
     for (const group of groups) {
         const label = `第 ${group.groupOrdinal} 组重绘十二宫格`;
@@ -95,7 +97,7 @@ export async function buildRemakeProductionVisualBoards(input: {
         redrawnContactSheets.push(image);
     }
 
-    const referenceBoard = await createReferenceBoard(background, character);
+    const referenceBoard = await createReferenceBoard(background, character, product);
     const contactSheetBoard = await createContactSheetBoard(redrawnContactSheets, groups);
     if (referenceBoard.bytes.length + contactSheetBoard.bytes.length > REMAKE_PRODUCTION_VISUAL_BOARDS_TOTAL_MAX_BYTES) {
         throw new RemakeProductionVisionError("生产视觉板总大小超过模型输入上限，请压缩参考图后重试", 413);
@@ -188,9 +190,9 @@ function resolveImageTarget(value: string, origin: string) {
     return { internal: false as const, url: parsed.toString() };
 }
 
-async function createReferenceBoard(background: LoadedImage, character?: LoadedImage): Promise<RemakeProductionVisualBoard> {
-    const images = [{ image: character, label: "CHARACTER", role: "character" as const }, { image: background, label: "BACKGROUND", role: "background" as const }];
-    const tileWidth = REFERENCE_BOARD_WIDTH / 2;
+async function createReferenceBoard(background: LoadedImage, character?: LoadedImage, product?: LoadedImage): Promise<RemakeProductionVisualBoard> {
+    const images = [{ image: character, label: "CHARACTER", role: "character" as const }, { image: background, label: "BACKGROUND", role: "background" as const }, ...(product ? [{ image: product, label: "ORIGINAL PRODUCT", role: "product" as const }] : [])];
+    const tileWidth = REFERENCE_BOARD_WIDTH / images.length;
     const overlays: OverlayOptions[] = [];
     for (const [index, item] of images.entries()) {
         if (item.image) overlays.push({ input: await fitImage(item.image.bytes, tileWidth, REFERENCE_BOARD_HEIGHT - LABEL_HEIGHT), left: index * tileWidth, top: LABEL_HEIGHT });
@@ -199,8 +201,8 @@ async function createReferenceBoard(background: LoadedImage, character?: LoadedI
     const bytes = await renderBoard(REFERENCE_BOARD_WIDTH, REFERENCE_BOARD_HEIGHT, overlays);
     return {
         ordinal: 1, id: "reference-board", mimeType: "image/jpeg", width: REFERENCE_BOARD_WIDTH, height: REFERENCE_BOARD_HEIGHT, bytes,
-        description: "从左到右为人物图、背景图。",
-        layout: images.map((item, index) => ({ order: index + 1, role: item.role, label: item.label, position: ["left", "right"][index], provided: Boolean(item.image) })),
+        description: product ? "从左到右为人物图、背景图、原产品参考图。" : "从左到右为人物图、背景图。",
+        layout: images.map((item, index) => ({ order: index + 1, role: item.role, label: item.label, position: (product ? ["left", "center", "right"] : ["left", "right"])[index], provided: Boolean(item.image) })),
     };
 }
 

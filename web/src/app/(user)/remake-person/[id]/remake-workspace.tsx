@@ -21,7 +21,7 @@ import { editRemakeCopyBlock, hasRemakePatch, invalidateRemakeProduction, invali
 type SaveState = "saved" | "pending" | "saving" | "error" | "conflict";
 type ConflictState = { local: RemakeProject; remote: RemakeProject; dirty: RemakeWorkspacePatch };
 type RemakeFlowStage = "analysis" | "images" | "production";
-type ReferenceKey = "character" | "characterSupplement" | "background";
+type ReferenceKey = "product" | "character" | "characterSupplement" | "background";
 
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 const SUPPORTED_VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm"]);

@@ -11,7 +11,7 @@ export function buildRemakeImagePrompt(project: Pick<RemakeProject, "frames" | "
 }
 
 export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets, frames: RemakeProject["frames"]): ReferenceImage[] {
-    return remakeStoryboardPromptReferences<RemakeMediaAsset>({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl, mimeType: "image/jpeg" })), character: references.character, background: references.background }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+    return remakeStoryboardPromptReferences<RemakeMediaAsset>({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl, mimeType: "image/jpeg" })), character: references.character, background: references.background, product: references.product }).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
 }
 
 export function remakeVideoReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
@@ -19,6 +19,7 @@ export function remakeVideoReferenceImages(group: RemakeRangeGroup, references: 
         group.imageGeneration.result ? mediaAssetReferenceImage(`${group.id}-storyboard`, `分镜 ${group.id} 最终十二宫格`, group.imageGeneration.result) : null,
         references.character ? mediaAssetReferenceImage(`${group.id}-character`, "人物图", references.character) : null,
         references.background ? mediaAssetReferenceImage(`${group.id}-background`, "背景图", references.background) : null,
+        references.product ? mediaAssetReferenceImage(`${group.id}-product`, "产品图", references.product) : null,
     ].filter((item): item is ReferenceImage => Boolean(item));
 }
 

@@ -319,6 +319,7 @@ export function normalizeRemakeModelSelection(value: unknown, fallback: RemakeMo
 export function normalizeRemakeReferences(value: unknown, fallback: RemakeReferences = emptyRemakeReferences()): RemakeReferences {
     const source = object(value);
     return {
+        product: normalizedAssetProperty(source, "product", fallback.product),
         character: normalizedAssetProperty(source, "character", fallback.character),
         characterSupplement: normalizedAssetProperty(source, "characterSupplement", fallback.characterSupplement),
         background: normalizedAssetProperty(source, "background", fallback.background),

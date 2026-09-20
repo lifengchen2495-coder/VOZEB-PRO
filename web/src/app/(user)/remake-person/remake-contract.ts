@@ -412,6 +412,7 @@ function normalizeCopyBlock(value: unknown, index: number): RemakeCopyBlock {
 function normalizeReferences(value: unknown): RemakeReferenceAssets {
     const references = record(value);
     return {
+        product: normalizeMediaAsset(references.product),
         character: normalizeMediaAsset(references.character),
         characterSupplement: normalizeMediaAsset(references.characterSupplement),
         background: normalizeMediaAsset(references.background),

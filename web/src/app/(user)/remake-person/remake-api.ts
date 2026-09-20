@@ -92,11 +92,13 @@ export async function createRemakeProject(input: { title: string; sourceCopy?: s
 }
 
 export async function saveRemakeProject(id: string, revision: number, patch: RemakeEditablePatch): Promise<RemakeProject> {
+    // 移除图片时显式发送 null，避免 undefined 被 JSON 忽略后由服务端恢复旧参考图。
+    const references = patch.references ? Object.fromEntries(Object.entries(patch.references).map(([key, asset]) => [key, asset ?? null])) : undefined;
     return projectFromPayload(
         await requestPayload(`/api/remake-person/projects/${encodeURIComponent(id)}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...patch, revision }),
+            body: JSON.stringify({ ...patch, ...(references ? { references } : {}), revision }),
         }),
     );
 }

@@ -13,7 +13,6 @@ import {
     emptyRemakeCopyState,
     emptyRemakeModelSelection,
     emptyRemakeRangeGroups,
-    emptyRemakeReferences,
     idleRemakeAnalysis,
     isRemakeNoNarrationCopy,
     mergeRemakeContactSheets,
@@ -109,7 +108,7 @@ export async function getRemakeProjectForUser(userId: string, id: string) {
 
 export async function createRemakeProjectForUser(userId: string, value: unknown) {
     const input = object(value);
-    if (hasOwn(object(input.references), "product") || hasOwn(input, "productInfo")) throw new RemakeProjectServiceError("换人不换品流程不接受产品替换素材或产品信息", 400);
+    if (hasOwn(input, "productInfo")) throw new RemakeProjectServiceError("换人不换品流程不接受产品替换信息", 400);
     const now = new Date().toISOString();
     const sourceVideo = sourceVideoInput(input.sourceVideo, false);
     const analysis = idleRemakeAnalysis();
@@ -128,7 +127,7 @@ export async function createRemakeProjectForUser(userId: string, value: unknown)
         copyBlocks: [],
         pipeline: defaultRemakePipeline({ hasSourceVideo: Boolean(sourceVideo), analysisStatus: analysis.status }),
         modelSelection: emptyRemakeModelSelection(),
-        references: emptyRemakeReferences(),
+        references: normalizeRemakeReferences(input.references),
         groups: emptyRemakeRangeGroups(),
         copy: { ...emptyRemakeCopyState(), ...(cleanText(input.sourceCopy, MAX_SOURCE_COPY_LENGTH) === REMAKE_NO_NARRATION_TEXT ? { optionRaw: REMAKE_NO_NARRATION_TEXT } : {}) },
         createdAt: now,
@@ -157,7 +156,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     const requestedRevision = optionalRevision(input.revision);
     if (requestedRevision !== undefined && requestedRevision !== current.revision) throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
 
-    if (hasOwn(object(input.references), "product") || hasOwn(input, "productInfo")) throw new RemakeProjectServiceError("换人不换品流程不接受产品替换素材或产品信息", 400);
+    if (hasOwn(input, "productInfo")) throw new RemakeProjectServiceError("换人不换品流程不接受产品替换信息", 400);
     const hasSourceVideo = hasOwn(input, "sourceVideo");
     const sourceVideo = hasSourceVideo ? sourceVideoInput(input.sourceVideo, true) : current.sourceVideo;
     const sourceChanged = hasSourceVideo && sourceVideoIdentity(sourceVideo) !== sourceVideoIdentity(current.sourceVideo);
@@ -572,7 +571,7 @@ function authoritativeImageAsset(task: ImageTask, groupId: string): RemakeMediaA
 }
 
 function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[]) {
-    const expected = remakeStoryboardPromptReferences({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), character: references.character, background: references.background }).map((reference) => reference.asset.url!);
+    const expected = remakeStoryboardPromptReferences({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), character: references.character, background: references.background, product: references.product }).map((reference) => reference.asset.url!);
     const actual = task.references.map((reference) => reference.serverUrl || reference.remoteUrl || reference.url || reference.dataUrl);
     return actual.length === expected.length && expected.every((value, index) => mediaIdentity(value) === mediaIdentity(actual[index]));
 }
@@ -669,7 +668,7 @@ function deriveRemakePipeline(input: {
 }
 
 function remakeGenerationReferenceIdentity(references: RemakeReferences) {
-    return [references.character, references.characterSupplement, references.background].map((asset) => mediaIdentity(asset?.url)).join("\0");
+    return [references.character, references.characterSupplement, references.background, references.product].map((asset) => mediaIdentity(asset?.url)).join("\0");
 }
 
 function mediaIdentity(value?: string) {

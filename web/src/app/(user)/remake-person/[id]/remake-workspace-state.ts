@@ -18,6 +18,7 @@ export function remakeVideoInputVersion(project: RemakeProject, groupId: string)
     return JSON.stringify([
         project.id, groupId, group?.videoPromptInstructions || "", group?.videoPrompt || "", assetIdentity(group?.imageGeneration.result || undefined),
         project.modelSelection.video, assetIdentity(project.references.background), assetIdentity(project.references.character), assetIdentity(project.references.characterSupplement), assetIdentity(project.references.audio),
+        assetIdentity(project.references.product),
     ]);
 }
 
@@ -221,7 +222,7 @@ export function editRemakeCopyBlock(project: RemakeProject, blockId: string, pat
 }
 
 export function remakeReferenceVersion(references: RemakeReferenceAssets) {
-    return JSON.stringify([assetIdentity(references.background), assetIdentity(references.character), assetIdentity(references.characterSupplement)]);
+    return JSON.stringify([assetIdentity(references.background), assetIdentity(references.character), assetIdentity(references.characterSupplement), assetIdentity(references.product)]);
 }
 
 export function remakeGroupInputVersion(group: RemakeRangeGroup, references: RemakeReferenceAssets, stage: "storyboard" = "storyboard", productInfo = "") {

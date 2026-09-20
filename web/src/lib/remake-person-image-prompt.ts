@@ -12,12 +12,13 @@ export function remakeStoryboardPrompt(groupId: string, _frames: RemakeImageProm
     return REMAKE_FEISHU_IMAGE_PROMPT;
 }
 
-export function remakeStoryboardPromptReferences<T extends RemakeImagePromptAsset>(input: { frames: T[]; character?: T; background?: T }): RemakeImagePromptReference<T>[] {
+export function remakeStoryboardPromptReferences<T extends RemakeImagePromptAsset>(input: { frames: T[]; character?: T; background?: T; product?: T }): RemakeImagePromptReference<T>[] {
     if (input.frames.length !== 12 || input.frames.some((frame) => !frame.url)) throw new Error("换人生图需要完整的12张原始分镜图片");
     if (!input.background?.url) throw new Error("换人生图需要背景图");
     return [
         ...input.frames.map((asset, index) => ({ key: `frame-${index + 1}`, label: `分镜${index + 1}`, asset })),
         { key: "background", label: "背景图", asset: input.background },
         ...(input.character?.url ? [{ key: "character", label: "人物六宫格图", asset: input.character }] : []),
+        ...(input.product?.url ? [{ key: "product", label: "原产品参考图", asset: input.product }] : []),
     ];
 }

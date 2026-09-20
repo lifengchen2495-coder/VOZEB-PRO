@@ -71,6 +71,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
             cookie: input.cookie,
             background: project.references.background!,
             character: project.references.character,
+            product: project.references.product,
             redrawnContactSheets: project.groups.map((group) => ({
                 groupOrdinal: group.ordinal,
                 frameOrdinals: group.frameOrdinals,
@@ -79,7 +80,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
         });
     } catch (error) {
         if (error instanceof RemakeProductionVisionError) throw new RemakeProductionError(error.message, error.status);
-        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "人物、背景图或最终十二宫格读取失败，无法执行真实视觉规划"), 502);
+        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "产品、人物、背景图或最终十二宫格读取失败，无法执行真实视觉规划"), 502);
     }
 
     const promptInput: RemakeProductionPromptInput = {
@@ -96,6 +97,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
         })),
         copyBlocks: project.copyBlocks.map((block) => ({ ordinal: block.ordinal, frameOrdinals: block.frameOrdinals, sourceText: block.sourceText, text: block.text })),
         referenceAssets: {
+            product: productionAssetMetadata(project.references.product),
             character: productionAssetMetadata(project.references.character),
             characterSupplement: { available: false },
             background: productionAssetMetadata(project.references.background),

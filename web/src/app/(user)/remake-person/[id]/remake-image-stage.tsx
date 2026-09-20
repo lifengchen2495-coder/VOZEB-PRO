@@ -29,7 +29,7 @@ import {
     type RemakeImageTaskSnapshot,
 } from "./remake-workspace-state";
 
-type ReferenceKey = "character" | "characterSupplement" | "background";
+type ReferenceKey = "product" | "character" | "characterSupplement" | "background";
 type ImageStage = "storyboard";
 
 export type RemakeGroupPatch = {
@@ -41,6 +41,7 @@ export type RemakeGroupPatch = {
 
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 const REFERENCE_SLOTS: Array<{ key: ReferenceKey; label: string; detail: string; required: boolean }> = [
+    { key: "product", label: "原产品参考图", detail: "可选，上传原产品清晰图，参考包装、颜色与外观", required: false },
     { key: "character", label: "人物六宫格图", detail: "可选，只参考外貌与服装款式", required: false },
     { key: "background", label: "背景图", detail: "必需，用于替换背景场景", required: true },
 ];
@@ -326,7 +327,7 @@ export function RemakeImageStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 02</div>
                         <h2 className="mt-1 text-lg font-semibold">更换人物与背景 · 保留原产品</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">上传背景图，可选人物图和补充图，按原产品与动作生成 4 组十二宫格。</p>
+                        <p className="mt-1 text-sm text-muted-foreground">上传背景图，可补充原产品参考图和人物图，按原产品与动作生成 4 组十二宫格。</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                         <ModelPicker
@@ -342,7 +343,7 @@ export function RemakeImageStage({
                     </div>
                 </div>
 
-                <div className="grid gap-3 border-b border-border py-4 md:grid-cols-2">
+                <div className="grid gap-3 border-b border-border py-4 md:grid-cols-3">
                     {REFERENCE_SLOTS.map((slot) => (
                         <ReferenceSlot
                             key={slot.key}
@@ -369,11 +370,11 @@ export function RemakeImageStage({
                     ))}
                 </div>
 
-                <p className="border-b border-border py-3 text-xs leading-5 text-muted-foreground">人物图只参考外貌和服装，原产品、动作、视线与互动保持一致。中间分镜图按源表规则模糊人脸，最终视频结合人物参考恢复清晰外貌。</p>
+                <p className="border-b border-border py-3 text-xs leading-5 text-muted-foreground">原产品参考图用于补充包装、颜色与外观细节，建议包含视频中出现的各款产品。添加、更换或移除参考图后需重新生成十二宫格。人物图只参考外貌和服装，动作、视线与互动保持一致。中间分镜图按源表规则模糊人脸，最终视频结合人物参考恢复清晰外貌。</p>
 
                 {!referencesReady ? (
                     <div className="border-b border-amber-300/70 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/20 dark:text-amber-200">
-                        请先上传背景图。更换人物、背景或生图模型后需重新生成。
+                        请先上传背景图。更换产品参考图、人物、背景或生图模型后需重新生成。
                     </div>
                 ) : null}
 

@@ -631,7 +631,7 @@ function videoAsset(stored: UploadedFile, groupId: string): RemakeMediaAsset {
 }
 
 function remakeVideoClientRequestId(project: RemakeProject, group: RemakeRangeGroup, model: string) {
-    const input = [project.id, group.id, group.videoPromptInstructions || "", model, group.videoPrompt, group.imageGeneration.result?.storageKey || group.imageGeneration.result?.url, project.references.background?.storageKey || project.references.background?.url, project.references.character?.storageKey || project.references.character?.url, project.references.audio?.storageKey || project.references.audio?.url].join("\n");
+    const input = [project.id, group.id, group.videoPromptInstructions || "", model, group.videoPrompt, group.imageGeneration.result?.storageKey || group.imageGeneration.result?.url, project.references.background?.storageKey || project.references.background?.url, project.references.character?.storageKey || project.references.character?.url, project.references.audio?.storageKey || project.references.audio?.url, project.references.product?.storageKey || project.references.product?.url].join("\n");
     return `remake-person-video:${group.id}:${stableTextHash(input)}`;
 }
 

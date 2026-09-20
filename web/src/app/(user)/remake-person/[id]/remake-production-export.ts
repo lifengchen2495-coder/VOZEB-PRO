@@ -122,6 +122,7 @@ function productionMedia(project: RemakeProject): Array<{ kind: ExportManifestEn
         asset: { url: frame.frameUrl, storageKey: frame.storageKey, mimeType: "image/jpeg", originalName: `frame-${String(frame.ordinal).padStart(2, "0")}.jpg` },
     }));
     const references = [
+        project.references.product ? { kind: "reference" as const, name: "参考素材/产品图", asset: project.references.product } : null,
         project.references.character ? { kind: "reference" as const, name: "参考素材/人物图", asset: project.references.character } : null,
         project.references.characterSupplement ? { kind: "reference" as const, name: "参考素材/人物补充", asset: project.references.characterSupplement } : null,
         project.references.background ? { kind: "reference" as const, name: "参考素材/背景图", asset: project.references.background } : null,
@@ -182,6 +183,7 @@ function seedanceAssetBindings(project: RemakeProject, manifest: ExportManifestE
     const exportedPath = (name: string) => manifest.find((entry) => entry.name === name && entry.status === "exported")?.fileName || null;
     
     const character = exportedPath("参考素材/人物图");
+    const product = exportedPath("参考素材/产品图");
     const characterSupplement = exportedPath("参考素材/人物补充");
     const background = exportedPath("参考素材/背景图");
     const audio = isRemakeNoNarrationCopy(project.sourceCopy) ? null : exportedPath("参考素材/原视频音频");
@@ -189,6 +191,7 @@ function seedanceAssetBindings(project: RemakeProject, manifest: ExportManifestE
         const suffix = `${String(group.ordinal).padStart(2, "0")}-${group.id}`;
         return {
             groupId: group.id,
+            "@产品图": product,
             "@人物图": character,
             "@人物补充": characterSupplement,
             "@背景图": background,

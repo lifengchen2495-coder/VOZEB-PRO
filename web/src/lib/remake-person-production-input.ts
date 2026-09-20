@@ -73,6 +73,7 @@ export function remakeProductionInputSnapshot(project: RemakeProductionInputProj
             checks: { sequential: project.copy.checks.sequential, noDuplicates: project.copy.checks.noDuplicates, noSkips: project.copy.checks.noSkips },
         },
         references: {
+            product: mediaInput(project.references.product),
             background: mediaInput(project.references.background), character: mediaInput(project.references.character),
             characterSupplement: mediaInput(project.references.characterSupplement), audio: mediaInput(project.references.audio),
         },

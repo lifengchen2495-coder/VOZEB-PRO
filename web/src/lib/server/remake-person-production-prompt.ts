@@ -32,6 +32,7 @@ export type RemakeProductionAssetMetadata = {
 };
 
 export type RemakeProductionReferenceContext = {
+    product?: RemakeProductionAssetMetadata;
     character: RemakeProductionAssetMetadata;
     characterSupplement: RemakeProductionAssetMetadata;
     background: RemakeProductionAssetMetadata;
@@ -109,6 +110,7 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
                     })),
                 },
                 "人物图（可选）": input.referenceAssets.character,
+                ...(input.referenceAssets.product?.available ? { "原产品参考图（可选）": input.referenceAssets.product } : {}),
                 "背景图": input.referenceAssets.background,
                 "参考音频（可选）": input.hasNarration ? input.referenceAssets.audio : { available: false },
                 "配音选择": input.hasNarration ? (input.voice === "male" ? "男性配音" : "女性配音") : "无配音",
