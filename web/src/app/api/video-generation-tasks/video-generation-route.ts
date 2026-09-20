@@ -388,7 +388,7 @@ export async function createUpstream(
     const generateAudio = raw.videoGenerateAudio !== false && raw.videoGenerateAudio !== "false";
     const huifengVideo = channel.advancedConfig?.protocol === "huifeng";
     const huifengPayload = huifengVideo ? huifengVideoRequest(channel.model, prompt, raw, references) : undefined;
-    const huifengBilling = huifengVideo ? { durationSeconds: Number(raw.videoSeconds), resolution: channel.model === "omni-1.1" ? resolution(raw.vquality) || "720p" : "720p" } : undefined;
+    const huifengBilling = huifengPayload ? { durationSeconds: Number(raw.videoSeconds), resolution: "resolution" in huifengPayload.params ? String(huifengPayload.params.resolution) : "720P" } : undefined;
     const huifengPointsUnits = huifengBilling ? huifengVideoUnits(huifengBilling, multipliers) : undefined;
     if (isGeminiVideoChannel(channel)) {
         return createGeminiVideoUpstream({ userId, origin, cookie, channel, prompt, raw, references, generateAudio, multipliers, billingRequestId });

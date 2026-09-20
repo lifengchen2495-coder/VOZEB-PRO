@@ -60,7 +60,7 @@ export function readVerifiedSystemAiVideoBillingParameters(headers: Headers, log
 }
 
 function encodeVideoBillingParameters(value: SystemAiVideoBillingParameters) {
-    if (!value || !Number.isFinite(value.durationSeconds) || value.durationSeconds <= 0 || typeof value.resolution !== "string" || !/^(?:480|720|1080|2160)p?$|^4k$/i.test(value.resolution.trim())) throw new Error("视频计费参数格式无效");
+    if (!value || !Number.isFinite(value.durationSeconds) || value.durationSeconds <= 0 || typeof value.resolution !== "string" || !/^(?:480|720|768|1080|2160)p?$|^[24]k$/i.test(value.resolution.trim())) throw new Error("视频计费参数格式无效");
     return Buffer.from(JSON.stringify({ durationSeconds: value.durationSeconds, resolution: value.resolution.trim().toUpperCase() }), "utf8").toString("base64url");
 }
 
