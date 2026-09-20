@@ -17,6 +17,9 @@ web/.tmp/
 data/
 *.log
 *.tsbuildinfo
+# Tests are kept locally and must not be included in future commits.
+*.test.*
+*.spec.*
 .tmp-*
 .DS_Store
 .idea
