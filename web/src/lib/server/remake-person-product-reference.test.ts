@@ -4,7 +4,7 @@ import { REMAKE_FEISHU_IMAGE_PROMPT, REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/r
 import { remakeStoryboardPromptReferences } from "@/lib/remake-person-image-prompt";
 import { normalizeRemakeProject } from "@/app/(user)/remake-person/remake-contract";
 import { saveRemakeProject } from "@/app/(user)/remake-person/remake-api";
-import { remakeGroupReferenceImages, remakeVideoReferenceImages } from "@/app/(user)/remake-person/[id]/remake-production-utils";
+import { buildRemakeImagePrompt, remakeGroupReferenceImages, remakeVideoReferenceImages } from "@/app/(user)/remake-person/[id]/remake-production-utils";
 import { remakeGroupInputVersion, remakeVideoInputVersion } from "@/app/(user)/remake-person/[id]/remake-workspace-state";
 import { remakeProductionInputSnapshot } from "@/lib/remake-person-production-input";
 import { normalizeRemakeProjectWorkflow, normalizeRemakeReferences, type HydratedRemakeProject } from "./remake-person-project-contract";
@@ -52,7 +52,7 @@ beforeEach(() => {
         const group = project.groups.find((item) => item.imageGeneration.taskId === id)!;
         return { attemptNo: 0, payload: {
             id, userId: "user-test", projectId: project.id, generationSlotId: `remake-person:${group.id}:storyboard`,
-            status: "success", kind: "edit", config: { size: "9:16", model: "banana-pro" }, prompt: REMAKE_FEISHU_IMAGE_PROMPT,
+            status: "success", kind: "edit", config: { size: "9:16", model: "banana-pro" }, prompt: group.imageGeneration.prompt,
             references: remakeStoryboardPromptReferences({ frames: project.frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), ...project.references }).map(({ asset: image }) => ({ serverUrl: image.url })),
             result: { serverUrl: group.imageGeneration.result!.url, width: 720, height: 1280, mimeType: "image/png" },
         } };
@@ -120,6 +120,43 @@ describe("original product reference", () => {
         await expect(assertRemakeImageGenerationsForUser("user-test", project)).resolves.toBeUndefined();
         const changed = { ...project, references: { ...project.references, product: asset("other-product") } };
         await expect(assertRemakeImageGenerationsForUser("user-test", changed)).rejects.toThrow("图片任务输入与当前参考素材不一致");
+    });
+
+    it.each([false, true])("accepts the browser's bound prompt while retaining other legacy results (character=%s)", async (character) => {
+        project.references.product = asset("product");
+        if (character) project.references.character = asset("character");
+        project.groups = project.groups.map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" } }));
+        const displayed = normalizeRemakeProject(project);
+        const prompt = buildRemakeImagePrompt(displayed, displayed.groups[0]);
+        expect(prompt).toContain(`@图片${character ? 15 : 14}（实际输入的第${character ? 15 : 14}张图片）：原产品参考图`);
+        const groups = project.groups.map((group, index) => index === 0 ? { ...group, imageGeneration: { status: "queued", prompt, taskId: null, result: null } } : group);
+        const saved = await updateRemakeProjectForUser("user-test", project.id, { groups });
+        expect(saved.groups?.[0].imageGeneration).toMatchObject({ status: "queued", prompt });
+        expect(saved.groups?.[1].imageGeneration).toMatchObject({ status: "completed", prompt: REMAKE_FEISHU_IMAGE_PROMPT, taskId: "image-13-24" });
+    });
+
+    it("rejects a new request using the unbound legacy prompt or stale optional image numbering", async () => {
+        const displayed = normalizeRemakeProject(project);
+        const withoutProduct = buildRemakeImagePrompt(displayed, displayed.groups[0]);
+        project.references.product = asset("product");
+        for (const prompt of [REMAKE_FEISHU_IMAGE_PROMPT, withoutProduct]) {
+            const groups = project.groups.map((group, index) => index === 0 ? { ...group, imageGeneration: { status: "queued", prompt, taskId: null, result: null } } : group);
+            await expect(updateRemakeProjectForUser("user-test", project.id, { groups })).rejects.toThrow("生图提示词与当前参考素材不一致");
+        }
+    });
+
+    it("validates completed tasks with bound prompts and rejects reordered image inputs", async () => {
+        project.references.product = asset("product");
+        const displayed = normalizeRemakeProject(project);
+        project.groups = project.groups.map((group, index) => ({ ...group, imageGeneration: { ...group.imageGeneration, prompt: buildRemakeImagePrompt(displayed, displayed.groups[index]) } }));
+        await expect(assertRemakeImageGenerationsForUser("user-test", project)).resolves.toBeUndefined();
+        const validTask = mocks.task.getMockImplementation()!;
+        mocks.task.mockImplementation(async (...args) => {
+            const record = await validTask(...args);
+            record.payload.references.reverse();
+            return record;
+        });
+        await expect(assertRemakeImageGenerationsForUser("user-test", project)).rejects.toThrow("图片任务输入与当前参考素材不一致");
     });
 
     it("includes product pixels and their location in the production visual board without editing the original prompt", async () => {

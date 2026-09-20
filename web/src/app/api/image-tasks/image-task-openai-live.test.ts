@@ -9,6 +9,7 @@ import { buildJsonImageEditBodies, buildResponsesImageBodies, runOpenAiImageTask
 import { runCustomImageTask } from "./image-task-custom";
 import type { ImageTask } from "@/lib/server/image-task-store";
 import { emptyAdvancedConfig } from "@/lib/channel-protocol-registry";
+import { remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-person-image-prompt";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVR4nGPQq/3/H4QZYAwAWewKpRUlAtEAAAAASUVORK5CYII=";
 const PNG_DATA_URL = `data:image/png;base64,${PNG_BASE64}`;
@@ -464,6 +465,42 @@ describe("OpenAI image provider over a live compatible fixture", () => {
             expect(body.contents[0].parts[1].fileData).toBeUndefined();
             expect(body.contents[0].parts[0].text).toContain("最后一张图片是编辑蒙版");
             expect(body.contents[0].parts[2]).toEqual({ inlineData: { mimeType: "image/png", data: PNG_BASE64 } });
+        } finally {
+            await new Promise<void>((resolve, reject) => fixture.server.close((error?: Error) => (error ? reject(error) : resolve())));
+        }
+    });
+
+    it.each([false, true])("sends person-remake image bindings and the same ordered images to a custom provider (character=%s)", async (character) => {
+        const fixture = createProtocolFixtureServer();
+        await new Promise<void>((resolve) => fixture.server.listen(0, "127.0.0.1", resolve));
+        const address = fixture.server.address();
+        if (!address || typeof address === "string") throw new Error("Protocol fixture did not bind a TCP port");
+        const origin = `http://127.0.0.1:${address.port}`;
+        const image = (name: string) => ({ url: `https://cdn.example.com/${name}.png` });
+        const input = { frames: Array.from({ length: 12 }, (_, i) => image(`frame-${i + 1}`)), background: image("background"), character: character ? image("person") : undefined, product: image("product") };
+        const references = remakeStoryboardPromptReferences(input);
+        const prompt = remakeStoryboardPrompt("1-12", [], "", input);
+        const task = liveImageTask(origin, {
+            id: "image-person-bound",
+            projectId: "remake-person-test",
+            generationSlotId: "remake-person:1-12:storyboard",
+            kind: "edit",
+            prompt,
+            references: references.map(({ key, label, asset }) => ({ id: key, name: label, type: "image/png", dataUrl: asset.url })),
+            config: {
+                baseUrl: origin, apiKey: "fixture-key", apiFormat: "openai", model: "banana-pro", size: "9:16", systemPrompt: "Do not overwrite the workflow instructions",
+                advancedConfig: { ...emptyAdvancedConfig(), protocol: "custom", createPath: "/custom/images", editPath: "/custom/images", requestTemplate: '{"model":"{{model}}","prompt":"{{prompt}}","images":"{{images}}"}', resultField: "data.image_url", supportsReferenceImage: true },
+            },
+        });
+        try {
+            await expect(runCustomImageTask(task, "", "", "", true)).resolves.toMatchObject({ dataUrl: expect.any(String) });
+            expect(fixture.requests).toHaveLength(1);
+            const body = JSON.parse(fixture.requests[0].body.toString("utf8"));
+            expect(body.prompt).toBe(prompt);
+            expect(body.images).toEqual(references.map(({ asset }) => asset.url));
+            expect(body.images[12]).toBe(input.background.url);
+            expect(body.images.at(-1)).toBe(input.product.url);
+            expect(body.prompt).toContain(`@图片${body.images.length}（实际输入的第${body.images.length}张图片）：原产品参考图`);
         } finally {
             await new Promise<void>((resolve, reject) => fixture.server.close((error?: Error) => (error ? reject(error) : resolve())));
         }

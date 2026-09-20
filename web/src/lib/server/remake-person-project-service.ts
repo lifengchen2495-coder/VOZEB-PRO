@@ -455,6 +455,7 @@ export async function assertRemakeImageGenerationsForUser(userId: string, projec
                 frames: project.frames,
                 productInfo: project.productInfo,
                 requested: group.imageGeneration,
+                previous: group.imageGeneration,
                 stage: "storyboard",
                 selectedModel: project.modelSelection.image,
             });
@@ -517,8 +518,11 @@ async function authoritativeRemakeImageGeneration(input: {
     selectedModel: string;
     productInfo: string;
 }): Promise<RemakeRangeGroup["imageGeneration"]> {
-    const prompt = canonicalRemakeImagePrompt(input.stage, input.group, input.references, input.frames, input.productInfo);
     if (input.requested.status === "idle") return { status: "idle", prompt: "", attemptNo: input.requested.attemptNo };
+    let prompt = canonicalRemakeImagePrompt(input.stage, input.group, input.references, input.frames, input.productInfo);
+    // Keep already saved legacy tasks usable; new requests must include the current image bindings.
+    const legacyPrompt = remakeStoryboardPrompt(input.group.id, input.frames, input.productInfo);
+    if (prompt && input.previous?.taskId && input.requested.taskId === input.previous.taskId && input.previous.prompt === legacyPrompt && input.requested.prompt === legacyPrompt) prompt = legacyPrompt;
     if (!prompt || input.requested.prompt !== prompt) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的生图提示词与当前参考素材不一致`, 409);
     const requestedAttempt = input.requested.attemptNo ?? 0;
     const minimumAttempt = input.previous?.prompt === prompt ? input.previous.attemptNo ?? 0 : 0;
@@ -577,7 +581,7 @@ function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: 
 }
 
 function canonicalRemakeImagePrompt(_stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[], productInfo: string) {
-    return group.sourceContactSheet?.url && references.background?.url ? remakeStoryboardPrompt(group.id, frames, productInfo) : "";
+    return group.sourceContactSheet?.url && references.background?.url ? remakeStoryboardPrompt(group.id, frames, productInfo, { frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), character: references.character, background: references.background, product: references.product }) : "";
 }
 
 function invalidateRemakeImages(groups: RemakeRangeGroup[]) {
