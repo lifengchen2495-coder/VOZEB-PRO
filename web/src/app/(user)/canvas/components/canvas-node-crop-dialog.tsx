@@ -26,6 +26,7 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
     const [crop, setCrop] = useState<CanvasImageCropRect>(defaultCrop);
     const [locked, setLocked] = useState(false);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
+    const [error, setError] = useState("");
     const cropSize = image ? { width: Math.max(1, Math.round(crop.width * image.width)), height: Math.max(1, Math.round(crop.height * image.height)) } : null;
 
     useEffect(() => {
@@ -34,7 +35,14 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
 
     useEffect(() => {
         if (!open) return;
-        void readImageMeta(dataUrl).then(setImage);
+        setImage(null);
+        setError("");
+        let active = true;
+        void readImageMeta(dataUrl).then(
+            (meta) => { if (active) setImage(meta); },
+            (reason) => { if (active) setError(reason instanceof Error ? reason.message : "读取图片尺寸失败"); },
+        );
+        return () => { active = false; };
     }, [dataUrl, open]);
 
     const startDrag = (mode: DragMode, event: ReactPointerEvent, handle?: ResizeHandle) => {
@@ -90,12 +98,13 @@ export function CanvasNodeCropDialog({ dataUrl, open, onClose, onConfirm }: { da
                     </Button>
                 </div>
 
+                {error ? <div role="alert" className="text-sm text-[#ef4444]">{error}</div> : null}
                 <div className="flex items-center justify-end gap-2">
                     <Button onClick={() => setCrop(defaultCrop)}>重置</Button>
                     <Button icon={<X className="size-4" />} onClick={onClose}>
                         取消
                     </Button>
-                    <Button type="primary" icon={<Check className="size-4" />} onClick={() => onConfirm(crop)}>
+                    <Button type="primary" icon={<Check className="size-4" />} disabled={!image} onClick={() => onConfirm(crop)}>
                         确认裁剪
                     </Button>
                 </div>

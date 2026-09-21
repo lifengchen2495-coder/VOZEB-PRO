@@ -40,12 +40,29 @@ export function readFileAsDataUrl(file: File) {
 }
 
 export function readImageMeta(dataUrl: string) {
-    return new Promise<{ width: number; height: number; mimeType: string }>((resolve) => {
+    return new Promise<{ width: number; height: number; mimeType: string }>((resolve, reject) => {
         const image = new Image();
-        const done = () => resolve({ width: image.naturalWidth || 1024, height: image.naturalHeight || 1024, mimeType: dataUrl.match(/^data:([^;]+)/)?.[1] || "image/png" });
-        image.onload = done;
-        image.onerror = done;
-        setTimeout(done, 3000);
+        const cleanup = () => {
+            clearTimeout(timeout);
+            image.onload = null;
+            image.onerror = null;
+        };
+        const fail = (message: string) => {
+            cleanup();
+            reject(new Error(message));
+        };
+        const timeout = setTimeout(() => fail("读取图片尺寸超时，请重试"), 30_000);
+        image.onload = () => {
+            const width = image.naturalWidth;
+            const height = image.naturalHeight;
+            if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+                fail("无法读取图片真实尺寸，请检查图片后重试");
+                return;
+            }
+            cleanup();
+            resolve({ width, height, mimeType: dataUrl.match(/^data:([^;]+)/)?.[1] || "image/png" });
+        };
+        image.onerror = () => fail("图片加载失败，无法读取真实尺寸，请重试");
         image.src = dataUrl;
     });
 }

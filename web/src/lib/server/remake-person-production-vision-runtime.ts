@@ -85,9 +85,11 @@ export async function buildRemakeProductionVisualBoards(input: {
     }
 
     const budget = { remaining: REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES };
-    const background = await readProductionImage(input.background, "背景图", input.origin, input.cookie, budget);
-    const character = input.character ? await readProductionImage(input.character, "人物图", input.origin, input.cookie, budget) : undefined;
-    const product = input.product ? await readProductionImage(input.product, "原产品参考图", input.origin, input.cookie, budget) : undefined;
+    // 旧上传记录可能保存了超时兜底尺寸，参考图以实际解码尺寸为准。
+    const referenceOptions = { allowStaleDimensions: true };
+    const background = await readProductionImage(input.background, "背景图", input.origin, input.cookie, budget, referenceOptions);
+    const character = input.character ? await readProductionImage(input.character, "人物图", input.origin, input.cookie, budget, referenceOptions) : undefined;
+    const product = input.product ? await readProductionImage(input.product, "原产品参考图", input.origin, input.cookie, budget, referenceOptions) : undefined;
     const redrawnContactSheets: LoadedImage[] = [];
     for (const group of groups) {
         const label = `第 ${group.groupOrdinal} 组重绘十二宫格`;
@@ -128,7 +130,7 @@ export async function requestRemakeProductionVisionPrompt(input: {
     return requestRemakeVisionPrompt(input);
 }
 
-async function readProductionImage(asset: RemakeProductionVisionAsset, label: string, origin: string, cookie: string, budget: { remaining: number }): Promise<LoadedImage> {
+async function readProductionImage(asset: RemakeProductionVisionAsset, label: string, origin: string, cookie: string, budget: { remaining: number }, options: { allowStaleDimensions?: boolean } = {}): Promise<LoadedImage> {
     let response: Response;
     try {
         const target = resolveImageTarget(asset.url, origin);
@@ -161,7 +163,7 @@ async function readProductionImage(asset: RemakeProductionVisionAsset, label: st
     const swapsDimensions = metadata.orientation !== undefined && metadata.orientation >= 5 && metadata.orientation <= 8;
     const width = swapsDimensions ? metadata.height : metadata.width;
     const height = swapsDimensions ? metadata.width : metadata.height;
-    if ((asset.width !== undefined || asset.height !== undefined) && (!Number.isSafeInteger(asset.width) || !Number.isSafeInteger(asset.height) || asset.width !== width || asset.height !== height)) {
+    if (!options.allowStaleDimensions && (asset.width !== undefined || asset.height !== undefined) && (!Number.isSafeInteger(asset.width) || !Number.isSafeInteger(asset.height) || asset.width !== width || asset.height !== height)) {
         throw new RemakeProductionVisionError(`${label}声明尺寸与实际像素不一致（声明 ${asset.width ?? "?"}x${asset.height ?? "?"}，实际 ${width}x${height}）`, 422);
     }
     return { bytes, mimeType, width, height };

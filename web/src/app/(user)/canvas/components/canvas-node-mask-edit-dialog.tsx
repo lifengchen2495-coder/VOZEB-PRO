@@ -34,7 +34,13 @@ export function CanvasNodeMaskEditDialog({ dataUrl, open, onClose, onConfirm }: 
         setBrushSize(defaultBrushSize);
         setMode("paint");
         setError("");
-        void readImageMeta(dataUrl).then(setImage);
+        setImage(null);
+        let active = true;
+        void readImageMeta(dataUrl).then(
+            (meta) => { if (active) setImage(meta); },
+            (reason) => { if (active) setError(reason instanceof Error ? reason.message : "读取图片尺寸失败"); },
+        );
+        return () => { active = false; };
     }, [dataUrl, open]);
 
     useEffect(() => {

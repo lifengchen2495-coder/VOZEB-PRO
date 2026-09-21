@@ -30,6 +30,7 @@ const defaultParams: CanvasImageUpscaleParams = {
 export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: { dataUrl: string; open: boolean; onClose: () => void; onConfirm: (params: CanvasImageUpscaleParams) => void }) {
     const [params, setParams] = useState<CanvasImageUpscaleParams>(defaultParams);
     const [image, setImage] = useState<{ width: number; height: number } | null>(null);
+    const [error, setError] = useState("");
     const sourceLongEdge = image ? Math.max(image.width, image.height) : 0;
     const outputSize = useMemo(() => (image ? resolveUpscaleSize(image.width, image.height, params.targetLongEdge) : null), [image, params.targetLongEdge]);
     const canUpscale = Boolean(image && sourceLongEdge < params.targetLongEdge && params.targetLongEdge <= MAX_UPSCALE_LONG_EDGE);
@@ -43,7 +44,13 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
 
     useEffect(() => {
         if (!open) return;
-        void readImageMeta(dataUrl).then(setImage);
+        setError("");
+        let active = true;
+        void readImageMeta(dataUrl).then(
+            (meta) => { if (active) setImage(meta); },
+            (reason) => { if (active) setError(reason instanceof Error ? reason.message : "读取图片尺寸失败"); },
+        );
+        return () => { active = false; };
     }, [dataUrl, open]);
 
     useEffect(() => {
@@ -65,7 +72,7 @@ export function CanvasNodeUpscaleDialog({ dataUrl, open, onClose, onConfirm }: {
                         </div>
                         <div className="mt-3 flex items-center justify-between text-sm">
                             <span className="opacity-60">源图</span>
-                            <span className="font-semibold">{image ? `${image.width} x ${image.height} px` : "读取中"}</span>
+                            <span className="font-semibold">{image ? `${image.width} x ${image.height} px` : error || "读取中"}</span>
                         </div>
                     </div>
                     <div className="space-y-4 py-2 md:space-y-6">
