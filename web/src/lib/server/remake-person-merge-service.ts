@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { remakeVideoOutputDimensions, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 
 import { runFfmpeg, runFfprobe } from "@/lib/server/ffmpeg";
 import { writeAssetBytes } from "@/lib/server/generation-log-repository";
@@ -48,7 +49,7 @@ async function mergeAndPersist(input: MergeRequest, project: HydratedRemakeProje
             if (!Number.isFinite(duration) || duration < 14 || duration > 16) throw new RemakeProjectServiceError(`分镜 ${group.id} 的实际时长不是 15 秒，请重新生成`, 422);
             const hasAudio = probe.streams.some((stream) => stream.codec_type === "audio");
             const name = `part-${group.ordinal}.mp4`;
-            await runFfmpeg(remakeMergeNormalizationArgs(source, join(workDirectory, name), hasAudio), { timeoutMs: 10 * 60_000 });
+            await runFfmpeg(remakeMergeNormalizationArgs(source, join(workDirectory, name), hasAudio, project.videoSettings), { timeoutMs: 10 * 60_000 });
             normalizedFiles.push(name);
         }
         await writeFile(join(workDirectory, "segments.txt"), normalizedFiles.map((name) => `file '${name}'`).join("\n"), "utf8");
@@ -56,7 +57,7 @@ async function mergeAndPersist(input: MergeRequest, project: HydratedRemakeProje
         await runFfmpeg(["-y", "-f", "concat", "-safe", "1", "-i", "segments.txt", "-c", "copy", "-movflags", "+faststart", output], { cwd: workDirectory, timeoutMs: 10 * 60_000 });
         if ((await stat(output)).size > 200 * 1024 * 1024) throw new RemakeProjectServiceError("合并视频超过文件大小上限", 413);
         const asset = await writeAssetBytes(await readFile(output), "video/mp4", "video", { ownerUserId: input.userId, source: "remake-person-merge", taskId: `${project.id}:merged`, originalName: `${project.title}-1分钟.mp4` });
-        created = { url: asset.serverUrl || asset.url, storageKey: localMediaStorageKeyFromValue(asset.serverUrl || asset.url), mimeType: "video/mp4", originalName: `${project.title}-1分钟.mp4`, bytes: asset.bytes, width: 720, height: 1280 };
+        created = { url: asset.serverUrl || asset.url, storageKey: localMediaStorageKeyFromValue(asset.serverUrl || asset.url), mimeType: "video/mp4", originalName: `${project.title}-1分钟.mp4`, bytes: asset.bytes, ...remakeVideoOutputDimensions(project.videoSettings) };
         const saved = await mutateRemakeProject(input.userId, project.id, (current) => {
             if (remakeMergeInputVersion(current) !== version) throw new RemakeProjectServiceError("合并期间视频已变化，请按最新四段重新合并", 409);
             return { ...current, mergedVideo: created, mergedVideoInputVersion: version, revision: current.revision + 1, updatedAt: new Date().toISOString() };
@@ -75,6 +76,7 @@ export function assertMergeReady(project: HydratedRemakeProject) {
     if (project.groups.length !== 4 || project.groups.some((group, index) => group.ordinal !== index + 1 || group.videoGeneration.status !== "completed" || !group.videoGeneration.taskId || !group.videoGeneration.result?.url)) throw new RemakeProjectServiceError("请先完成四条各 15 秒的视频", 409);
 }
 
-export function remakeMergeNormalizationArgs(source: string, output: string, hasAudio: boolean) {
-    return ["-y", "-i", source, ...(!hasAudio ? ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"] : []), "-map", "0:v:0", "-map", hasAudio ? "0:a:0" : "1:a:0", "-vf", "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=15", "-af", "asetpts=PTS-STARTPTS,apad", "-t", "15", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", output];
+export function remakeMergeNormalizationArgs(source: string, output: string, hasAudio: boolean, settings?: RemakeVideoSettings) {
+    const { width, height } = remakeVideoOutputDimensions(settings);
+    return ["-y", "-i", source, ...(!hasAudio ? ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"] : []), "-map", "0:v:0", "-map", hasAudio ? "0:a:0" : "1:a:0", "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=15`, "-af", "asetpts=PTS-STARTPTS,apad", "-t", "15", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", output];
 }

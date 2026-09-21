@@ -1,3 +1,4 @@
+import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets, type RemakeTaskStatus } from "../remake-contract";
 
 export type RemakeWorkspacePatch = RemakeEditablePatch & Partial<Pick<RemakeProject, "copy" | "pipeline">>;
@@ -18,7 +19,7 @@ export function remakeVideoInputVersion(project: RemakeProject, groupId: string)
     return JSON.stringify([
         project.id, groupId, group?.videoPromptInstructions || "", group?.videoPrompt || "", assetIdentity(group?.imageGeneration.result || undefined),
         project.modelSelection.video, assetIdentity(project.references.background), assetIdentity(project.references.character), assetIdentity(project.references.characterSupplement), assetIdentity(project.references.audio),
-        assetIdentity(project.references.product),
+        assetIdentity(project.references.product), remakeVideoSettingsKey(project.videoSettings),
     ]);
 }
 
@@ -67,7 +68,7 @@ export function isRemakeAnalysisActive(analyzing: boolean, status?: RemakeTaskSt
 export function mergeEditablePatch(project: RemakeProject, patch: RemakeWorkspacePatch): RemakeProject {
     return {
         ...project,
-        ...(patch.groups || patch.references || patch.productInfo !== undefined || patch.frames || patch.copyBlocks || patch.sourceCopy !== undefined || patch.sourceVideo ? { mergedVideo: undefined, mergedVideoInputVersion: undefined } : {}),
+        ...(patch.videoSettings || patch.groups || patch.references || patch.productInfo !== undefined || patch.frames || patch.copyBlocks || patch.sourceCopy !== undefined || patch.sourceVideo ? { mergedVideo: undefined, mergedVideoInputVersion: undefined } : {}),
         title: patch.title !== undefined ? patch.title : project.title,
         sourceVideo: Object.prototype.hasOwnProperty.call(patch, "sourceVideo") ? patch.sourceVideo : project.sourceVideo,
         sourceCopy: patch.sourceCopy !== undefined ? patch.sourceCopy : project.sourceCopy,
@@ -75,6 +76,7 @@ export function mergeEditablePatch(project: RemakeProject, patch: RemakeWorkspac
         copyStrategy: patch.copyStrategy !== undefined ? patch.copyStrategy : project.copyStrategy,
         voice: patch.voice !== undefined ? patch.voice : project.voice,
         modelSelection: patch.modelSelection !== undefined ? patch.modelSelection : project.modelSelection,
+        videoSettings: patch.videoSettings !== undefined ? patch.videoSettings : project.videoSettings,
         references: patch.references !== undefined ? patch.references : project.references,
         groups: patch.groups !== undefined ? patch.groups : project.groups,
         frames: patch.frames !== undefined ? patch.frames : project.frames,
@@ -94,6 +96,7 @@ export function mergeSavedProject(saved: RemakeProject, current: RemakeProject, 
         copyStrategy: pending.copyStrategy !== undefined ? current.copyStrategy : saved.copyStrategy,
         voice: pending.voice !== undefined ? current.voice : saved.voice,
         modelSelection: pending.modelSelection !== undefined ? current.modelSelection : saved.modelSelection,
+        videoSettings: pending.videoSettings !== undefined ? current.videoSettings : saved.videoSettings,
         references: pending.references !== undefined ? current.references : saved.references,
         groups: pending.groups !== undefined ? current.groups : saved.groups,
         frames: pending.frames !== undefined ? current.frames : saved.frames,
@@ -116,7 +119,7 @@ export function safeConflictPatch(dirty: RemakeWorkspacePatch, local: RemakeProj
         delete safe.copy;
         delete safe.pipeline;
         if (sourceChanged) delete safe.sourceCopy;
-    } else if (referencesChanged || local.productInfo !== remote.productInfo) {
+    } else if (referencesChanged || local.productInfo !== remote.productInfo || remakeVideoSettingsKey(local.videoSettings) !== remakeVideoSettingsKey(remote.videoSettings)) {
         delete safe.groups;
     } else if (safe.groups) {
         safe.groups = mergeConflictGroups(safe.groups, remote.groups);

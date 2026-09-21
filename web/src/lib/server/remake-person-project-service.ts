@@ -1,5 +1,6 @@
 import { invalidateRemakeMergedVideo } from "./remake-person-merge-contract";
 import { createHash } from "node:crypto";
+import { normalizeRemakeVideoSettings, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 import { nanoid } from "nanoid";
 
 import { remakeProductionInputSnapshot, type RemakeProductionInputProject } from "@/lib/remake-person-production-input";
@@ -151,6 +152,9 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
             if (hasOwn(group, "videoPromptInstructions") && (typeof group.videoPromptInstructions !== "string" || group.videoPromptInstructions.length > 50_000)) {
                 throw new RemakeProjectServiceError("视频提示词生成指令必须为文本，且不能超过 50,000 字", 400);
             }
+            if (hasOwn(group, "videoPrompt") && (typeof group.videoPrompt !== "string" || group.videoPrompt.length > 100_000)) {
+                throw new RemakeProjectServiceError("视频 Prompt 必须为文本，且不能超过 100,000 字", 400);
+            }
         }
     }
     const requestedRevision = optionalRevision(input.revision);
@@ -172,6 +176,11 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     const imageModelChanged = modelSelection.image !== current.modelSelection.image;
     const promptModelChanged = modelSelection.prompt !== current.modelSelection.prompt;
     const videoModelChanged = modelSelection.video !== current.modelSelection.video;
+    const videoSettings = normalizeRemakeVideoSettings(input.videoSettings, normalizeRemakeVideoSettings(current.videoSettings));
+    const videoSettingsChanged = remakeVideoSettingsKey(videoSettings) !== remakeVideoSettingsKey(current.videoSettings);
+    if (videoSettingsChanged && current.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) {
+        throw new RemakeProjectServiceError("视频任务运行期间不能修改视频设置，请等待任务结束", 409);
+    }
     const referenceFallback = sourceChanged ? { ...current.references, audio: undefined } : current.references;
     const normalizedReferences = hasOwn(input, "references") ? normalizeRemakeReferences(input.references, referenceFallback) : referenceFallback;
     const references = sourceChanged ? { ...normalizedReferences, audio: undefined } : { ...normalizedReferences, audio: current.references.audio };
@@ -183,7 +192,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
         : referencesChanged || imageModelChanged || productInfoChanged || hasOwn(input, "frames")
           ? invalidateRemakeImages(current.groups)
           : hasOwn(input, "groups")
-            ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, modelSelection, productInfo })
+            ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, modelSelection, productInfo, videoSettings: normalizeRemakeVideoSettings(current.videoSettings) })
             : current.groups;
     // 指令属于项目设置；上游重置也保留，修改时仅清对应组的视频下游。
     const instructionGroups = normalizeRemakeRangeGroups(input.groups, current.groups);
@@ -219,7 +228,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
         groups = groups.map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } }));
         // 配音和 Prompt 模型只影响视频下游，不改变已完成的文案预处理。
         if (copyInputsChanged) copy = { ...copy, rawReport: "", error: undefined };
-    } else if (videoModelChanged) {
+    } else if (videoModelChanged || videoSettingsChanged) {
         groups = groups.map((group) => ({ ...group, videoGeneration: { status: "idle" as const } }));
     }
     const voice = hasOwn(input, "voice") ? normalizeVoice(input.voice) : current.voice;
@@ -238,6 +247,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
         copyBlocks,
         pipeline,
         modelSelection,
+        videoSettings,
         references,
         groups,
         copy,
@@ -475,6 +485,7 @@ async function normalizeEditableRemakeGroups(input: {
     frames: RemakeFrame[];
     modelSelection: RemakeModelSelection;
     productInfo: string;
+    videoSettings: RemakeVideoSettings;
 }) {
     const requested = normalizeRemakeRangeGroups(input.value, input.current);
     return Promise.all(
@@ -483,7 +494,11 @@ async function normalizeEditableRemakeGroups(input: {
             const sourceContactSheet = previous.sourceContactSheet;
             const expectedGroup = { ...group, sourceContactSheet };
             const instructionsChanged = (group.videoPromptInstructions || "") !== (previous.videoPromptInstructions || "");
-            const videoPrompt = !instructionsChanged && group.videoPrompt ? previous.videoPrompt : "";
+            const videoPrompt = instructionsChanged ? "" : group.videoPrompt;
+            const promptChanged = videoPrompt !== previous.videoPrompt;
+            if (promptChanged && (previous.videoGeneration.status === "queued" || previous.videoGeneration.status === "running")) {
+                throw new RemakeProjectServiceError(`分镜 ${group.id} 的视频任务运行期间不能修改 Prompt`, 409);
+            }
             const imageGeneration = await authoritativeRemakeImageGeneration({
                 userId: input.userId, projectId: input.projectId, group: expectedGroup,
                 references: input.references, frames: input.frames, productInfo: input.productInfo,
@@ -492,13 +507,14 @@ async function normalizeEditableRemakeGroups(input: {
             });
             const stablePrompt = imageGeneration.status === "completed" ? videoPrompt : "";
             const videoGeneration =
-                stablePrompt && group.videoGeneration.status !== "idle"
+                stablePrompt && !promptChanged && group.videoGeneration.status !== "idle"
                     ? await authoritativeRemakeVideoGeneration({
                           userId: input.userId,
                           projectId: input.projectId,
                           group: { ...expectedGroup, imageGeneration, videoPrompt: stablePrompt },
                           requested: group.videoGeneration,
                           selectedModel: input.modelSelection.video,
+                          videoSettings: input.videoSettings,
                       })
                     : { status: "idle" as const };
             return { ...expectedGroup, imageGeneration, videoPrompt: stablePrompt, videoGeneration };
@@ -604,6 +620,7 @@ async function authoritativeRemakeVideoGeneration(input: {
     group: RemakeRangeGroup;
     requested: RemakeRangeGroup["videoGeneration"];
     selectedModel: string;
+    videoSettings: RemakeVideoSettings;
 }): Promise<RemakeRangeGroup["videoGeneration"]> {
     if (!input.requested.taskId) {
         if (input.requested.status === "queued") return { status: "queued", model: input.requested.model, attemptNo: input.requested.attemptNo };
@@ -619,6 +636,9 @@ async function authoritativeRemakeVideoGeneration(input: {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频模型与当前任务不一致`, 409);
     }
     if (task.requestedDurationSeconds !== 15) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务必须为 15 秒`, 409);
+    if (remakeVideoSettingsKey(task.requestedVideoSettings) !== remakeVideoSettingsKey(input.videoSettings)) {
+        throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频设置与当前任务不一致，请重新生成`, 409);
+    }
     const attemptNo = task.attemptNo ?? 0;
     if (task.status === "running") {
         const needsReview = task.executionPhase === "needs_review";

@@ -1,3 +1,5 @@
+import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
+
 export const REMAKE_FRAME_COUNT = 48;
 export const REMAKE_COPY_BLOCK_COUNT = 16;
 export const REMAKE_FRAMES_PER_COPY_BLOCK = 3;
@@ -207,6 +209,7 @@ export type RemakeProject = {
     copyBlocks: RemakeCopyBlock[];
     pipeline?: RemakePipeline;
     modelSelection?: RemakeModelSelection;
+    videoSettings?: RemakeVideoSettings;
     references?: RemakeReferences;
     groups?: RemakeRangeGroup[];
     copy?: RemakeCopyState;
@@ -613,6 +616,7 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
         },
         pipeline: normalizeRemakePipeline(project.pipeline, pipelineFallback),
         modelSelection: normalizeRemakeModelSelection(project.modelSelection),
+        videoSettings: normalizeRemakeVideoSettings(project.videoSettings),
         references: normalizeRemakeReferences(project.references),
         groups: normalizeRemakeRangeGroups(project.groups),
         copy,

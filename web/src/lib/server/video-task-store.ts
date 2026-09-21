@@ -19,6 +19,7 @@ export type VideoTask = GenerationTaskContext & {
     config: SystemGenerationChannelConfig;
     upstream: { id: string; provider: "openai" | "seedance" | "generation"; model: string; pollPath?: string; queryPath?: string; resultUrl?: string; pointsCost?: number; pointsUnits?: number; pointsRecordId?: string; refunded?: boolean };
     requestedDurationSeconds?: number;
+    requestedVideoSettings?: { vquality: string; videoGenerateAudio: boolean; videoWatermark: boolean };
     source?: string;
     prompt?: string;
     attempts?: GenerationAttempt[];

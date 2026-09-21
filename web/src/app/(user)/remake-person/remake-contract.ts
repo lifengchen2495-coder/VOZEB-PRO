@@ -1,3 +1,5 @@
+import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
+
 export type RemakeCopyStrategy = "keep" | "manual";
 export type RemakeVoice = "source" | "female" | "male";
 export type RemakeAnalysisMode = "video" | "vision" | "hybrid" | "frames-only";
@@ -174,6 +176,7 @@ export type RemakeProject = {
     analysis: RemakeAnalysis;
     pipeline: RemakePipeline;
     modelSelection: RemakeModelSelection;
+    videoSettings?: RemakeVideoSettings;
     references: RemakeReferenceAssets;
     groups: RemakeRangeGroup[];
     copy: RemakeSemanticCopy;
@@ -215,7 +218,7 @@ export type RemakeTask = {
     updatedAt: string;
 };
 
-export type RemakeEditablePatch = Partial<Pick<RemakeProject, "title" | "sourceVideo" | "sourceCopy" | "productInfo" | "copyStrategy" | "voice" | "modelSelection" | "references" | "groups" | "frames" | "copyBlocks">>;
+export type RemakeEditablePatch = Partial<Pick<RemakeProject, "title" | "sourceVideo" | "sourceCopy" | "productInfo" | "copyStrategy" | "voice" | "modelSelection" | "videoSettings" | "references" | "groups" | "frames" | "copyBlocks">>;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -613,6 +616,7 @@ export function normalizeRemakeProject(value: unknown): RemakeProject {
         analysis,
         pipeline: normalizePipeline(firstDefined(project.pipeline, project.workflow), { sourceVideo, analysis, references, groups, copy }),
         modelSelection,
+        videoSettings: normalizeRemakeVideoSettings(project.videoSettings),
         references,
         groups,
         copy,

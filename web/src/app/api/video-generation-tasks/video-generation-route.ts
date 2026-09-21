@@ -1,3 +1,4 @@
+import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { FrameRemakeError, validateFrameRemakeGeneration } from "@/lib/server/frame-remake-project-service";
 import { after, NextResponse } from "next/server";
 import { readJsonBody } from "@/lib/auth/request";
@@ -144,6 +145,9 @@ export async function POST(request: Request) {
                         return NextResponse.json({ error: "请先完成该分组的原产品去除和新产品放入，再生成视频" }, { status: 409 });
                     }
                     if (requestedPrompt !== group.videoPrompt) return NextResponse.json({ error: "复刻视频提示词与已保存原文不一致，请刷新项目后重试" }, { status: 409 });
+                    if (fixedRemake.projectPrefix === "remake-person-" && remakeVideoSettingsKey(body.config) !== remakeVideoSettingsKey("videoSettings" in project ? project.videoSettings : undefined)) {
+                        return NextResponse.json({ error: "视频设置与已保存项目不一致，请保存设置后重试" }, { status: 409 });
+                    }
                     prompt = group.videoPrompt;
                     workflowDuration = 15;
                 }
@@ -268,6 +272,7 @@ export async function POST(request: Request) {
                         username: user.username,
                         displayName: user.displayName,
                         title: prompt.slice(0, 36) || "视频生成",
+                        requestedVideoSettings: { vquality: String(requestedParameters.vquality), videoGenerateAudio: body.config?.videoGenerateAudio !== false && body.config?.videoGenerateAudio !== "false", videoWatermark: booleanValue(body.config?.videoWatermark) },
                         config: channel,
                         upstream: pendingUpstream,
                         requestedDurationSeconds: parameters.videoSeconds === -1 ? undefined : parameters.videoSeconds,

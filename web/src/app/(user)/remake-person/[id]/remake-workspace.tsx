@@ -6,6 +6,7 @@ import { ArrowLeft, Check, CircleAlert, CloudCheck, CloudOff, CloudUpload, FileO
 import { useParams, useRouter } from "next/navigation";
 
 import { UserStatusActions } from "@/components/layout/user-status-actions";
+import { normalizeRemakeVideoSettings, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 import { remakeProductionInputSnapshot } from "@/lib/remake-person-production-input";
 
 import { buildRemakeProduction, getRemakeProject, getRemakeTask, handoffRemakeProject, RemakeConflictError, RemakeRequestError, saveRemakeProject, startRemakeAnalysis, uploadRemakeVideo } from "../remake-api";
@@ -379,6 +380,14 @@ export function RemakeWorkspace() {
         [queuePatch],
     );
 
+    const updateVideoSettings = useCallback((settings: RemakeVideoSettings) => {
+        const current = projectRef.current;
+        if (!current || editingLockedRef.current || current.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) return;
+        const videoSettings = normalizeRemakeVideoSettings(settings);
+        if (remakeVideoSettingsKey(videoSettings) === remakeVideoSettingsKey(current.videoSettings)) return;
+        queuePatch({ videoSettings, groups: current.groups.map((group) => ({ ...group, videoGeneration: { status: "idle" as const } })) });
+    }, [queuePatch]);
+
     const upload = async (file: File) => {
         if (editingLockedRef.current) return message.warning("分析期间不能替换来源视频");
         if (!SUPPORTED_VIDEO_TYPES.has(file.type)) return message.warning("仅支持 MP4、MOV 或 WebM 视频");
@@ -695,6 +704,7 @@ export function RemakeWorkspace() {
                         onVoiceChange={updateVoice}
                         onPromptModelChange={(model) => updateModelSelection("prompt", model)}
                         onVideoModelChange={(model) => updateModelSelection("video", model)}
+                        onVideoSettingsChange={updateVideoSettings}
                         onGroupChange={updateGroup}
                         onFlush={flushSave}
                         onBuild={buildProductionContent}
