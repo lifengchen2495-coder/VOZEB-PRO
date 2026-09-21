@@ -1,3 +1,4 @@
+import { remakePersonGroupTiming, remakePersonTimingKey } from "@/lib/remake-person-timing";
 import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets, type RemakeTaskStatus } from "../remake-contract";
 
@@ -19,7 +20,7 @@ export function remakeVideoInputVersion(project: RemakeProject, groupId: string)
     return JSON.stringify([
         project.id, groupId, group?.videoPromptInstructions || "", group?.videoPrompt || "", assetIdentity(group?.imageGeneration.result || undefined),
         project.modelSelection.video, assetIdentity(project.references.background), assetIdentity(project.references.character), assetIdentity(project.references.characterSupplement), assetIdentity(project.references.audio),
-        assetIdentity(project.references.product), remakeVideoSettingsKey(project.videoSettings),
+        assetIdentity(project.references.product), remakeVideoSettingsKey(project.videoSettings), remakePersonTimingKey(remakePersonGroupTiming(project, groupId)),
     ]);
 }
 

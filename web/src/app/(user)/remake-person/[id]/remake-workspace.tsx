@@ -454,7 +454,7 @@ export function RemakeWorkspace() {
             const next = await buildRemakeProduction(projectId, current.revision, groupId, inputVersion);
             applyConcurrentProject(next);
             setSaveState(savingPromiseRef.current ? "saving" : hasRemakePatch(pendingPatchRef.current) ? "pending" : "saved");
-            message.success(groupId ? `分镜 ${groupId} 的 Prompt 已生成` : "15 秒视频提示词已生成");
+            message.success(groupId ? `分镜 ${groupId} 的 Prompt 已生成` : "分组视频提示词已生成");
         } catch (reason) {
             if (reason instanceof RemakeConflictError || (reason instanceof RemakeRequestError && reason.status === 409 && reason.message === "本组提示词或生成素材已变化，请刷新后重试")) {
                 try {
@@ -596,7 +596,7 @@ export function RemakeWorkspace() {
     };
 
     return (
-        <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground" data-remake-workspace aria-label="1 分钟换人不换品工作区">
+        <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground" data-remake-workspace aria-label="换人不换品工作区">
             <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-2 sm:px-3">
                 <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
                     <Tooltip title="返回复刻项目">
@@ -742,7 +742,7 @@ function RemakeFlowNavigation({ stage, analysisReady, imagesReady, productionRea
         { key: "production", label: "生产内容", icon: <FileOutput className="size-4" />, completed: productionReady },
     ];
     return (
-        <nav className="flex h-12 shrink-0 items-stretch overflow-x-auto border-b border-border bg-card px-1 sm:justify-center sm:px-3" aria-label="1 分钟换人不换品流程">
+        <nav className="flex h-12 shrink-0 items-stretch overflow-x-auto border-b border-border bg-card px-1 sm:justify-center sm:px-3" aria-label="换人不换品流程">
             {steps.map((step, index) => {
                 const active = step.key === stage;
                 return (

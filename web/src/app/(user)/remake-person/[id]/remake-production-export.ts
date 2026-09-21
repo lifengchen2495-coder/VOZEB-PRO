@@ -1,3 +1,5 @@
+import { remakePersonGroupTiming, remakePersonSeconds } from "@/lib/remake-person-timing";
+import { remakeVideosReady } from "./remake-production-utils";
 import { saveAs } from "file-saver";
 import { remakeVideoPromptSystemInstructions } from "@/lib/remake-person-video-prompt-instructions";
 
@@ -77,7 +79,7 @@ ${group.imageGeneration.prompt}`)
             data: project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.videoPrompt}`).join("\n\n"),
         },
         ...project.groups.map((group) => ({ name: `提示词/Seedance-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: group.videoPrompt })),
-        ...project.groups.map((group) => ({ name: `提示词/生成指令-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: remakeVideoPromptSystemInstructions(group.id, group.videoPromptInstructions, !isRemakeNoNarrationCopy(project.sourceCopy), project.voice === "male" ? "male" : "female") })),
+        ...project.groups.map((group) => ({ name: `提示词/生成指令-${String(group.ordinal).padStart(2, "0")}-${group.id}.txt`, data: remakeVideoPromptSystemInstructions(group.id, group.videoPromptInstructions, !isRemakeNoNarrationCopy(project.sourceCopy), project.voice === "male" ? "male" : "female", remakePersonGroupTiming(project, group.id)) })),
         { name: "提示词/素材绑定.json", data: JSON.stringify({ schema: "vozeb-remake-seedance-bindings/v1", groups: assetBindings }, null, 2) },
         {
             name: "manifest.json",
@@ -95,6 +97,7 @@ ${group.imageGeneration.prompt}`)
                         id: group.id,
                         ordinal: group.ordinal,
                         frameOrdinals: group.frameOrdinals,
+                        timing: remakePersonGroupTiming(project, group.id),
                         videoPromptInstructions: group.videoPromptInstructions || "",
                         storyboardImageTaskId: group.imageGeneration.taskId || null,
                         videoTaskId: group.videoGeneration.taskId || null,
@@ -131,9 +134,9 @@ function productionMedia(project: RemakeProject): Array<{ kind: ExportManifestEn
     const groups = project.groups.flatMap((group) => [
         group.sourceContactSheet ? { kind: "source-contact-sheet" as const, name: `十二宫格/来源-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.sourceContactSheet } : null,
         group.imageGeneration.result ? { kind: "storyboard-contact-sheet" as const, name: `十二宫格/最终换人-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
-        group.videoGeneration.result ? { kind: "generated-video" as const, name: `独立视频/${String(group.ordinal).padStart(2, "0")}-${group.id}-15秒`, asset: group.videoGeneration.result } : null,
+        group.videoGeneration.result ? { kind: "generated-video" as const, name: `独立视频/${String(group.ordinal).padStart(2, "0")}-${group.id}-${remakePersonSeconds(remakePersonGroupTiming(project, group.id)!.durationMs)}秒`, asset: group.videoGeneration.result } : null,
     ]);
-    const merged = project.mergedVideo ? [{ kind: "merged-video" as const, name: "成片/1分钟换人不换品", asset: project.mergedVideo }] : [];
+    const merged = project.mergedVideo ? [{ kind: "merged-video" as const, name: "成片/换人不换品", asset: project.mergedVideo }] : [];
     return [...source, ...frames, ...references, ...groups, ...merged].filter((item): item is NonNullable<typeof item> => Boolean(item?.asset.url));
 }
 
@@ -163,8 +166,9 @@ function assertCompleteProductionBundle(project: RemakeProject) {
                 !group.videoGeneration.result?.url,
         )
     ) {
-        missing.push("来源十二宫格、4 组换人生图、视频 Prompt 和 15 秒视频");
+        missing.push("来源十二宫格、4 组换人生图、视频 Prompt 和按原片时长生成的视频");
     }
+    if (!remakeVideosReady(project)) missing.push("与原片时间轴一致的视频");
     if (missing.length) throw new Error(`生产包不完整：缺少${Array.from(new Set(missing)).join("、")}，请补齐或重新生成后再下载`);
 }
 
@@ -197,7 +201,7 @@ function seedanceAssetBindings(project: RemakeProject, manifest: ExportManifestE
             "@背景图": background,
             "@十二宫格图": exportedPath(`十二宫格/最终换人-${suffix}`),
             "@音频文件": audio,
-            "独立视频": exportedPath(`独立视频/${suffix}-15秒`),
+            "独立视频": exportedPath(`独立视频/${suffix}-${remakePersonSeconds(remakePersonGroupTiming(project, group.id)!.durationMs)}秒`),
         };
     });
 }

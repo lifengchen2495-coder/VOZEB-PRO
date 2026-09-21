@@ -32,6 +32,7 @@ export const REMAKE_GROUP_DEFINITIONS = [
 
 export type RemakeMediaAsset = {
     url: string;
+    durationMs?: number;
     storageKey?: string;
     mimeType?: string;
     originalName?: string;
@@ -345,6 +346,7 @@ function normalizeMediaAsset(value: unknown): RemakeMediaAsset | undefined {
         mimeType: stringValue(firstDefined(source.mimeType, source.mime_type, source.type)) || undefined,
         originalName,
         bytes: numberValue(firstDefined(source.bytes, source.size), 0) || undefined,
+        durationMs: numberValue(source.durationMs, 0) || undefined,
         width: numberValue(source.width, 0) || undefined,
         height: numberValue(source.height, 0) || undefined,
     };

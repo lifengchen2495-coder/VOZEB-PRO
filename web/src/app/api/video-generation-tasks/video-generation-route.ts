@@ -1,3 +1,4 @@
+import { remakePersonGroupTiming, remakePersonPromptDurationError, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { FrameRemakeError, validateFrameRemakeGeneration } from "@/lib/server/frame-remake-project-service";
 import { after, NextResponse } from "next/server";
@@ -103,6 +104,7 @@ export async function POST(request: Request) {
             const isOmniRemakeRequest = remakeProjectId.startsWith("omni-remake-") || remakeSlotId.startsWith("omni-remake-video:");
             const isFrameRemakeRequest = remakeProjectId.startsWith("frame-remake-") || remakeSlotId.startsWith("frame-remake-video:");
             let workflowDuration: number | undefined;
+            let remakePersonTiming: RemakePersonTiming | undefined;
             const isRemake15VideoRequest = remakeProjectId.startsWith("remake15-") || remakeSlotId.startsWith("remake15-video:");
             let prompt = requestedPrompt.trim();
             if (isRemakeVideoRequest) {
@@ -137,7 +139,7 @@ export async function POST(request: Request) {
             try {
                 if (fixedRemake) {
                     if (!remakeProjectId.startsWith(fixedRemake.projectPrefix) || !remakeSlotId.startsWith(fixedRemake.slotPrefix)) return NextResponse.json({ error: "复刻视频任务的项目或分镜标识不完整" }, { status: 400 });
-                    if (body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== 15) return NextResponse.json({ error: "每组十二宫格只能生成 15 秒视频" }, { status: 400 });
+                    if (fixedRemake.projectPrefix !== "remake-person-" && body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== 15) return NextResponse.json({ error: "每组十二宫格只能生成 15 秒视频" }, { status: 400 });
                     const project = await fixedRemake.get(user.id, remakeProjectId);
                     const group = project.groups.find((item) => fixedRemake.slotPrefix + item.id === remakeSlotId);
                     if (!group?.videoPrompt.trim()) return NextResponse.json({ error: "请先生成并保存该分组的视频提示词" }, { status: 409 });
@@ -149,7 +151,13 @@ export async function POST(request: Request) {
                         return NextResponse.json({ error: "视频设置与已保存项目不一致，请保存设置后重试" }, { status: 409 });
                     }
                     prompt = group.videoPrompt;
-                    workflowDuration = 15;
+                    if (fixedRemake.projectPrefix === "remake-person-") {
+                        remakePersonTiming = remakePersonGroupTiming(project, group.id);
+                        const timingError = remakePersonPromptDurationError(prompt, remakePersonTiming);
+                        if (timingError) return NextResponse.json({ error: timingError }, { status: 409 });
+                        if (body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== remakePersonTiming!.requestSeconds) return NextResponse.json({ error: "生成时长与原视频分镜时间轴不一致，请刷新后重试" }, { status: 409 });
+                    }
+                    workflowDuration = remakePersonTiming?.requestSeconds ?? 15;
                 }
                 if (isOmniClothingRequest) {
                     if (!remakeProjectId.startsWith("omni-clothing-") || !remakeSlotId.startsWith("omni-clothing-video:")) return NextResponse.json({ error: "Omni 服装项目或片段标识不完整" }, { status: 400 });
@@ -198,12 +206,13 @@ export async function POST(request: Request) {
                 const huifengVideo = channel.advancedConfig?.protocol === "huifeng";
                 const parameters = {
                     ...requestedParameters,
-                    videoSeconds: huifengVideo
+                    videoSeconds: huifengVideo && !remakePersonTiming
                         ? workflowDuration ?? Number(body.config?.videoSeconds ?? requestedParameters.videoSeconds)
                         : geminiVideo
                         ? normalizeGeminiVideoDuration(requestedParameters.videoSeconds)
                         : resolveUpstreamVideoDuration(requestedParameters.videoSeconds, settings.generationDefaults.videoSeconds, {
                               durationRange: channel.advancedConfig?.durationRange,
+                              ...(remakePersonTiming ? { durationSeconds: channel.capabilityProfile?.durationSeconds } : {}),
                               minDurationSeconds: channel.capabilityProfile?.minDurationSeconds,
                               maxDurationSeconds: channel.capabilityProfile?.maxDurationSeconds,
                           }),
@@ -219,11 +228,12 @@ export async function POST(request: Request) {
                     }
                     if (isFrameRemakeRequest && parameters.videoSeconds !== workflowDuration) throw new Error("当前渠道的生成时长与分组预留不一致，请选择兼容模型");
                     if (isRemake15VideoRequest && parameters.videoSeconds !== 15) throw new Error("当前渠道不支持 15 秒复刻视频，请选择支持 15 秒的视频模型");
-                    if (workflowDuration && !(huifengVideo && channel.model === HUIFENG_OMNI_EDIT_MODEL) && parameters.videoSeconds !== workflowDuration) throw new Error(`当前渠道不支持本片段的 ${workflowDuration} 秒时长，请选择兼容的视频模型`);
+                    if (workflowDuration && !remakePersonTiming && !(huifengVideo && channel.model === HUIFENG_OMNI_EDIT_MODEL) && parameters.videoSeconds !== workflowDuration) throw new Error(`当前渠道不支持本片段的 ${workflowDuration} 秒时长，请选择兼容的视频模型`);
+                    if (remakePersonTiming && parameters.videoSeconds < remakePersonTiming.requestSeconds) throw new Error(`当前模型最长生成时长不足以覆盖本组 ${remakePersonTiming.durationMs / 1000} 秒，请选择支持更长时长的模型`);
                     assertCapabilityConstraints(channel.capabilityProfile, {
                         capability: "video",
                         referenceCount: references.filter((reference) => reference.type === "image").length,
-                        durationSeconds: huifengVideo ? parameters.videoSeconds : requestedParameters.videoSeconds === -1 ? undefined : requestedParameters.videoSeconds,
+                        durationSeconds: huifengVideo || remakePersonTiming ? parameters.videoSeconds : requestedParameters.videoSeconds === -1 ? undefined : requestedParameters.videoSeconds,
                         aspectRatio: requestedParameters.size,
                         resolution: requestedParameters.vquality,
                     });
@@ -280,6 +290,7 @@ export async function POST(request: Request) {
                         attempts,
                         ...(body.context || {}),
                         prompt,
+                        remakePersonTiming,
                     });
                     await linkStoredGenerationTask("video", localTask.id, body.context || {});
                 } else {

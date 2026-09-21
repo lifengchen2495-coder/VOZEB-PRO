@@ -118,6 +118,7 @@ async function completeVideoTask(task: VideoTask, resultUrl: string, origin: str
               cookie,
               internalHeaders: workerHeaders,
               requestedDurationSeconds: task.requestedDurationSeconds,
+              remakePersonTiming: task.remakePersonTiming,
               mimeType: "video/mp4",
               ownerUserId: task.userId,
               source: task.source,

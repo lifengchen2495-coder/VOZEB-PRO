@@ -1,5 +1,7 @@
 "use client";
 
+import { remakePersonGroupTiming, remakePersonTimings, remakePersonSeconds, remakePersonTimingKey, remakePersonPromptDurationError, remakePersonResultMatches, type RemakePersonTiming } from "@/lib/remake-person-timing";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Image, Input, Segmented, Select, Switch, Tag, Tooltip } from "antd";
 import { Check, Copy, Download, FileAudio, FileText, LoaderCircle, Play, RefreshCw, Save, Sparkles, Video, VolumeX } from "lucide-react";
@@ -61,9 +63,13 @@ export function RemakeProductionStage({
     const selectedVideoModel = project.modelSelection.video || config.videoModel || config.model;
     const videoSettings = normalizeRemakeVideoSettings(project.videoSettings);
     const videoConfig = useMemo(
-        () => remakeVideoRequestConfig(config, project.videoSettings, selectedVideoModel),
+        () => ({ ...config, ...normalizeRemakeVideoSettings(project.videoSettings), model: selectedVideoModel, videoModel: selectedVideoModel, size: "9:16" }),
         [config, project.videoSettings, selectedVideoModel],
     );
+    const timings = remakePersonTimings(project);
+    const sourceDuration = project.sourceVideo?.durationMs || timings[0]?.sourceDurationMs || 0;
+    const durationLabel = sourceDuration ? `${remakePersonSeconds(sourceDuration)} 秒` : "待解析";
+    const mergedReady = Boolean(project.mergedVideo?.url && sourceDuration && Math.abs((project.mergedVideo.durationMs || 0) - sourceDuration) < 70);
     const latestProjectRef = useRef(project);
     latestProjectRef.current = project;
     const activeTasksRef = useRef(new Map<string, AbortController>());
@@ -207,7 +213,7 @@ export function RemakeProductionStage({
                 if (controller.signal.aborted || latest?.videoGeneration.taskId !== task.id || latest.videoPrompt !== prompt) return;
                 emitGroupChange(groupId, { videoGeneration: { status: "completed", taskId: task.id, model: task.model, needsReview: false, result: videoAsset(stored, groupId), error: null } });
                 const saved = await saveVideoState(`分镜 ${groupId} 的视频已生成，但项目尚未保存，请重试保存`);
-                if (announce && saved) message.success(`分镜 ${groupId} 的 15 秒视频已生成`);
+                if (announce && saved) message.success(`分镜 ${groupId} 的视频已生成`);
             } catch (reason) {
                 if (controller.signal.aborted) return;
                 const latest = latestProjectRef.current.groups.find((group) => group.id === groupId);
@@ -255,14 +261,17 @@ export function RemakeProductionStage({
             const draft = instructionDraftsRef.current[groupId];
             if (draft !== undefined && draft.trim() !== (group.videoPromptInstructions || "")) return message.warning("请先保存生成指令并重新生成本组视频提示词");
             if (group.videoGeneration.needsReview && group.videoGeneration.taskId && group.videoGeneration.model) {
-                return waitForGroupVideo(groupId, group.videoPrompt, { id: group.videoGeneration.taskId, serverTaskId: group.videoGeneration.taskId, provider: "generation", pollPath: "server", model: group.videoGeneration.model, durationSeconds: 15 }, announce, true);
+                return waitForGroupVideo(groupId, group.videoPrompt, { id: group.videoGeneration.taskId, serverTaskId: group.videoGeneration.taskId, provider: "generation", pollPath: "server", model: group.videoGeneration.model, durationSeconds: remakePersonGroupTiming(current, groupId)?.requestSeconds }, announce, true);
             }
             const awaitingCreation = isVideoActive(group) && !group.videoGeneration.taskId;
             if (isVideoActive(group) && !awaitingCreation) return;
             if (!group.videoPrompt.trim()) return message.warning(`分镜 ${group.id} 的视频 Prompt 尚未生成`);
             if (group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !current.references.background?.url) return message.warning(`分镜 ${group.id} 的最终十二宫格或背景图缺失`);
             const model = current.modelSelection.video || selectedVideoModel;
-            const generationConfig = remakeVideoRequestConfig(config, current.videoSettings, model);
+            const timing = remakePersonGroupTiming(current, groupId);
+            const timingError = remakePersonPromptDurationError(group.videoPrompt, timing);
+            if (!timing || timingError) return message.warning(timingError);
+            const generationConfig = remakeVideoRequestConfig(config, current.videoSettings, model, timing.requestSeconds);
             if (isSeedanceFastModel(model) && generationConfig.vquality === "1080") return message.warning("当前 fast 模型不支持 1080p，请选择 720p 或 480p");
             if (!model || !isAiConfigReady(generationConfig, model)) {
                 openConfigDialog(true);
@@ -340,7 +349,7 @@ export function RemakeProductionStage({
                 void waitForGroupVideo(
                     group.id,
                     group.videoPrompt,
-                    { id: generation.taskId, serverTaskId: generation.taskId, provider: "generation", pollPath: "server", model: generation.model, durationSeconds: 15 },
+                    { id: generation.taskId, serverTaskId: generation.taskId, provider: "generation", pollPath: "server", model: generation.model, durationSeconds: remakePersonGroupTiming(latestProjectRef.current, group.id)?.requestSeconds },
                     false,
                 );
             } else if ((generation.status === "queued" || generation.status === "running") && !deferredGroupsRef.current.has(group.id)) {
@@ -398,7 +407,7 @@ export function RemakeProductionStage({
             const current = getCurrentProject?.() || latestProjectRef.current;
             const saved = await mergeRemakeVideos(current.id, current.revision);
             onMerged(saved);
-            message.success("四段视频已合并为 1 分钟成片");
+            message.success("四组视频已按原视频时长合并");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "视频合并失败");
         } finally {
@@ -428,7 +437,7 @@ export function RemakeProductionStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 03</div>
                         <h2 className="mt-1 text-lg font-semibold">Prompt 与独立视频</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">48 个分镜 · 4 条 15 秒竖屏视频</p>
+                        <p className="mt-1 text-sm text-muted-foreground">48 个分镜 · 4 组竖屏视频 · 总时长 {durationLabel}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-end gap-2">
                         <ModelControl label="Prompt 文本模型">
@@ -440,8 +449,8 @@ export function RemakeProductionStage({
                         <Button icon={<Download className="size-4" />} loading={exporting} disabled={!productionReady} onClick={() => void exportBundle()}>
                             下载生产包
                         </Button>
-                        <Button loading={merging} disabled={!productionReady || sharedBusy} onClick={() => void mergeVideos()}>合并 1 分钟视频</Button>
-                        {project.mergedVideo?.url ? <Button href={`/api/remake-person/projects/${encodeURIComponent(project.id)}/merge`} icon={<Download className="size-4" />}>下载 1 分钟成片</Button> : null}
+                        <Button loading={merging} disabled={!productionReady || sharedBusy} onClick={() => void mergeVideos()}>合并视频</Button>
+                        {mergedReady ? <Button href={`/api/remake-person/projects/${encodeURIComponent(project.id)}/merge`} icon={<Download className="size-4" />}>下载成片</Button> : null}
                         <Button type="primary" icon={<Sparkles className="size-4" />} loading={building} disabled={sharedBusy || !prerequisites.ready} onClick={() => void buildPrompts()}>
                             {promptsReady ? "重新生成视频 Prompt" : "生成视频 Prompt"}
                         </Button>
@@ -457,12 +466,12 @@ export function RemakeProductionStage({
                                 { value: "1080", label: "1080p", disabled: isSeedanceFastModel(selectedVideoModel) },
                             ]} onChange={(vquality) => changeVideoSettings({ vquality })} />
                         </ModelControl>
-                        <ModelControl label="每段时长"><Input className="!w-28" value="15 秒（固定）" readOnly aria-label="每段视频时长" /></ModelControl>
+                        <ModelControl label="每段时长"><Input className="!w-28" value="按原分镜时间" readOnly aria-label="每段视频时长" /></ModelControl>
                         <ModelControl label="画面比例"><Input className="!w-32" value="9:16 竖屏（固定）" readOnly aria-label="视频画面比例" /></ModelControl>
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="生成声音" disabled={sharedBusy} checked={videoSettings.videoGenerateAudio === "true"} onChange={(checked) => changeVideoSettings({ videoGenerateAudio: checked ? "true" : "false" })} />生成声音</label>
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="添加水印" disabled={sharedBusy} checked={videoSettings.videoWatermark === "true"} onChange={(checked) => changeVideoSettings({ videoWatermark: checked ? "true" : "false" })} />添加水印</label>
                     </div>
-                    <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成四组视频。每组固定 15 秒、9:16；合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
+                    <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成四组视频。每组时长按原分镜时间计算，总时长与原视频一致，比例 9:16；合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
                 </section>
 
                 <div className="grid gap-4 border-b border-border py-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -517,7 +526,7 @@ export function RemakeProductionStage({
 
                     <section className="min-w-0" aria-label="Seedance 视频提示词与视频">
                         <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><Video className="size-4 text-muted-foreground" />15 秒视频提示词与成片</div>
+                            <div className="flex min-w-0 items-center gap-2 text-sm font-semibold"><Video className="size-4 text-muted-foreground" />分组视频提示词与成片</div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <Button size="small" icon={<Copy className="size-3.5" />} disabled={!promptsReady} onClick={() => void copyPrompt(project.groups.map((group) => `=== 分镜 ${group.id} ===\n\n${group.videoPrompt}`).join("\n\n"), "视频 Prompt 已复制")}>复制视频 Prompt</Button>
                             </div>
@@ -528,6 +537,7 @@ export function RemakeProductionStage({
                                     key={group.id}
                                     group={group}
                                     resolution={videoSettings.vquality}
+                                    timing={remakePersonGroupTiming(project, group.id)}
                                     editingDisabled={sharedBusy || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url}
                                     onPromptChange={(videoPrompt) => {
                                         if (sharedBusy) return;
@@ -559,10 +569,10 @@ export function RemakeProductionStage({
                     </section>
                 </div>
 
-                {project.mergedVideo?.url ? <section className="mb-4 rounded-lg border border-border p-3" aria-label="1 分钟换人不换品成片"><h3 className="mb-3 text-sm font-semibold">1 分钟换人不换品成片</h3><video className="mx-auto max-h-[560px] max-w-full rounded-md bg-black" src={browserReadableMediaUrl(project.mergedVideo.url)} controls playsInline preload="metadata" /></section> : null}
+                {mergedReady ? <section className="mb-4 rounded-lg border border-border p-3" aria-label="换人不换品成片"><h3 className="mb-3 text-sm font-semibold">换人不换品成片</h3><video className="mx-auto max-h-[560px] max-w-full rounded-md bg-black" src={browserReadableMediaUrl(project.mergedVideo!.url)} controls playsInline preload="metadata" /></section> : null}
                 <div className="flex items-center gap-2 border-t border-border pt-4 text-xs text-muted-foreground">
                     {productionReady ? <Check className="size-4 text-emerald-600" /> : <Sparkles className="size-4" />}
-                    {productionReady ? "4 条视频及生产素材已就绪" : "生成 4 条 15 秒视频后，可下载视频及完整生产包"}
+                    {productionReady ? "4 条视频及生产素材已就绪" : "按原片时长生成 4 组视频后，可下载视频及完整生产包"}
                 </div>
             </div>
         </section>
@@ -573,9 +583,10 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, resolution, editingDisabled, onPromptChange, onSavePrompt, building, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
+function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptChange, onSavePrompt, building, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
     group: RemakeRangeGroup;
     resolution: string;
+    timing?: RemakePersonTiming;
     editingDisabled: boolean;
     onPromptChange: (prompt: string) => void;
     onSavePrompt: () => Promise<void>;
@@ -592,6 +603,8 @@ function VideoGroupCard({ group, resolution, editingDisabled, onPromptChange, on
     onCopy: (text: string) => void;
 }) {
     const generation = group.videoGeneration;
+    const timingError = group.videoPrompt ? remakePersonPromptDurationError(group.videoPrompt, timing) : "";
+    const staleVideo = generation.status === "completed" && !remakePersonResultMatches(timing, generation.result);
     const active = isVideoActive(group) && !generation.needsReview;
     const videoUrl = generation.result?.url ? browserReadableMediaUrl(generation.result.url) : "";
     return (
@@ -599,7 +612,7 @@ function VideoGroupCard({ group, resolution, editingDisabled, onPromptChange, on
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">第 {group.ordinal} 条 · 分镜 {group.id}</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">15 秒 · 12 个连续镜头 · 9:16 · {resolution}p · 独立文件</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · 12 个连续镜头 · 9:16 · {resolution}p · 独立文件</p>
                 </div>
                 <div className="flex max-w-full flex-wrap items-center gap-1.5">
                     <VideoGenerationTag generation={generation} />
@@ -628,7 +641,7 @@ function VideoGroupCard({ group, resolution, editingDisabled, onPromptChange, on
                 </div>
                 {building && !group.videoPrompt ? <ProductionLoading text={`正在生成分镜 ${group.id} Prompt`} /> : (
                     <div className="min-w-0 space-y-2">
-                        <Input.TextArea aria-label={`分镜 ${group.id} 视频 Prompt`} disabled={editingDisabled} value={group.videoPrompt} onChange={(event) => onPromptChange(event.target.value)} maxLength={100_000} placeholder="可直接编辑或粘贴完整的 15 秒视频提示词。" autoSize={{ minRows: 9, maxRows: 20 }} />
+                        <Input.TextArea aria-label={`分镜 ${group.id} 视频 Prompt`} disabled={editingDisabled} value={group.videoPrompt} onChange={(event) => onPromptChange(event.target.value)} maxLength={100_000} placeholder="可直接编辑或粘贴完整的视频提示词，时长须与本组原分镜一致。" autoSize={{ minRows: 9, maxRows: 20 }} />
                         <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="text-xs text-muted-foreground">可直接编辑，修改自动保存；生成视频使用已保存内容。</span>
                             <Button size="small" icon={<Save className="size-3.5" />} disabled={editingDisabled || !group.videoPrompt.trim()} onClick={() => void onSavePrompt()}>保存 Prompt</Button>
@@ -636,12 +649,13 @@ function VideoGroupCard({ group, resolution, editingDisabled, onPromptChange, on
                     </div>
                 )}
             </div>
+            {timingError || staleVideo ? <div role="alert" className="border-t border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">{timingError || "此视频使用了旧时长，请重新生成本组视频。"}</div> : null}
             {generation.error ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{generation.error}</div> : null}
             {active ? <div className="border-t border-border px-3 py-3"><ProductionLoading text="视频正在后台生成，刷新页面会继续恢复原任务" /></div> : null}
             {videoUrl ? (
                 <div className="border-t border-border p-3">
                     <video className="max-h-[520px] w-full rounded-md bg-black" src={videoUrl} controls playsInline preload="metadata" />
-                    <a className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:underline dark:text-cyan-300" href={originalMediaDownloadUrl(generation.result!.url)} download={mediaDownloadFileName(`remake-${group.id}-15s`, generation.result?.mimeType || "video/mp4", generation.result!.url)}>
+                    <a className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:underline dark:text-cyan-300" href={originalMediaDownloadUrl(generation.result!.url)} download={mediaDownloadFileName(`remake-${group.id}-${remakePersonSeconds(timing?.durationMs || generation.result?.durationMs || 0)}s`, generation.result?.mimeType || "video/mp4", generation.result!.url)}>
                         <Download className="size-4" />下载第 {group.ordinal} 条视频
                     </a>
                 </div>
@@ -669,6 +683,7 @@ function productionPrerequisites(project: RemakeProject) {
     const missing: string[] = [];
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     if (!project.sourceVideo?.url || project.analysis.status !== "completed" || project.analysis.mode !== "video" || project.frames.length !== 48 || project.frames.some((frame) => frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("完整视频理解与 48 镜头解析");
+    if (remakePersonTimings(project).length !== 4) missing.push("连续完整的原视频时间轴");
     if (!isRemakeCopyPlanReady(project)) missing.push(noNarration ? "无口播分镜预处理" : "16 个语义文案区间");
     if (!project.references.background) missing.push("背景图");
     if (!noNarration && !project.references.audio) missing.push("原视频音频");
@@ -686,7 +701,7 @@ function videoAsset(stored: UploadedFile, groupId: string): RemakeMediaAsset {
         url: stored.serverUrl || stored.url,
         storageKey: stored.storageKey,
         mimeType: stored.mimeType || "video/mp4",
-        originalName: `remake-${groupId}-15s.mp4`,
+        originalName: `remake-${groupId}-${remakePersonSeconds(stored.durationMs || 0)}s.mp4`,
         bytes: stored.bytes,
         width: stored.width,
         height: stored.height,
@@ -696,7 +711,7 @@ function videoAsset(stored: UploadedFile, groupId: string): RemakeMediaAsset {
 }
 
 function remakeVideoClientRequestId(project: RemakeProject, group: RemakeRangeGroup, model: string) {
-    const input = [project.id, group.id, group.videoPromptInstructions || "", model, group.videoPrompt, group.imageGeneration.result?.storageKey || group.imageGeneration.result?.url, project.references.background?.storageKey || project.references.background?.url, project.references.character?.storageKey || project.references.character?.url, project.references.audio?.storageKey || project.references.audio?.url, project.references.product?.storageKey || project.references.product?.url].join("\n");
+    const input = [project.id, group.id, remakePersonTimingKey(remakePersonGroupTiming(project, group.id)), group.videoPromptInstructions || "", model, group.videoPrompt, group.imageGeneration.result?.storageKey || group.imageGeneration.result?.url, project.references.background?.storageKey || project.references.background?.url, project.references.character?.storageKey || project.references.character?.url, project.references.audio?.storageKey || project.references.audio?.url, project.references.product?.storageKey || project.references.product?.url].join("\n");
     const settings = remakeVideoSettingsKey(project.videoSettings);
     return `remake-person-video:${group.id}:${stableTextHash(settings ? `${input}\n${settings}` : input)}`;
 }

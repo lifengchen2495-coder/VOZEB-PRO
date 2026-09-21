@@ -26,8 +26,8 @@ export function remakeVideoSettingsKey(value: unknown) {
     return normalized === JSON.stringify(DEFAULT_REMAKE_VIDEO_SETTINGS) ? "" : normalized;
 }
 
-export function remakeVideoRequestConfig(config: AiConfig, settings: unknown, model: string): AiConfig {
-    return { ...config, ...normalizeRemakeVideoSettings(settings), model, videoModel: model, size: "9:16", videoSeconds: "15" };
+export function remakeVideoRequestConfig(config: AiConfig, settings: unknown, model: string, requestSeconds: number): AiConfig {
+    return { ...config, ...normalizeRemakeVideoSettings(settings), model, videoModel: model, size: "9:16", videoSeconds: String(requestSeconds) };
 }
 
 export function remakeVideoOutputDimensions(settings: unknown) {

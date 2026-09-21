@@ -1,3 +1,5 @@
+import type { RemakePersonTiming } from "@/lib/remake-person-timing";
+import { trimRemakePersonVideo } from "./remake-person-video-timing";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +21,7 @@ export async function normalizeVideoResult(input: {
     cookie?: string;
     internalHeaders?: HeadersInit;
     requestedDurationSeconds?: number;
+    remakePersonTiming?: RemakePersonTiming;
     mimeType?: string;
     ownerUserId: string;
     source?: string;
@@ -32,9 +35,11 @@ export async function normalizeVideoResult(input: {
     try {
         const downloaded = await downloadMediaToFile(input.url, sourcePath, { origin: input.origin, cookie: input.cookie, internalHeaders: input.internalHeaders, maxBytes: MAX_VIDEO_BYTES });
         const requestedDuration = normalizeRequestedDuration(input.requestedDurationSeconds);
-        const mimeType = downloaded.mimeType.startsWith("video/") ? downloaded.mimeType : input.mimeType || "video/mp4";
+        const mimeType = input.remakePersonTiming ? "video/mp4" : downloaded.mimeType.startsWith("video/") ? downloaded.mimeType : input.mimeType || "video/mp4";
 
-        const asset = await writeReferenceMediaFile(sourcePath, "video", mimeType, true, {
+        const outputPath = input.remakePersonTiming ? join(workdir, "timed-video.mp4") : sourcePath;
+        const durationMs = input.remakePersonTiming ? await trimRemakePersonVideo(sourcePath, outputPath, input.remakePersonTiming) : requestedDuration ? requestedDuration * 1000 : undefined;
+        const asset = await writeReferenceMediaFile(outputPath, "video", mimeType, true, {
             ownerUserId: input.ownerUserId,
             source: input.source || "video-task",
             conversationId: input.conversationId,
@@ -45,7 +50,7 @@ export async function normalizeVideoResult(input: {
         return {
             url: asset.url || `/api/reference-assets/${asset.token}`,
             mimeType,
-            ...(requestedDuration ? { durationMs: requestedDuration * 1000 } : {}),
+            ...(durationMs ? { durationMs } : {}),
         } satisfies NormalizedVideoResult;
     } finally {
         await rm(workdir, { recursive: true, force: true }).catch(() => undefined);

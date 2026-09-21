@@ -52,6 +52,7 @@ export type RemakeSourceVideo = {
 
 export type RemakeMediaAsset = {
     url: string;
+    durationMs?: number;
     storageKey?: string;
     mimeType: string;
     originalName?: string;
@@ -297,6 +298,7 @@ export function normalizeRemakeMediaAsset(value: unknown): RemakeMediaAsset | un
         mimeType: cleanText(firstDefined(source.mimeType, source.type), 120) || "application/octet-stream",
         originalName: cleanText(firstDefined(source.originalName, source.name), 300) || undefined,
         bytes: optionalPositiveInteger(firstDefined(source.bytes, source.size)),
+        durationMs: optionalPositiveInteger(source.durationMs),
         width: optionalPositiveInteger(source.width),
         height: optionalPositiveInteger(source.height),
     };

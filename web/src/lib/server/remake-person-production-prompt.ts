@@ -1,3 +1,4 @@
+import { remakePersonTimings, remakePersonPromptDurationError, remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake-person-feishu-prompts";
 import { remakeVideoPromptSystemInstructions } from "@/lib/remake-person-video-prompt-instructions";
 
@@ -12,6 +13,8 @@ export type RemakeProductionCopyBlock = {
 };
 
 export type RemakeProductionFrame = {
+    time: number;
+    endTime: number;
     ordinal: number;
     subtitle: string;
     sellingPoint: string;
@@ -67,6 +70,7 @@ export type RemakeProductionPromptInput = {
     hasNarration: boolean;
     voice?: "female" | "male";
     frames: RemakeProductionFrame[];
+    timings?: RemakePersonTiming[];
     copyBlocks: RemakeProductionCopyBlock[];
     referenceAssets: RemakeProductionReferenceContext;
     contactSheets: RemakeProductionContactSheetContext[];
@@ -89,10 +93,12 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
     const firstBlock = (groupOrdinal - 1) * REMAKE_PRODUCTION_BLOCKS_PER_GROUP + 1;
     const blocks = input.copyBlocks.filter((block) => block.ordinal >= firstBlock && block.ordinal < firstBlock + REMAKE_PRODUCTION_BLOCKS_PER_GROUP);
     if (blocks.length !== REMAKE_PRODUCTION_BLOCKS_PER_GROUP) throw new Error(`分镜 ${groupId} 缺少文案预处理区间`);
+    const timing = (input.timings || remakePersonTimings(input)).find((item) => item.groupId === groupId);
+    if (!timing) throw new Error("原视频分镜时间轴不完整，请重新分析");
     return [
         {
             role: "system",
-            content: remakeVideoPromptSystemInstructions(groupId, videoPromptInstructions, input.hasNarration, input.voice),
+            content: remakeVideoPromptSystemInstructions(groupId, videoPromptInstructions, input.hasNarration, input.voice, timing),
         },
         {
             role: "user",
@@ -101,6 +107,14 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
                     ...input.contactSheets.find((sheet) => sheet.groupOrdinal === groupOrdinal)?.redrawnContactSheet,
                     visualBoardOrdinal: 2,
                     ...input.visualBoards[1]?.layout.find((item) => item.groupOrdinal === groupOrdinal),
+                },
+                "本组时间轴": {
+                    原视频总时长秒: remakePersonSeconds(timing.sourceDurationMs),
+                    原视频起点秒: remakePersonSeconds(timing.startMs),
+                    原视频终点秒: remakePersonSeconds(timing.endMs),
+                    本组视频时长秒: remakePersonSeconds(timing.durationMs),
+                    要求: "按本组实际时长编排全部画面与口播，在本组终点前完成。时间从本组 0 秒开始；若生成接口要求更长时长，仅在末尾保持结束画面，不在额外尾段安排内容。",
+                    分镜: input.frames.filter((frame) => frame.ordinal >= Number(groupId.split("-")[0]) && frame.ordinal <= Number(groupId.split("-")[1])).map((frame) => ({ 分镜: frame.ordinal, 起点秒: remakePersonSeconds(Math.round(frame.time * 1000) - timing.startMs), 终点秒: remakePersonSeconds(Math.round(frame.endTime * 1000) - timing.startMs) })),
                 },
                 "48镜头解析": input.frames,
                 "文案预处理": {
@@ -120,7 +134,7 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
     ];
 }
 
-export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProductionPromptInput, "copyBlocks" | "hasNarration" | "voice" | "referenceAssets">, groupId: RemakeProductionGroupId) {
+export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProductionPromptInput, "copyBlocks" | "hasNarration" | "voice" | "referenceAssets" | "timings" | "frames">, groupId: RemakeProductionGroupId) {
     if (value.includes("@人物图") && !input.referenceAssets.character.available) throw new Error("未提供人物图时不能引用人物素材");
     if (value.includes("@人物补充") && !input.referenceAssets.characterSupplement.available) throw new Error("未提供人物补充时不能引用补充素材");
     if (!value.trim() || value.length > 100_000) throw new Error(`分镜 ${groupId} 的视频提示词为空或超过长度上限`);
@@ -129,7 +143,10 @@ export function assertRemakeVideoPrompt(value: string, input: Pick<RemakeProduct
     if (intervals.length !== 4 || intervals.some((match, index) => Number(match[1]) !== firstFrame + index * 3 || Number(match[2]) !== firstFrame + index * 3 + 2)) {
         throw new Error(`分镜 ${groupId} 的视频提示词未包含对应的四个连续三帧区间`);
     }
-    if (!/15\s*秒/u.test(value) || !value.includes("@十二宫格图") || !value.includes("禁止画面出现字幕")) {
+    const timing = (input.timings || remakePersonTimings(input)).find((item) => item.groupId === groupId);
+    const durationError = remakePersonPromptDurationError(value, timing);
+    if (durationError) throw new Error(durationError);
+    if (!timing || !value.replace(/\s/gu, "").includes(`${remakePersonSeconds(timing.durationMs)}秒`) || !value.includes("@十二宫格图") || !value.includes("禁止画面出现字幕")) {
         throw new Error(`分镜 ${groupId} 的视频提示词缺少必要的时长、十二宫格或禁字幕要求`);
     }
     const blocks = input.copyBlocks.filter((block) => block.frameOrdinals[0] >= firstFrame && block.frameOrdinals[2] <= firstFrame + 11);
@@ -171,7 +188,7 @@ export function renderRemakeCopyReport(input: RemakeProductionCopyReportInput) {
         const firstFrame = groupIndex * 12 + 1;
         const lastFrame = firstFrame + 11;
         return [
-            `=== 第${chineseOrdinal(groupIndex + 1)}部分：分镜${firstFrame}-${lastFrame}（第${chineseOrdinal(groupIndex + 1)}张十二宫格，${groupIndex * 15}-${(groupIndex + 1) * 15}秒） ===`,
+            `=== 第${chineseOrdinal(groupIndex + 1)}部分：分镜${firstFrame}-${lastFrame}（第${chineseOrdinal(groupIndex + 1)}张十二宫格） ===`,
             "",
             "| 分镜区间 | 字幕 |",
             "|---|---|",

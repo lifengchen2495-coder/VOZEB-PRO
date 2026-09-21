@@ -1,3 +1,4 @@
+import { remakePersonGroupTiming, remakePersonResultMatches } from "@/lib/remake-person-timing";
 import type { ImageGenerationResult } from "@/services/api/image";
 import { remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-person-image-prompt";
 import { parseServerMediaUrl } from "@/services/server-media-storage";
@@ -58,8 +59,8 @@ export function remakeImagesReady(project: Pick<RemakeProject, "groups">) {
     return project.groups.length === 4 && project.groups.every((group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
 }
 
-export function remakeVideosReady(project: Pick<RemakeProject, "groups">) {
-    return project.groups.length === 4 && project.groups.every((group) => group.videoGeneration.status === "completed" && group.videoGeneration.result?.url);
+export function remakeVideosReady(project: Pick<RemakeProject, "groups" | "frames" | "sourceVideo">) {
+    return project.groups.length === 4 && project.groups.every((group) => group.videoGeneration.status === "completed" && group.videoGeneration.result?.url && remakePersonResultMatches(remakePersonGroupTiming(project, group.id), group.videoGeneration.result));
 }
 
 export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo" | "sourceCopy" | "productInfo" | "analysis" | "frames" | "copyBlocks" | "references" | "groups" | "copy" | "voice">) {

@@ -1,3 +1,4 @@
+import { remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake-person-feishu-prompts";
 
 export const REMAKE_VIDEO_PROMPT_INSTRUCTIONS_LIMIT = 50_000;
@@ -11,9 +12,10 @@ export function remakeVideoPromptInstructions(groupId: string, _value?: string):
     return REMAKE_FEISHU_VIDEO_PROMPTS[groupId as keyof typeof REMAKE_FEISHU_VIDEO_PROMPTS] || "";
 }
 
-export function remakeVideoPromptSystemInstructions(groupId: string, _value: string | undefined, _hasNarration: boolean, _voice?: "female" | "male"): string {
+export function remakeVideoPromptSystemInstructions(groupId: string, _value: string | undefined, _hasNarration: boolean, _voice?: "female" | "male", timing?: RemakePersonTiming): string {
     void _value;
     void _hasNarration;
     void _voice;
-    return remakeVideoPromptInstructions(groupId);
+    const original = remakeVideoPromptInstructions(groupId);
+    return timing ? original.replace(/15\s*秒/gu, `${remakePersonSeconds(timing.durationMs)}秒`) : original;
 }

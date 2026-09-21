@@ -52,6 +52,7 @@ export function remakeProductionInputSnapshot(project: RemakeProductionInputProj
     const selected = groupIds === undefined ? undefined : new Set(groupIds);
     return JSON.stringify({
         promptVersion: REMAKE_PERSON_PROMPT_VERSION,
+        timingVersion: 1,
         id: project.id,
         sourceVideo: { asset: mediaInput(project.sourceVideo), durationMs: project.sourceVideo?.durationMs ?? null },
         sourceCopy: project.sourceCopy,

@@ -1,3 +1,4 @@
+import { remakePersonGroupTiming, remakePersonTaskTimingMatches, remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { invalidateRemakeMergedVideo } from "./remake-person-merge-contract";
 import { createHash } from "node:crypto";
 import { normalizeRemakeVideoSettings, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
@@ -192,7 +193,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
         : referencesChanged || imageModelChanged || productInfoChanged || hasOwn(input, "frames")
           ? invalidateRemakeImages(current.groups)
           : hasOwn(input, "groups")
-            ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, modelSelection, productInfo, videoSettings: normalizeRemakeVideoSettings(current.videoSettings) })
+            ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, sourceVideo, modelSelection, productInfo, videoSettings: normalizeRemakeVideoSettings(current.videoSettings) })
             : current.groups;
     // 指令属于项目设置；上游重置也保留，修改时仅清对应组的视频下游。
     const instructionGroups = normalizeRemakeRangeGroups(input.groups, current.groups);
@@ -481,6 +482,7 @@ async function normalizeEditableRemakeGroups(input: {
     projectId: string;
     value: unknown;
     current: RemakeRangeGroup[];
+    sourceVideo?: RemakeSourceVideo;
     references: RemakeReferences;
     frames: RemakeFrame[];
     modelSelection: RemakeModelSelection;
@@ -515,6 +517,7 @@ async function normalizeEditableRemakeGroups(input: {
                           requested: group.videoGeneration,
                           selectedModel: input.modelSelection.video,
                           videoSettings: input.videoSettings,
+                          timing: remakePersonGroupTiming(input, group.id),
                       })
                     : { status: "idle" as const };
             return { ...expectedGroup, imageGeneration, videoPrompt: stablePrompt, videoGeneration };
@@ -619,6 +622,7 @@ async function authoritativeRemakeVideoGeneration(input: {
     projectId: string;
     group: RemakeRangeGroup;
     requested: RemakeRangeGroup["videoGeneration"];
+    timing?: RemakePersonTiming;
     selectedModel: string;
     videoSettings: RemakeVideoSettings;
 }): Promise<RemakeRangeGroup["videoGeneration"]> {
@@ -635,7 +639,6 @@ async function authoritativeRemakeVideoGeneration(input: {
     if ((input.selectedModel && model !== input.selectedModel) || (input.requested.model && model !== input.requested.model)) {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频模型与当前任务不一致`, 409);
     }
-    if (task.requestedDurationSeconds !== 15) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务必须为 15 秒`, 409);
     if (remakeVideoSettingsKey(task.requestedVideoSettings) !== remakeVideoSettingsKey(input.videoSettings)) {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频设置与当前任务不一致，请重新生成`, 409);
     }
@@ -648,7 +651,10 @@ async function authoritativeRemakeVideoGeneration(input: {
     if (task.status !== "success") throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务状态无效`, 409);
     const result = normalizeRemakeMediaAsset(task.result);
     if (!result?.url) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务没有持久化结果`, 409);
-    return { status: "completed", taskId: task.id, model, attemptNo, result: { ...result, originalName: `remake-person-${input.group.id}-15s.mp4` } };
+    if (!input.timing || !remakePersonTaskTimingMatches(input.timing, task) || Math.abs((result.durationMs || 0) - input.timing.durationMs) > 70) {
+        return { status: "error", taskId: task.id, model, attemptNo, error: "此视频使用了旧时长，请按原片时长重新生成 Prompt 和视频" };
+    }
+    return { status: "completed", taskId: task.id, model, attemptNo, result: { ...result, originalName: `remake-person-${input.group.id}-${remakePersonSeconds(input.timing.durationMs)}s.mp4` } };
 }
 
 function deriveRemakePipeline(input: {

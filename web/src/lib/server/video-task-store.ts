@@ -1,3 +1,4 @@
+import type { RemakePersonTiming } from "@/lib/remake-person-timing";
 import { randomUUID } from "node:crypto";
 
 import { createStoredGenerationTask, getStoredGenerationTask, mutateStoredGenerationTask, touchStoredGenerationTask, transitionStoredGenerationTask, type GenerationTaskContext } from "@/lib/server/generation-task-store";
@@ -19,6 +20,7 @@ export type VideoTask = GenerationTaskContext & {
     config: SystemGenerationChannelConfig;
     upstream: { id: string; provider: "openai" | "seedance" | "generation"; model: string; pollPath?: string; queryPath?: string; resultUrl?: string; pointsCost?: number; pointsUnits?: number; pointsRecordId?: string; refunded?: boolean };
     requestedDurationSeconds?: number;
+    remakePersonTiming?: RemakePersonTiming;
     requestedVideoSettings?: { vquality: string; videoGenerateAudio: boolean; videoWatermark: boolean };
     source?: string;
     prompt?: string;

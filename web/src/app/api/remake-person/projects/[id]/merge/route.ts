@@ -26,7 +26,7 @@ export async function POST(request: Request, context: Context) {
     return streamLongOperation(request, async () => {
         try {
             const project = await mergeRemakeVideosForUser({ userId: user.id, projectId: (await context.params).id, expectedRevision: revision, origin: resolveInternalOrigin(new URL(request.url).origin), cookie: request.headers.get("cookie") || "" });
-            return NextResponse.json({ code: 0, msg: "1 分钟视频已合并", data: { project } });
+            return NextResponse.json({ code: 0, msg: "视频已按原片时长合并", data: { project } });
         } catch (error) {
             const status = error instanceof RemakeProjectServiceError ? error.status : 502;
             return NextResponse.json({ code: status, msg: toSafeGenerationErrorMessage(error, "视频合并失败，请稍后重试"), data: null }, { status });
@@ -43,7 +43,7 @@ export async function GET(request: Request, context: Context) {
         if (!project.mergedVideo.url.startsWith("/api/generation-log-assets/")) throw new RemakeProjectServiceError("合并视频地址无效", 409);
         const response = await fetchInternalApi(new URL(project.mergedVideo.url, resolveInternalOrigin(new URL(request.url).origin)), { headers: { cookie: request.headers.get("cookie") || "" }, signal: AbortSignal.timeout(120_000) });
         if (!response.ok || !response.body) throw new RemakeProjectServiceError("合并视频暂时不可读取，请重新合并", 404);
-        return new Response(response.body, { headers: { "content-type": "video/mp4", "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`${project.title}-1分钟.mp4`)}`, "cache-control": "private, no-store" } });
+        return new Response(response.body, { headers: { "content-type": "video/mp4", "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(project.mergedVideo.originalName || `${project.title}-成片.mp4`)}`, "cache-control": "private, no-store" } });
     } catch (error) {
         if (error instanceof RemakeProjectServiceError) return NextResponse.json({ code: error.status, msg: error.message, data: null }, { status: error.status });
         throw error;

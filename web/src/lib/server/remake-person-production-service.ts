@@ -1,3 +1,4 @@
+import { remakePersonTimings } from "@/lib/remake-person-timing";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
@@ -85,10 +86,13 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
 
     const promptInput: RemakeProductionPromptInput = {
         title: project.title,
+        timings: remakePersonTimings(project),
         productInfo: project.productInfo,
         hasNarration,
         ...(hasNarration ? { voice: project.voice as "female" | "male" } : {}),
         frames: project.frames.map((frame) => ({
+            time: frame.time,
+            endTime: frame.endTime,
             ordinal: frame.ordinal,
             subtitle: frame.subtitle,
             sellingPoint: frame.sellingPoint,
