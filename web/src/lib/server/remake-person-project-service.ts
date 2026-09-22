@@ -593,14 +593,14 @@ function authoritativeImageAsset(task: ImageTask, groupId: string): RemakeMediaA
     };
 }
 
-function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[]) {
-    const expected = remakeStoryboardPromptReferences({ frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), character: references.character, background: references.background, product: references.product }).map((reference) => reference.asset.url!);
+function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, _frames: RemakeFrame[]) {
+    const expected = remakeStoryboardPromptReferences({ contactSheet: group.sourceContactSheet, character: references.character, background: references.background, product: references.product }).map((reference) => reference.asset.url!);
     const actual = task.references.map((reference) => reference.serverUrl || reference.remoteUrl || reference.url || reference.dataUrl);
     return actual.length === expected.length && expected.every((value, index) => mediaIdentity(value) === mediaIdentity(actual[index]));
 }
 
 function canonicalRemakeImagePrompt(_stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[], productInfo: string) {
-    return group.sourceContactSheet?.url && references.background?.url ? remakeStoryboardPrompt(group.id, frames, productInfo, { frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl })), character: references.character, background: references.background, product: references.product }) : "";
+    return group.sourceContactSheet?.url && references.background?.url ? remakeStoryboardPrompt(group.id, frames, productInfo, { contactSheet: group.sourceContactSheet, character: references.character, background: references.background, product: references.product }) : "";
 }
 
 function invalidateRemakeImages(groups: RemakeRangeGroup[]) {

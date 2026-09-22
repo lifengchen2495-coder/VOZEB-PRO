@@ -8,17 +8,17 @@ import type { ReferenceAudio } from "@/types/media";
 import { isRemakeNoNarrationCopy, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets } from "../remake-contract";
 
 export function buildRemakeImagePrompt(project: Pick<RemakeProject, "frames" | "productInfo" | "references">, group: RemakeRangeGroup) {
-    const input = remakeGroupImageInputs(group, project.references, project.frames);
-    const ready = input.background?.url && input.frames.length === 12 && input.frames.every((frame) => frame.url);
+    const input = remakeGroupImageInputs(group, project.references);
+    const ready = input.contactSheet?.url && input.background?.url;
     return remakeStoryboardPrompt(group.id, project.frames, project.productInfo, ready ? input : undefined);
 }
 
-export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets, frames: RemakeProject["frames"]): ReferenceImage[] {
-    return remakeStoryboardPromptReferences<RemakeMediaAsset>(remakeGroupImageInputs(group, references, frames)).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
+export function remakeGroupReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {
+    return remakeStoryboardPromptReferences<RemakeMediaAsset>(remakeGroupImageInputs(group, references)).map(({ key, label, asset }) => mediaAssetReferenceImage(`${group.id}-${key}`, label, asset));
 }
 
-function remakeGroupImageInputs(group: RemakeRangeGroup, references: RemakeReferenceAssets, frames: RemakeProject["frames"]) {
-    return { frames: frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => ({ url: frame.frameUrl, mimeType: "image/jpeg" })), character: references.character, background: references.background, product: references.product };
+function remakeGroupImageInputs(group: RemakeRangeGroup, references: RemakeReferenceAssets) {
+    return { contactSheet: group.sourceContactSheet, character: references.character, background: references.background, product: references.product };
 }
 
 export function remakeVideoReferenceImages(group: RemakeRangeGroup, references: RemakeReferenceAssets): ReferenceImage[] {

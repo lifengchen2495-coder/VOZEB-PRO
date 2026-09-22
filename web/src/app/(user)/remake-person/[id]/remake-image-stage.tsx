@@ -218,7 +218,7 @@ export function RemakeImageStage({
             }
             if (!current.modelSelection.image) emitModelChange(model);
             const prompt = buildRemakeImagePrompt(current, group);
-            const references = remakeGroupReferenceImages(group, current.references, current.frames);
+            const references = remakeGroupReferenceImages(group, current.references);
             const inputVersion = remakeGroupInputVersion(group, current.references, stage, current.productInfo);
             const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage, { model, prompt, quality: imageConfig.quality });
             const previousAttempt = generation.attemptNo ?? 0;
