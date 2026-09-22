@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { remakePersonTimings } from "@/lib/remake-person-timing";
 import originals from "@/lib/frame-remake-upper-original-prompts.json";
 import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_COPY_PROMPT, REMAKE_FEISHU_IMAGE_PROMPT, REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake-person-feishu-prompts";
 import { remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-person-image-prompt";
@@ -16,7 +17,7 @@ const copyBody = (texts: string[]) => Array.from({ length: 4 }, (_, group) => [
 ].join("\n")).join("\n\n");
 
 function productionInput(): RemakeProductionPromptInput {
-    return { title: "测试", productInfo: "", hasNarration: false, frames, copyBlocks: Array.from({ length: 16 }, (_, i) => ({ ordinal: i + 1, frameOrdinals: [i * 3 + 1, i * 3 + 2, i * 3 + 3], sourceText: "", text: "" })), referenceAssets: { character: { available: false }, characterSupplement: { available: false }, background: { available: true }, audio: { available: false } }, contactSheets: [], visualBoards: [] };
+    return { title: "测试", productInfo: "", hasNarration: false, frames, timings: remakePersonTimings({ frames }), copyBlocks: Array.from({ length: 16 }, (_, i) => ({ ordinal: i + 1, frameOrdinals: [i * 3 + 1, i * 3 + 2, i * 3 + 3], sourceText: "", text: "" })), referenceAssets: { character: { available: false }, characterSupplement: { available: false }, background: { available: true }, audio: { available: false } }, contactSheets: [], visualBoards: [] };
 }
 
 describe("person remake verbatim prompts", () => {
@@ -32,7 +33,7 @@ describe("person remake verbatim prompts", () => {
         expect(REMAKE_FEISHU_VIDEO_PROMPTS[groupId]).toBe(expected);
         expect(remakeVideoPromptSystemInstructions(groupId, "旧精简指令", true, "female")).toBe(expected);
         const messages = remakeProductionMessages(productionInput(), groupId, "旧精简指令");
-        expect(messages.filter((message) => message.role === "system")).toEqual([{ role: "system", content: expected }]);
+        expect(messages.filter((message) => message.role === "system")).toEqual([{ role: "system", content: expected.replace(/15\s*秒/gu, "12秒") }]);
         expect(JSON.parse(messages[1].content)).not.toHaveProperty("保留产品规则");
     });
     it("passes the storyboard text through provider decoration unchanged", () => {
@@ -41,10 +42,10 @@ describe("person remake verbatim prompts", () => {
         expect(decorate).not.toHaveBeenCalled();
         expect(imageTaskRequestPrompt({ projectId: "other", generationSlotId: "image", prompt: "编辑" }, decorate)).toBe("不要换成新人物");
     });
-    it("supplies twelve individual frames, background, then optional character", () => {
-        const references = remakeStoryboardPromptReferences({ frames: frames.slice(12, 24).map((frame) => ({ url: frame.frameUrl })), background: { url: "/background.jpg" }, character: { url: "/person.jpg" } });
-        expect(references.map(({ asset }) => asset.url)).toEqual([...frames.slice(12, 24).map((frame) => frame.frameUrl), "/background.jpg", "/person.jpg"]);
-        expect(() => remakeStoryboardPromptReferences({ frames: [{ url: "/contact-sheet.jpg" }], background: { url: "/background.jpg" } })).toThrow("12张");
+    it("supplies the source contact sheet, background, then optional character", () => {
+        const references = remakeStoryboardPromptReferences({ contactSheet: { url: "/contact-sheet.jpg" }, background: { url: "/background.jpg" }, character: { url: "/person.jpg" } });
+        expect(references.map(({ asset }) => asset.url)).toEqual(["/contact-sheet.jpg", "/background.jpg", "/person.jpg"]);
+        expect(() => remakeStoryboardPromptReferences({ background: { url: "/background.jpg" } })).toThrow("十二宫格拼图");
     });
 });
 
@@ -82,7 +83,7 @@ describe("original Feishu response formats", () => {
         expect(() => parseOriginalCopyPlan(raw, "其他原文", frames)).toThrow("完整覆盖");
     });
     it("accepts product references required by the original video template", () => {
-        const value = "15秒，@十二宫格图，产品：原产品@产品图，禁止画面出现字幕\n" + [1, 4, 7, 10].map((i) => `分镜${i}-${i + 2}，展示产品；`).join("\n");
+        const value = "12秒，@十二宫格图，产品：原产品@产品图，禁止画面出现字幕\n" + [1, 4, 7, 10].map((i) => `分镜${i}-${i + 2}，展示产品；`).join("\n");
         expect(() => assertRemakeVideoPrompt(value, productionInput(), "1-12")).not.toThrow();
     });
 });
