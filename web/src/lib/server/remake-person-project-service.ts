@@ -359,7 +359,7 @@ export async function completeRemakeProjectAnalysis(input: {
             : buildRemakeCopyBlocks({ frames, sourceCopy, strategy: normalized.copyStrategy, existing: normalized.copyBlocks, mappings: copy.mappings });
         if (copyBlocks.length !== REMAKE_COPY_BLOCK_COUNT) throw new RemakeProjectServiceError("视频分析必须返回完整的 16 个语义文案区间", 400);
         const groups = mergeRemakeContactSheets(emptyRemakeRangeGroups().map((group, index) => ({ ...group, videoPromptInstructions: normalized.groups[index]?.videoPromptInstructions || "" })), input.contactSheets);
-        if (input.contactSheets && groups.some((group) => !group.sourceContactSheet)) throw new RemakeProjectServiceError("视频分析必须返回完整的 1 张十二宫格拼图", 400);
+        if (input.contactSheets && groups.some((group) => !group.sourceContactSheet)) throw new RemakeProjectServiceError("视频分析必须返回完整的 4 组十二宫格拼图，每组 1 张", 400);
         const audio = input.audio === undefined ? normalized.references.audio : normalizeRemakeMediaAsset(input.audio);
         if (input.audio && !audio) throw new RemakeProjectServiceError("原视频参考音频信息不完整", 400);
         let pipeline = withPipelineStep(normalized.pipeline, "analysis", "completed", "references", input.task.id);
@@ -453,6 +453,36 @@ export async function completeRemakeProductionForUser(userId: string, id: string
     return next;
 }
 
+export async function validateRemakePersonImageRequest(input: {
+    userId: string;
+    projectId: string;
+    slotId: string;
+    prompt: string;
+    references?: ImageTask["references"];
+    model?: string;
+    size?: string;
+    hasMask?: boolean;
+}) {
+    if (!input.projectId.startsWith("remake-person-") || !/^remake-person:(?:1-12|13-24|25-36|37-48):storyboard$/.test(input.slotId)) {
+        throw new RemakeProjectServiceError("换人生图的项目或分镜组标识不完整", 400);
+    }
+    const project = await getRemakeProjectForUser(input.userId, input.projectId);
+    const group = project.groups.find((item) => remakeImageGenerationSlotId("storyboard", item.id) === input.slotId);
+    if (!group?.sourceContactSheet?.url || !project.references.background?.url) {
+        throw new RemakeProjectServiceError("请先准备该组来源十二宫格拼图和背景图", 409);
+    }
+    if (input.hasMask || !sameRemakeTaskReferences({ references: input.references || [] }, "storyboard", group, project.references, project.frames)) {
+        throw new RemakeProjectServiceError("换人生图只接收 1 张来源十二宫格拼图、背景图及已上传的人物图和产品图，请刷新页面后重试，不要传入 12 张散帧", 409);
+    }
+    const prompt = canonicalRemakeImagePrompt("storyboard", group, project.references, project.frames, project.productInfo);
+    if (input.prompt !== prompt || group.imageGeneration.prompt !== prompt) {
+        throw new RemakeProjectServiceError("生图提示词与当前十二宫格和参考素材不一致，请刷新并保存后重试", 409);
+    }
+    if (input.size !== "9:16" || (project.modelSelection.image && input.model !== project.modelSelection.image)) {
+        throw new RemakeProjectServiceError("生图模型或比例与已保存项目不一致，请刷新后重试", 409);
+    }
+}
+
 export async function assertRemakeImageGenerationsForUser(userId: string, project: Pick<HydratedRemakeProject, "id" | "references" | "groups" | "frames" | "modelSelection" | "productInfo">) {
     if (project.groups.length !== 4) throw new RemakeProjectServiceError("四组十二宫格生图任务不完整", 409);
     await Promise.all(
@@ -539,9 +569,9 @@ async function authoritativeRemakeImageGeneration(input: {
 }): Promise<RemakeRangeGroup["imageGeneration"]> {
     if (input.requested.status === "idle") return { status: "idle", prompt: "", attemptNo: input.requested.attemptNo };
     let prompt = canonicalRemakeImagePrompt(input.stage, input.group, input.references, input.frames, input.productInfo);
-    // Keep already saved legacy tasks usable; new requests must include the current image bindings.
-    const legacyPrompt = remakeStoryboardPrompt(input.group.id, input.frames, input.productInfo);
-    if (prompt && input.previous?.taskId && input.requested.taskId === input.previous.taskId && input.previous.prompt === legacyPrompt && input.requested.prompt === legacyPrompt) prompt = legacyPrompt;
+    // 已保存的旧任务仍可查看结果或失败原因；新请求必须使用拼图和当前图片绑定。
+    const savedTask = Boolean(input.previous?.taskId && input.requested.taskId === input.previous.taskId && input.requested.prompt === input.previous.prompt);
+    if (prompt && savedTask) prompt = input.previous!.prompt;
     if (!prompt || input.requested.prompt !== prompt) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的生图提示词与当前参考素材不一致`, 409);
     const requestedAttempt = input.requested.attemptNo ?? 0;
     const minimumAttempt = input.previous?.prompt === prompt ? input.previous.attemptNo ?? 0 : 0;
@@ -564,7 +594,7 @@ async function authoritativeRemakeImageGeneration(input: {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的十二宫格必须由 9:16 图片编辑任务生成`, 409);
     }
     const taskModel = task.config.logicalModel || task.config.model;
-    if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references, input.frames)) {
+    if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references, input.frames, savedTask)) {
         throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务输入与当前参考素材不一致`, 409);
     }
     if (task.status === "pending" || task.status === "running") return { ...resolveRemakeActiveImageTaskState({ taskId: task.id, requested: input.requested, execution: taskRecord || undefined }), taskId: task.id, model: taskModel, prompt, attemptNo };
@@ -593,10 +623,16 @@ function authoritativeImageAsset(task: ImageTask, groupId: string): RemakeMediaA
     };
 }
 
-function sameRemakeTaskReferences(task: ImageTask, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, _frames: RemakeFrame[]) {
+function sameRemakeTaskReferences(task: Pick<ImageTask, "references">, _stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[], allowSavedFrames = false) {
+    if (!Array.isArray(task.references) || task.references.some((reference) => !reference || typeof reference !== "object")) return false;
     const expected = remakeStoryboardPromptReferences({ contactSheet: group.sourceContactSheet, character: references.character, background: references.background, product: references.product }).map((reference) => reference.asset.url!);
     const actual = task.references.map((reference) => reference.serverUrl || reference.remoteUrl || reference.url || reference.dataUrl);
-    return actual.length === expected.length && expected.every((value, index) => mediaIdentity(value) === mediaIdentity(actual[index]));
+    if (actual.some((value) => typeof value !== "string" || !value.trim())) return false;
+    const matches = (urls: string[]) => actual.length === urls.length && urls.every((value, index) => mediaIdentity(value) === mediaIdentity(actual[index]));
+    if (matches(expected)) return true;
+    if (!allowSavedFrames) return false;
+    const oldFrames = frames.filter((frame) => group.frameOrdinals.includes(frame.ordinal)).map((frame) => frame.frameUrl);
+    return oldFrames.length === 12 && matches([...oldFrames, ...expected.slice(1)]);
 }
 
 function canonicalRemakeImagePrompt(_stage: "storyboard", group: RemakeRangeGroup, references: RemakeReferences, frames: RemakeFrame[], productInfo: string) {

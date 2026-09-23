@@ -163,6 +163,16 @@ export async function POST(request: Request) {
     const settings = await getAuthSettings();
     const createTask = async () => {
         // 在提交锁内核对项目预留，阻止已撤销但晚到的生图请求创建任务。
+        if (resolvedBody.context?.projectId?.startsWith("remake-person-") || resolvedBody.context?.generationSlotId?.startsWith("remake-person:")) {
+            const { validateRemakePersonImageRequest, RemakeProjectServiceError } = await import("@/lib/server/remake-person-project-service");
+            try {
+                await validateRemakePersonImageRequest({ userId: currentUser.id, projectId: resolvedBody.context?.projectId || "", slotId: resolvedBody.context?.generationSlotId || "", prompt: (resolvedBody.prompt || "").trim(), references: resolvedBody.references, model: resolvedBody.config?.model, size: resolvedBody.config?.size, hasMask: Boolean(resolvedBody.mask) });
+                resolvedBody.kind = "edit";
+            } catch (error) {
+                if (error instanceof RemakeProjectServiceError) return NextResponse.json({ error: error.message }, { status: error.status });
+                throw error;
+            }
+        }
         if (resolvedBody.context?.projectId?.startsWith("bangbang-") || resolvedBody.context?.generationSlotId?.startsWith("bangbang-image:") || resolvedBody.context?.generationSlotId?.startsWith("bangbang-character:")) {
             const { validateBangbangImageRequest, BangbangProjectError } = await import("@/lib/server/bangbang-project-service");
             try {
