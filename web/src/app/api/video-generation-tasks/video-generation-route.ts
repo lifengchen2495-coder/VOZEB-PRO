@@ -46,7 +46,7 @@ import { getRemakeProjectForUser as getRemakeProductProjectForUser, RemakeProjec
 import { getRemakeProjectForUser as getRemakePersonProjectForUser, RemakeProjectServiceError as RemakePersonProjectServiceError } from "@/lib/server/remake-person-project-service";
 import { validateOmniClothingVideoRequest, OmniClothingError } from "@/lib/server/omni-clothing-project-service";
 import { validateOmniVideoRequest, OmniProjectError } from "@/lib/server/omni-remake-project-service";
-import { buildHuifengVideoRequest, HUIFENG_CREATE_PATH, HUIFENG_OMNI_EDIT_MODEL, HUIFENG_QUERY_PATH } from "@/lib/huifeng-media";
+import { buildHuifengVideoRequest, HUIFENG_CREATE_PATH, HUIFENG_OMNI_EDIT_MODEL, HUIFENG_QUERY_PATH, HUIFENG_SEEDANCE_20_ANMIAO_MODEL } from "@/lib/huifeng-media";
 import { parseHuifengVideoCreateResponse } from "@/lib/server/huifeng-video-response";
 
 const CREATE_PATHS = ["/video/generations", "/videos/generations", "/videos/videos", "/videos"];
@@ -257,13 +257,14 @@ export async function POST(request: Request) {
                         if (channel.advancedConfig?.protocol === "yumeng") assertYumengVideoReferences(channel.model, references);
                         if (huifengVideo) {
                             huifengVideoRequest(channel.model, providerPrompt, parameters, references);
-                            providerReferences = await Promise.all(references.map((reference) => signProviderReference(reference, user, publicOrigin, true)));
                         }
                         assertReferenceUrls(channel.advancedConfig, references, Boolean(globalPreset));
                     }
-                    if ((isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake) && (channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video") && references.some((reference) => reference.type === "audio")) {
+                    const needsRemakeAudioConversion = channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video" || (huifengVideo && channel.model === HUIFENG_SEEDANCE_20_ANMIAO_MODEL);
+                    if ((isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake) && needsRemakeAudioConversion && references.some((reference) => reference.type === "audio")) {
                         providerReferences = await normalizeRemakeVideoAudioReferences({ references, userId: user.id, internalOrigin: origin, publicOrigin, projectId: remakeProjectId });
                     }
+                    if (huifengVideo) providerReferences = await Promise.all(providerReferences.map((reference) => signProviderReference(reference, user, publicOrigin, true)));
                 } catch (error) {
                     capabilityError = error;
                     continue;

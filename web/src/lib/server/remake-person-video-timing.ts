@@ -3,13 +3,13 @@ import { runFfmpeg, runFfprobe } from "./ffmpeg";
 
 export async function probeRemakeVideo(path: string) {
     const probe = JSON.parse((await runFfprobe(["-v", "error", "-show_streams", "-show_format", "-of", "json", path])).stdout) as {
-        streams?: Array<{ codec_type?: string; duration?: string }>;
+        streams?: Array<{ codec_type?: string; duration?: string; width?: number; height?: number }>;
         format?: { duration?: string };
     };
     const video = probe.streams?.find((stream) => stream.codec_type === "video");
     const duration = Number(video?.duration || probe.format?.duration);
     if (!video || !Number.isFinite(duration) || duration <= 0) throw new Error("生成文件没有有效的视频轨道或时长");
-    return { duration, hasAudio: Boolean(probe.streams?.some((stream) => stream.codec_type === "audio")) };
+    return { duration, width: Number(video.width), height: Number(video.height), hasAudio: Boolean(probe.streams?.some((stream) => stream.codec_type === "audio")) };
 }
 
 export function assertRemakeVideoLength(duration: number, timing: RemakePersonTiming, exact = false) {

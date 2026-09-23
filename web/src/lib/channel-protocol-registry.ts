@@ -158,13 +158,13 @@ export const registeredChannelProtocolDefinitions: ChannelProtocolDefinition[] =
     },
     {
         id: "huifeng",
-        label: "汇风视频（Omni / MiniMax H3）",
-        description: "汇风 Omni Flash／Omni 1.1／MiniMax H3 视频接口；支持按型号校验首尾帧、多模态参考、时长和清晰度。",
+        label: "汇风视频（Omni / MiniMax H3 / Seedance 2.0）",
+        description: "汇风 Omni Flash／Omni 1.1／MiniMax H3／Seedance 2.0 按秒版视频接口；支持按型号校验首尾帧、多模态参考、时长和清晰度。",
         apiFormat: "openai",
         authMode: "bearer",
         defaultBaseUrl: HUIFENG_BASE_URL,
         modelCatalogPaths: [],
-        builtInModels: HUIFENG_VIDEO_MODELS.filter((model) => ["omni_flash-10s", "omni-1.1", "minimax-h3"].includes(model.id)),
+        builtInModels: HUIFENG_VIDEO_MODELS.filter((model) => model.id !== "kling-v3-omni-videoref"),
         capabilities: ["video"],
         operations: { video: HUIFENG_DEFAULT_VIDEO_OPERATION },
         strict: true,
@@ -372,6 +372,22 @@ export function resolveChannelModelAdvancedConfig(config: SystemChannelAdvancedC
     if (!modelConfig) return config;
     const { capability: _capability, apiFormat: _apiFormat, ...modelAdvanced } = modelConfig;
     return { ...config, ...modelAdvanced };
+}
+
+export function addMissingProtocolModels(channel: SystemModelChannel): SystemModelChannel {
+    const protocol = channel.advancedConfig?.protocol || "auto";
+    const definition = channelProtocolDefinition(protocol);
+    const missing = (definition.builtInModels || []).filter((item) => !channel.models.some((model) => normalizeModelId(model) === normalizeModelId(item.id)));
+    if (!missing.length) return channel;
+    return {
+        ...channel,
+        models: [...channel.models, ...missing.map((item) => item.id)],
+        advancedConfig: {
+            ...(channel.advancedConfig || emptyAdvancedConfig()),
+            modelConfigs: { ...channel.advancedConfig?.modelConfigs, ...Object.fromEntries(missing.map((item) => [normalizeModelId(item.id), protocolModelConfig(protocol, item.capability, item.id)!])) },
+            modelCapabilities: { ...channel.advancedConfig?.modelCapabilities, ...Object.fromEntries(missing.map((item) => [normalizeModelId(item.id), item.capability])) },
+        },
+    };
 }
 
 export function applyChannelProtocol(channel: SystemModelChannel, protocol: SystemChannelProtocol): SystemModelChannel {

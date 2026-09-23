@@ -6,8 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Image, Input, Segmented, Select, Switch, Tag, Tooltip } from "antd";
 import { Check, Copy, Download, FileAudio, FileText, LoaderCircle, Play, RefreshCw, Save, Sparkles, Video, VolumeX } from "lucide-react";
 
-import { normalizeRemakeVideoSettings, remakeVideoRequestConfig, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
-import { isSeedanceFastModel } from "@/lib/seedance-video";
+import { normalizeRemakeVideoSettings, remakeVideoQualityLabel, remakeVideoRequestConfig, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
+import { remakeVideoResolutionOptions, remakeVideoSettingsForModel } from "@/lib/remake-person-video-capabilities";
 import { ModelPicker } from "@/components/model-picker";
 import { remakeVideoPromptInstructions } from "@/lib/remake-person-video-prompt-instructions";
 import { browserReadableMediaUrl } from "@/lib/browser-media-url";
@@ -64,6 +64,8 @@ export function RemakeProductionStage({
     const selectedPromptModel = project.modelSelection.prompt || config.textModel || config.model;
     const selectedVideoModel = project.modelSelection.video || config.videoModel || config.model;
     const videoSettings = normalizeRemakeVideoSettings(project.videoSettings);
+    const resolutionOptions = remakeVideoResolutionOptions(config, selectedVideoModel);
+    const resolutionSupported = resolutionOptions.some((option) => option.value === videoSettings.vquality);
     const videoConfig = useMemo(
         () => ({ ...config, ...normalizeRemakeVideoSettings(project.videoSettings), model: selectedVideoModel, videoModel: selectedVideoModel, size: "9:16" }),
         [config, project.videoSettings, selectedVideoModel],
@@ -173,9 +175,17 @@ export function RemakeProductionStage({
                 modelSelection: { ...latestProjectRef.current.modelSelection, [kind]: model },
             };
             if (kind === "prompt") onPromptModelChange(model);
-            else onVideoModelChange(model);
+            else {
+                onVideoModelChange(model);
+                const current = latestProjectRef.current;
+                const next = remakeVideoSettingsForModel(config, current.videoSettings, model);
+                if (remakeVideoSettingsKey(next) !== remakeVideoSettingsKey(current.videoSettings)) {
+                    latestProjectRef.current = { ...current, videoSettings: next };
+                    onVideoSettingsChange(next);
+                }
+            }
         },
-        [onPromptModelChange, onVideoModelChange],
+        [config, onPromptModelChange, onVideoModelChange, onVideoSettingsChange],
     );
 
     const scheduleResume = useCallback((groupId: string) => {
@@ -277,7 +287,7 @@ export function RemakeProductionStage({
             const timingError = remakePersonPromptDurationError(group.videoPrompt, timing);
             if (!timing || timingError) return message.warning(timingError);
             const generationConfig = remakeVideoRequestConfig(config, current.videoSettings, model, timing.requestSeconds);
-            if (isSeedanceFastModel(model) && generationConfig.vquality === "1080") return message.warning("当前 fast 模型不支持 1080p，请选择 720p 或 480p");
+            if (!remakeVideoResolutionOptions(config, model).some((option) => option.value === generationConfig.vquality)) return message.warning("当前模型不支持已保存的分辨率，请在视频设置中重新选择");
             if (!model || !isAiConfigReady(generationConfig, model)) {
                 openConfigDialog(true);
                 return message.warning("请先配置可用的视频模型");
@@ -480,16 +490,14 @@ export function RemakeProductionStage({
                     <div className="text-sm font-semibold">视频设置</div>
                     <div className="flex flex-wrap items-end gap-5">
                         <ModelControl label="分辨率">
-                            <Select aria-label="视频分辨率" className="min-w-32" disabled={sharedBusy} value={videoSettings.vquality} options={[
-                                { value: "480", label: "480p" }, { value: "720", label: "720p" },
-                                { value: "1080", label: "1080p", disabled: isSeedanceFastModel(selectedVideoModel) },
-                            ]} onChange={(vquality) => changeVideoSettings({ vquality })} />
+                            <Select aria-label="视频分辨率" className="min-w-32" disabled={sharedBusy} value={resolutionSupported ? videoSettings.vquality : undefined} placeholder="请选择分辨率" status={resolutionSupported ? undefined : "error"} options={resolutionOptions} onChange={(vquality) => changeVideoSettings({ vquality })} />
                         </ModelControl>
                         <ModelControl label="每段时长"><Input className="!w-28" value="按原分镜时间" readOnly aria-label="每段视频时长" /></ModelControl>
                         <ModelControl label="画面比例"><Input className="!w-32" value="9:16 竖屏（固定）" readOnly aria-label="视频画面比例" /></ModelControl>
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="生成声音" disabled={sharedBusy} checked={videoSettings.videoGenerateAudio === "true"} onChange={(checked) => changeVideoSettings({ videoGenerateAudio: checked ? "true" : "false" })} />生成声音</label>
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="添加水印" disabled={sharedBusy} checked={videoSettings.videoWatermark === "true"} onChange={(checked) => changeVideoSettings({ videoWatermark: checked ? "true" : "false" })} />添加水印</label>
                     </div>
+                    {!resolutionSupported ? <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">已保存的 {remakeVideoQualityLabel(videoSettings.vquality)} 不适用于当前模型，请重新选择分辨率。</p> : null}
                     <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成四组视频。每组时长按原分镜时间计算，总时长与原视频一致，比例 9:16；合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
                 </section>
 
@@ -635,7 +643,7 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">第 {group.ordinal} 条 · 分镜 {group.id}</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · 12 个连续镜头 · 9:16 · {resolution}p · 独立文件</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · 12 个连续镜头 · 9:16 · {remakeVideoQualityLabel(resolution)} · 独立文件</p>
                 </div>
                 <div className="flex max-w-full flex-wrap items-center gap-1.5">
                     <VideoGenerationTag generation={generation} />
@@ -675,7 +683,7 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
                 )}
             </div>
             {timingError || staleVideo ? <div role="alert" className="border-t border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">{timingError || "此视频使用了旧时长，请重新生成本组视频。"}</div> : null}
-            {generation.error ? <div className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{generation.error}</div> : null}
+            {generation.error ? <VideoGenerationError error={generation.error} model={generation.model} /> : null}
             {active ? <div className="border-t border-border px-3 py-3"><ProductionLoading text="视频正在后台生成，刷新页面会继续恢复原任务" /></div> : null}
             {videoUrl ? (
                 <div className="border-t border-border p-3">
@@ -686,6 +694,25 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
                 </div>
             ) : null}
         </article>
+    );
+}
+
+function VideoGenerationError({ error, model }: { error: string; model?: string | null }) {
+    const realPersonRejected = /input image[\s\S]*may contain (?:a )?real person/i.test(error);
+    return (
+        <div role="alert" className="border-t border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">
+            {realPersonRejected ? (
+                <>
+                    <p>视频渠道判定输入图片可能包含真人，已拒绝生成。</p>
+                    <p className="mt-1">请检查本组十二宫格和人物参考图是否符合所选渠道的素材要求。即使人物由 AI 生成，也可能被识别为真人。若确认素材符合要求，请联系渠道方复核；直接重试相同素材仍可能失败。</p>
+                    {model ? <p className="mt-1">本次视频模型：{model}</p> : null}
+                    <details className="mt-1">
+                        <summary className="cursor-pointer">原始错误与请求编号（供渠道方排查）</summary>
+                        <p className="mt-1 break-words">{error}</p>
+                    </details>
+                </>
+            ) : error}
+        </div>
     );
 }
 

@@ -370,7 +370,7 @@ export function RemakeImageStage({
                     ))}
                 </div>
 
-                <p className="border-b border-border py-3 text-xs leading-5 text-muted-foreground">原产品参考图用于补充包装、颜色与外观细节，建议包含视频中出现的各款产品。添加、更换或移除参考图后需重新生成十二宫格。人物图只参考外貌和服装，动作、视线与互动保持一致。中间分镜图按源表规则模糊人脸，最终视频结合人物参考恢复清晰外貌。</p>
+                <p className="border-b border-border py-3 text-xs leading-5 text-muted-foreground">原产品参考图用于补充包装、颜色与外观细节，建议包含视频中出现的各款产品。添加、更换或移除参考图后需重新生成十二宫格。人物图只参考外貌和服装，动作、视线与互动保持一致。生图指令要求中间分镜图模糊人脸，请核对实际生成结果；视频阶段的人物参考需符合所选渠道的素材要求。</p>
 
                 {!referencesReady ? (
                     <div className="border-b border-amber-300/70 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/20 dark:text-amber-200">

@@ -1,12 +1,14 @@
 import type { LogicalModelCapabilityProfile, SystemChannelModelConfig } from "@/lib/auth/store-types";
 import type { VideoGenerationReference } from "@/lib/video-reference-contract";
 
-// 参数来源：https://huifengai.com/apidoc；Omni 核对于 2026-09-08，H3 按用户提供的站内文档于 2026-09-20 核对。
+// 参数来源：https://huifengai.com/apidoc；Omni 核对于 2026-09-08，H3 于 2026-09-20，Seedance 按秒版于 2026-09-23。
 export const HUIFENG_BASE_URL = "https://api.lk888.ai";
 export const HUIFENG_CREATE_PATH = "/v1/media/generate";
 export const HUIFENG_QUERY_PATH = "/v1/media/status?task_id=:task_id";
 export const HUIFENG_OMNI_EDIT_MODEL = "kling-v3-omni-videoref";
 export const HUIFENG_MINIMAX_H3_MODEL = "minimax-h3";
+export const HUIFENG_SEEDANCE_20_ANMIAO_MODEL = "seedance-2.0-guanfang-anmiao";
+export const HUIFENG_SEEDANCE_20_ANMIAO_LABEL = "SD 2.0 满血版 按秒";
 
 const videoOperation = {
     capability: "video",
@@ -58,6 +60,21 @@ export const HUIFENG_VIDEO_MODELS = [
         },
     },
     {
+        id: HUIFENG_SEEDANCE_20_ANMIAO_MODEL,
+        label: HUIFENG_SEEDANCE_20_ANMIAO_LABEL,
+        capability: "video" as const,
+        operation: {
+            ...videoOperation,
+            requestTemplate:
+                '{"model":"{{model}}","prompt":"{{prompt}}","params":{"version":"标准","mode":"cankaosheng","image_url":"{{images}}","video_url":"{{videos}}","audio_url":"{{audios}}","aspect_ratio":"{{aspect_ratio}}","duration":"{{duration}}","resolution":"{{resolution}}"}}',
+            durationRange: "4-15 秒",
+            referenceRule:
+                "标准版，按秒计费，支持 4–15 秒整数时长及 480p／720p／1080p／4K。参考生模式最多 9 张图片、3 个视频、3 段音频；参考视频、音频各自总时长不超过 15 秒，音频仅接受 MP3／WAV，且需搭配图片或视频。首尾帧模式与普通参考素材互斥。输出固定有声、无水印。",
+            supportsReferenceVideo: true,
+            supportsReferenceAudio: true,
+        },
+    },
+    {
         id: HUIFENG_OMNI_EDIT_MODEL,
         label: "可灵 Omni 视频编辑",
         capability: "video" as const,
@@ -74,6 +91,18 @@ export const HUIFENG_VIDEO_MODELS = [
 export function huifengVideoCapabilityProfile(model: string): LogicalModelCapabilityProfile | undefined {
     if (!HUIFENG_VIDEO_MODELS.some((entry) => entry.id === model)) return undefined;
     const common = { supportsReferenceImage: true, supportsReferenceAudio: false, supportsAsync: true, supportsCancel: false, maxBatchSize: 1 };
+    if (model === HUIFENG_SEEDANCE_20_ANMIAO_MODEL)
+        return {
+            ...common,
+            supportsReferenceVideo: true,
+            supportsReferenceAudio: true,
+            maxReferenceImages: 9,
+            aspectRatios: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+            resolutions: ["480p", "720p", "1080p", "4k"],
+            durationSeconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            minDurationSeconds: 4,
+            maxDurationSeconds: 15,
+        };
     if (model === HUIFENG_MINIMAX_H3_MODEL)
         return {
             ...common,
@@ -93,7 +122,12 @@ export function huifengVideoCapabilityProfile(model: string): LogicalModelCapabi
 }
 
 export function assertHuifengVideoReferences(model: string, references: readonly VideoGenerationReference[]) {
-    if (model === HUIFENG_MINIMAX_H3_MODEL) return assertMiniMaxH3References(references);
+    if (model === HUIFENG_MINIMAX_H3_MODEL) return assertMultimodalReferences(references, "MiniMax H3");
+    if (model === HUIFENG_SEEDANCE_20_ANMIAO_MODEL) {
+        assertMultimodalReferences(references, "Seedance 2.0 按秒版");
+        if (references.some((item) => item.type === "audio") && !references.some((item) => item.type === "image" || item.type === "video")) throw new Error("Seedance 2.0 按秒版的参考音频必须搭配参考图或参考视频");
+        return;
+    }
     const profile = huifengVideoCapabilityProfile(model);
     if (!profile) throw new Error("当前模型不在已接入的汇风视频模型列表中");
     const images = references.filter((item) => item.type === "image");
@@ -109,6 +143,22 @@ export function buildHuifengVideoRequest(input: { model: string; prompt: string;
     const images = input.references.filter((item) => item.type === "image").map((item) => item.url);
     const profile = huifengVideoCapabilityProfile(input.model)!;
     if (!Number.isFinite(input.duration) || input.duration < profile.minDurationSeconds! || input.duration > profile.maxDurationSeconds!) throw new Error(`当前汇风视频模型时长需要在 ${profile.minDurationSeconds}–${profile.maxDurationSeconds} 秒之间`);
+    if (input.model === HUIFENG_SEEDANCE_20_ANMIAO_MODEL) {
+        if (!Number.isInteger(input.duration)) throw new Error("Seedance 2.0 按秒版时长必须为 4–15 秒的整数");
+        const aspectRatio = !input.aspectRatio || ["auto", "adaptive"].includes(input.aspectRatio.toLowerCase()) ? "adaptive" : input.aspectRatio;
+        if (aspectRatio !== "adaptive" && !profile.aspectRatios!.includes(aspectRatio)) throw new Error("Seedance 2.0 按秒版不支持所选画幅比例");
+        const resolution = !input.resolution || input.resolution.toLowerCase() === "auto" ? "720p" : input.resolution.toLowerCase();
+        if (!profile.resolutions!.includes(resolution)) throw new Error("Seedance 2.0 按秒版仅支持 480p／720p／1080p／4K 清晰度");
+        const firstFrame = input.references.find((item) => item.role === "first_frame");
+        const lastFrame = input.references.find((item) => item.role === "last_frame");
+        const videos = input.references.filter((item) => item.type === "video").map((item) => item.url);
+        const audios = input.references.filter((item) => item.type === "audio").map((item) => item.url);
+        // 媒体兼容接口未指定模式时，会把 1–2 张图当作首尾帧；分镜拼图必须明确使用参考生。
+        const referenceParams = firstFrame
+            ? { mode: "shouweizhen", images: [firstFrame.url, ...(lastFrame ? [lastFrame.url] : [])] }
+            : { mode: "cankaosheng", ...(images.length ? { image_url: images } : {}), ...(videos.length ? { video_url: videos } : {}), ...(audios.length ? { audio_url: audios } : {}) };
+        return { model: input.model, prompt: input.prompt, params: { ...referenceParams, version: "标准", duration: String(input.duration), resolution: resolution === "4k" ? "4K" : resolution, aspect_ratio: aspectRatio } };
+    }
     if (input.model === HUIFENG_MINIMAX_H3_MODEL) {
         if (!Number.isInteger(input.duration)) throw new Error("MiniMax H3 时长必须为 4–15 秒的整数");
         const aspectRatio = !input.aspectRatio || ["auto", "adaptive"].includes(input.aspectRatio.toLowerCase()) ? "adaptive" : input.aspectRatio;
@@ -135,16 +185,16 @@ export function buildHuifengVideoRequest(input: { model: string; prompt: string;
     return { model: input.model, prompt: input.prompt, params: input.model === "omni-1.1" ? { ...params, duration: String(input.duration), resolution: resolution.toUpperCase() } : params };
 }
 
-function assertMiniMaxH3References(references: readonly VideoGenerationReference[]) {
+function assertMultimodalReferences(references: readonly VideoGenerationReference[], modelLabel: string) {
     const firstFrames = references.filter((item) => item.role === "first_frame");
     const lastFrames = references.filter((item) => item.role === "last_frame");
     const frames = [...firstFrames, ...lastFrames];
-    if (frames.some((item) => item.type !== "image")) throw new Error("MiniMax H3 首尾帧只能使用图片");
-    if (firstFrames.length > 1 || lastFrames.length > 1) throw new Error("MiniMax H3 最多支持 1 张首帧和 1 张尾帧");
-    if (lastFrames.length && !firstFrames.length) throw new Error("MiniMax H3 使用尾帧时必须提供首帧");
-    if (firstFrames.length && lastFrames.length && firstFrames[0].url === lastFrames[0].url) throw new Error("MiniMax H3 首帧和尾帧不能使用同一张图片");
-    if (frames.length && references.length !== frames.length) throw new Error("MiniMax H3 首尾帧模式不能同时使用普通参考图片、视频或音频");
-    if (references.filter((item) => item.type === "image").length > 9) throw new Error("MiniMax H3 最多支持 9 张参考图片");
-    if (references.filter((item) => item.type === "video").length > 3) throw new Error("MiniMax H3 最多支持 3 个参考视频");
-    if (references.filter((item) => item.type === "audio").length > 3) throw new Error("MiniMax H3 最多支持 3 段参考音频");
+    if (frames.some((item) => item.type !== "image")) throw new Error(`${modelLabel} 首尾帧只能使用图片`);
+    if (firstFrames.length > 1 || lastFrames.length > 1) throw new Error(`${modelLabel} 最多支持 1 张首帧和 1 张尾帧`);
+    if (lastFrames.length && !firstFrames.length) throw new Error(`${modelLabel} 使用尾帧时必须提供首帧`);
+    if (firstFrames.length && lastFrames.length && firstFrames[0].url === lastFrames[0].url) throw new Error(`${modelLabel} 首帧和尾帧不能使用同一张图片`);
+    if (frames.length && references.length !== frames.length) throw new Error(`${modelLabel} 首尾帧模式不能同时使用普通参考图片、视频或音频`);
+    if (references.filter((item) => item.type === "image").length > 9) throw new Error(`${modelLabel} 最多支持 9 张参考图片`);
+    if (references.filter((item) => item.type === "video").length > 3) throw new Error(`${modelLabel} 最多支持 3 个参考视频`);
+    if (references.filter((item) => item.type === "audio").length > 3) throw new Error(`${modelLabel} 最多支持 3 段参考音频`);
 }

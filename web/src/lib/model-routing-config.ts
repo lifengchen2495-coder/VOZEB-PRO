@@ -2,7 +2,7 @@ import type { LogicalModel, LogicalModelBinding, LogicalModelCapability, Logical
 import { resolveGlobalAiOpcPreset } from "@/lib/globalaiopc-catalog";
 import { inferModelCapability, isCreativeGenerationModel, normalizeModelId } from "@/lib/model-capability";
 import { channelConnectionReady, protocolCatalogCapability, resolveChannelModelConfig } from "@/lib/channel-protocol-registry";
-import { huifengVideoCapabilityProfile } from "@/lib/huifeng-media";
+import { HUIFENG_SEEDANCE_20_ANMIAO_LABEL, HUIFENG_SEEDANCE_20_ANMIAO_MODEL, huifengVideoCapabilityProfile } from "@/lib/huifeng-media";
 
 const CAPABILITY_DEFAULT_KEYS = {
     text: "textModel",
@@ -70,9 +70,11 @@ export function synchronizeLogicalModelsWithChannels(existingModels: LogicalMode
                 };
             })
             .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
+        const storedName = text(existing?.name, 120);
+        const defaultName = modelKey === HUIFENG_SEEDANCE_20_ANMIAO_MODEL ? HUIFENG_SEEDANCE_20_ANMIAO_LABEL : catalogModel.upstreamModel;
         return {
             id,
-            name: text(existing?.name, 120) || catalogModel.upstreamModel,
+            name: !storedName || storedName === catalogModel.upstreamModel ? defaultName : storedName,
             capability: catalogModel.authoritative || !existing || correctLegacyBanana2 ? catalogModel.capability : normalizeCapability(existing.capability),
             enabled: existing?.enabled !== false,
             bindings,
