@@ -90,7 +90,7 @@ export default function RemakeProjectsPage() {
                             换人不换品
                         </div>
                         <h1 className="mt-1.5 text-xl font-semibold sm:mt-2 sm:text-2xl">复刻项目</h1>
-                        <p className="mt-1.5 text-xs leading-5 text-muted-foreground sm:mt-2 sm:text-sm">共 {total} 个项目 · 48 分镜 · 换人不换品 · 按原视频时长生成</p>
+                        <p className="mt-1.5 text-xs leading-5 text-muted-foreground sm:mt-2 sm:text-sm">共 {total} 个项目 · 按实际镜头拆分 · 换人不换品 · 按原视频时长生成</p>
                     </div>
                     <Button type="primary" className="!h-9 !shrink-0 !px-3 sm:!px-4" icon={<Plus className="size-4" />} onClick={() => setCreateOpen(true)}>
                         新建复刻

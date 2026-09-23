@@ -1,3 +1,4 @@
+import { remakePersonSegmentVideoPrompt } from "./remake-person-segment-prompts";
 import { remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { REMAKE_FEISHU_VIDEO_PROMPTS } from "@/lib/remake-person-feishu-prompts";
 
@@ -16,6 +17,7 @@ export function remakeVideoPromptSystemInstructions(groupId: string, _value: str
     void _value;
     void _hasNarration;
     void _voice;
+    if (timing?.version === 2) return remakePersonSegmentVideoPrompt(timing);
     const original = remakeVideoPromptInstructions(groupId);
     return timing ? original.replace(/15\s*秒/gu, `${remakePersonSeconds(timing.durationMs)}秒`) : original;
 }

@@ -9,7 +9,7 @@ import { Check, Copy, Download, FileAudio, FileText, LoaderCircle, Play, Refresh
 import { normalizeRemakeVideoSettings, remakeVideoQualityLabel, remakeVideoRequestConfig, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 import { remakeVideoResolutionOptions, remakeVideoSettingsForModel } from "@/lib/remake-person-video-capabilities";
 import { ModelPicker } from "@/components/model-picker";
-import { remakeVideoPromptInstructions } from "@/lib/remake-person-video-prompt-instructions";
+import { remakeVideoPromptSystemInstructions } from "@/lib/remake-person-video-prompt-instructions";
 import { browserReadableMediaUrl } from "@/lib/browser-media-url";
 import { mediaDownloadFileName } from "@/lib/media-file";
 import { imagePreviewUrl, originalMediaDownloadUrl } from "@/lib/media-image-url";
@@ -96,7 +96,7 @@ export function RemakeProductionStage({
     const [resumeNonce, setResumeNonce] = useState(0);
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     const prerequisites = productionPrerequisites(project);
-    const promptsReady = project.groups.length === 4 && project.groups.every((group) => group.videoPrompt.trim() && !hasInstructionChanges(group));
+    const promptsReady = project.groups.length > 0 && project.groups.every((group) => group.videoPrompt.trim() && !hasInstructionChanges(group));
     const reportReady = project.copy.status === "completed" && Boolean(project.copy.rawReport.trim());
     const productionReady = remakeProductionReady(project) && !project.groups.some(hasInstructionChanges);
     const videoActive = project.groups.some((group) => isVideoActive(group)) || startingGroupsRef.current.size > 0;
@@ -281,7 +281,7 @@ export function RemakeProductionStage({
             const awaitingCreation = isVideoActive(group) && !group.videoGeneration.taskId;
             if (isVideoActive(group) && !awaitingCreation) return;
             if (!group.videoPrompt.trim()) return message.warning(`分镜 ${group.id} 的视频 Prompt 尚未生成`);
-            if (group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !current.references.background?.url) return message.warning(`分镜 ${group.id} 的最终十二宫格或背景图缺失`);
+            if (group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !current.references.background?.url) return message.warning(`分镜 ${group.id} 的最终分镜拼图或背景图缺失`);
             const model = current.modelSelection.video || selectedVideoModel;
             const timing = remakePersonGroupTiming(current, groupId);
             const timingError = remakePersonPromptDurationError(group.videoPrompt, timing);
@@ -436,7 +436,7 @@ export function RemakeProductionStage({
             const current = getCurrentProject?.() || latestProjectRef.current;
             const saved = await mergeRemakeVideos(current.id, current.revision);
             onMerged(saved);
-            message.success("四组视频已按原视频时长合并");
+            message.success("全部分组视频已按原视频时长合并");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "视频合并失败");
         } finally {
@@ -466,7 +466,7 @@ export function RemakeProductionStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 03</div>
                         <h2 className="mt-1 text-lg font-semibold">Prompt 与独立视频</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">48 个分镜 · 4 组竖屏视频 · 总时长 {durationLabel}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{project.frames.length} 个分镜 · {project.groups.length} 组竖屏视频 · 总时长 {durationLabel}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-end gap-2">
                         <ModelControl label="Prompt 文本模型">
@@ -498,7 +498,7 @@ export function RemakeProductionStage({
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="添加水印" disabled={sharedBusy} checked={videoSettings.videoWatermark === "true"} onChange={(checked) => changeVideoSettings({ videoWatermark: checked ? "true" : "false" })} />添加水印</label>
                     </div>
                     {!resolutionSupported ? <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">已保存的 {remakeVideoQualityLabel(videoSettings.vquality)} 不适用于当前模型，请重新选择分辨率。</p> : null}
-                    <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成四组视频。每组时长按原分镜时间计算，总时长与原视频一致，比例 9:16；合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
+                    <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成全部分组视频。每组时长按原分镜时间计算，总时长与原视频一致，比例 9:16；合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
                 </section>
 
                 <div className="grid gap-4 border-b border-border py-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -510,7 +510,7 @@ export function RemakeProductionStage({
                         {noNarration ? (
                             <>
                                 <Tag className="!mt-2">不需要人物口播</Tag>
-                                <p className="mt-2 text-xs leading-5 text-muted-foreground">视频 Prompt 只保留 12 个连续分镜动作，不添加口播、配音或音频引用。</p>
+                                <p className="mt-2 text-xs leading-5 text-muted-foreground">视频 Prompt 只保留本组实际分镜动作，不添加口播、配音或音频引用。</p>
                             </>
                         ) : (
                             <>
@@ -576,7 +576,7 @@ export function RemakeProductionStage({
                                     promptModel={selectedPromptModel}
                                     promptDisabled={isPromptBuilding(group.id) || !prerequisites.ready || isVideoActive(group) || startingGroupsRef.current.has(group.id)}
                                     disabled={hasInstructionChanges(group) || !group.videoPrompt.trim() || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !project.references.background?.url || startingGroupsRef.current.has(group.id)}
-                                    instructionValue={remakeVideoPromptInstructions(group.id)}
+                                    instructionValue={remakeVideoPromptSystemInstructions(group.id, undefined, !isRemakeNoNarrationCopy(project.sourceCopy), project.voice === "male" ? "male" : "female", remakePersonGroupTiming(project, group.id))}
                                     instructionsDirty={hasInstructionChanges(group)}
                                     instructionsDisabled={sharedBusy}
                                     onInstructionsChange={(value) => {
@@ -601,7 +601,7 @@ export function RemakeProductionStage({
                 {mergedReady ? <section className="mb-4 rounded-lg border border-border p-3" aria-label="换人不换品成片"><h3 className="mb-3 text-sm font-semibold">换人不换品成片</h3><video className="mx-auto max-h-[560px] max-w-full rounded-md bg-black" src={browserReadableMediaUrl(project.mergedVideo!.url)} controls playsInline preload="metadata" /></section> : null}
                 <div className="flex items-center gap-2 border-t border-border pt-4 text-xs text-muted-foreground">
                     {productionReady ? <Check className="size-4 text-emerald-600" /> : <Sparkles className="size-4" />}
-                    {productionReady ? "4 条视频及生产素材已就绪" : "按原片时长生成 4 组视频后，可下载视频及完整生产包"}
+                    {productionReady ? `全部 ${project.groups.length} 条视频及生产素材已就绪` : `按原片时长生成 ${project.groups.length} 组视频后，可下载视频及完整生产包`}
                 </div>
             </div>
         </section>
@@ -612,7 +612,7 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptChange, onSavePrompt, building, promptError, promptModel, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
+function VideoGroupCard({ group, resolution, timing, instructionValue, editingDisabled, onPromptChange, onSavePrompt, building, promptError, promptModel, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
     group: RemakeRangeGroup;
     resolution: string;
     timing?: RemakePersonTiming;
@@ -643,7 +643,7 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">第 {group.ordinal} 条 · 分镜 {group.id}</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · 12 个连续镜头 · 9:16 · {remakeVideoQualityLabel(resolution)} · 独立文件</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · {group.frameOrdinals.length} 个连续镜头 · 9:16 · {remakeVideoQualityLabel(resolution)} · 独立文件</p>
                 </div>
                 <div className="flex max-w-full flex-wrap items-center gap-1.5">
                     <VideoGenerationTag generation={generation} />
@@ -664,13 +664,13 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
             {!building && promptError ? <div role="alert" className="border-b border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{promptError.message}<div className="mt-1">本次 Prompt 模型：{promptError.model || "未选择"}。可点击“重试 Prompt”，或在上方切换 Prompt 模型后重试。</div></div> : null}
             <div className="p-3">
                 <details>
-                    <summary className="cursor-pointer text-xs font-medium">分镜 {group.id} 视频提示词生成指令（表格原文）</summary>
-                    <Input.TextArea readOnly value={remakeVideoPromptInstructions(group.id)} autoSize={{ minRows: 9, maxRows: 20 }} />
+                    <summary className="cursor-pointer text-xs font-medium">分镜 {group.id} 视频提示词生成指令（本组实际发送内容）</summary>
+                    <Input.TextArea readOnly value={instructionValue} autoSize={{ minRows: 9, maxRows: 20 }} />
                 </details>
             </div>
             <div className="grid min-w-0 gap-3 p-3 sm:grid-cols-[110px_minmax(0,1fr)]">
                 <div className="relative aspect-[9/16] w-[110px] overflow-hidden rounded-md border border-border bg-[#15181c]">
-                    {group.imageGeneration.result?.url ? <Image className="!size-full !object-contain" src={imagePreviewUrl(group.imageGeneration.result.url, 700)} alt={`分镜 ${group.id} 最终十二宫格`} preview={{ src: imagePreviewUrl(group.imageGeneration.result.url, 1800) }} /> : null}
+                    {group.imageGeneration.result?.url ? <Image className="!size-full !object-contain" src={imagePreviewUrl(group.imageGeneration.result.url, 700)} alt={`分镜 ${group.id} 最终分镜拼图`} preview={{ src: imagePreviewUrl(group.imageGeneration.result.url, 1800) }} /> : null}
                 </div>
                 {building && !group.videoPrompt ? <ProductionLoading text={`正在生成分镜 ${group.id} Prompt`} /> : (
                     <div className="min-w-0 space-y-2">
@@ -704,7 +704,7 @@ function VideoGenerationError({ error, model }: { error: string; model?: string 
             {realPersonRejected ? (
                 <>
                     <p>视频渠道判定输入图片可能包含真人，已拒绝生成。</p>
-                    <p className="mt-1">请检查本组十二宫格和人物参考图是否符合所选渠道的素材要求。即使人物由 AI 生成，也可能被识别为真人。若确认素材符合要求，请联系渠道方复核；直接重试相同素材仍可能失败。</p>
+                    <p className="mt-1">请检查本组分镜拼图和人物参考图是否符合所选渠道的素材要求。即使人物由 AI 生成，也可能被识别为真人。若确认素材符合要求，请联系渠道方复核；直接重试相同素材仍可能失败。</p>
                     {model ? <p className="mt-1">本次视频模型：{model}</p> : null}
                     <details className="mt-1">
                         <summary className="cursor-pointer">原始错误与请求编号（供渠道方排查）</summary>
@@ -744,12 +744,12 @@ function ProductionLoading({ text }: { text: string }) {
 function productionPrerequisites(project: RemakeProject) {
     const missing: string[] = [];
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
-    if (!project.sourceVideo?.url || project.analysis.status !== "completed" || project.analysis.mode !== "video" || project.frames.length !== 48 || project.frames.some((frame) => frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("完整视频理解与 48 镜头解析");
-    if (remakePersonTimings(project).length !== 4) missing.push("连续完整的原视频时间轴");
-    if (!isRemakeCopyPlanReady(project)) missing.push(noNarration ? "无口播分镜预处理" : "16 个语义文案区间");
+    if (!project.sourceVideo?.url || project.analysis.status !== "completed" || project.analysis.mode !== "video" || !project.frames.length || project.frames.some((frame) => frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("完整视频理解与 镜头解析");
+    if (!remakePersonTimings(project).length) missing.push("连续完整的原视频时间轴");
+    if (!isRemakeCopyPlanReady(project)) missing.push(noNarration ? "无口播分镜预处理" : "全部语义文案区间");
     if (!project.references.background) missing.push("背景图");
     if (!noNarration && !project.references.audio) missing.push("原视频音频");
-    if (!remakeImagesReady(project)) missing.push("4 组换人十二宫格");
+    if (!remakeImagesReady(project)) missing.push("全部分组分镜图");
     if (!noNarration && project.voice !== "female" && project.voice !== "male") missing.push("配音声线");
     return { ready: missing.length === 0, missing };
 }

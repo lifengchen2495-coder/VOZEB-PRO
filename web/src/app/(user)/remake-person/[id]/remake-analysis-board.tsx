@@ -63,7 +63,7 @@ export function RemakeAnalysisBoard({
                     ) : null}
                     {!taskActive && taskError && project.analysis.raw ? (
                         <details className="mt-2 text-xs">
-                            <summary className="cursor-pointer font-medium">查看48镜头分析原始返回</summary>
+                            <summary className="cursor-pointer font-medium">查看镜头分析原始返回</summary>
                             <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/30 p-3 font-mono leading-5">{project.analysis.raw}</pre>
                         </details>
                     ) : null}
@@ -77,7 +77,7 @@ export function RemakeAnalysisBoard({
                 items={[
                     {
                         key: "frames",
-                        label: <TabLabel icon={<Images className="size-3.5" />} text="48 抽帧" count={project.frames.length} />,
+                        label: <TabLabel icon={<Images className="size-3.5" />} text="镜头抽帧" count={project.frames.length} />,
                         children: <FrameGrid frames={project.frames} selectedId={selectedFrameId} onSelect={onSelectFrame} />,
                     },
                     {
@@ -87,7 +87,7 @@ export function RemakeAnalysisBoard({
                     },
                     {
                         key: "copy",
-                        label: <TabLabel icon={<FileText className="size-3.5" />} text="16 文案区间" count={project.copyBlocks.length} />,
+                        label: <TabLabel icon={<FileText className="size-3.5" />} text="文案区间" count={project.copyBlocks.length} />,
                         children: <CopyBlockRows blocks={project.copyBlocks} selectedId={selectedBlockId} onSelect={onSelectBlock} />,
                     },
                 ]}
@@ -200,7 +200,7 @@ function CopyBlockRows({ blocks, selectedId, onSelect }: { blocks: RemakeCopyBlo
                         {block.sourceText && block.text && block.sourceText !== block.text ? <span className="mt-1 block truncate text-[11px] text-muted-foreground">原文：{block.sourceText}</span> : null}
                     </span>
                     <span className="hidden text-right text-xs tabular-nums text-muted-foreground sm:block">
-                        单元 {block.frameOrdinals[0]}–{block.frameOrdinals[2]}
+                        单元 {block.frameOrdinals[0]}–{block.frameOrdinals.at(-1)}
                     </span>
                 </button>
             ))}

@@ -1,3 +1,5 @@
+import { splitRemakePersonShots, remakePersonFrameGroups, remakePersonCopyFrameGroups, remakePersonGridLayout, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
+import { remakePersonSegmentAnalysisPrompt, remakePersonSegmentCopyPrompt } from "@/lib/remake-person-segment-prompts";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +23,6 @@ import {
     remakeSourceCopyForAnalysis,
     REMAKE_COPY_BLOCK_COUNT,
     REMAKE_FRAME_COUNT,
-    REMAKE_FRAMES_PER_COPY_BLOCK,
     REMAKE_NO_NARRATION_TEXT,
     type RemakeContactSheetInput,
     type RemakeCopyBlock,
@@ -40,7 +41,7 @@ import { requestFrameRemakeTranscription, resolveFrameTranscriptionModel } from 
 import { deleteUserMediaAssetsCascade } from "@/lib/server/user-media-deletion-service";
 
 type ProbeResult = { hasAudio: boolean; durationMs: number; width: number; height: number; ratio: string };
-type VideoFrameAnalysis = Pick<RemakeFrame, "subtitle" | "sellingPoint" | "shotType" | "description" | "subjectRatio" | "hasFace"> & {
+type VideoFrameAnalysis = Pick<RemakeFrame, "segmentIndex" | "subtitle" | "sellingPoint" | "shotType" | "description" | "subjectRatio" | "hasFace"> & {
     ordinal: number;
     time: number;
     endTime: number;
@@ -66,13 +67,10 @@ type PendingAnalysisRefund = {
 const MAX_SOURCE_VIDEO_BYTES = 200 * 1024 * 1024;
 const INLINE_VIDEO_TARGET_BYTES = 22 * 1024 * 1024;
 const MAX_INLINE_VIDEO_BYTES = 24 * 1024 * 1024;
-const FRAME_BATCH_SIZE = 12;
 const FRAME_EXTRACTION_CONCURRENCY = 4;
 const FRAME_PERSISTENCE_CONCURRENCY = 4;
 // Allow one frame at the analysis video's 12 fps plus timestamp rounding, only at the final boundary.
 const VIDEO_END_TOLERANCE_MS = 100;
-const CONTACT_SHEET_COLUMNS = 3;
-const CONTACT_SHEET_ROWS = 4;
 const CONTACT_SHEET_WIDTH = 1_080;
 const CONTACT_SHEET_HEIGHT = 1_920;
 const DOUBAO_VIDEO_UNDERSTANDING_MODEL = "doubao-seed-2-0-pro-260215";
@@ -230,9 +228,9 @@ function isStrictAnalysisComplete(project: Awaited<ReturnType<typeof markRemakeP
     return (
         project.analysis.status === "completed" &&
         project.analysis.mode === "video" &&
-        project.frames.length === REMAKE_FRAME_COUNT &&
-        project.copyBlocks.length === REMAKE_COPY_BLOCK_COUNT &&
-        project.groups?.filter((group) => group.sourceContactSheet?.url).length === REMAKE_FRAME_COUNT / FRAME_BATCH_SIZE &&
+        remakePersonFrameGroups(project.frames).length > 0 &&
+        project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
+        project.groups?.filter((group) => group.sourceContactSheet?.url).length === remakePersonFrameGroups(project.frames).length &&
         project.copy?.status === "completed" &&
         (isRemakeNoNarrationCopy(project.sourceCopy) || Boolean(project.references?.audio?.url))
     );
@@ -409,7 +407,7 @@ async function understandVideo(input: {
             const call = await requestDoubaoVideoUnderstanding({ ...input, candidate, idempotencyKey });
             input.onResponse(call.arguments);
             try {
-                const understanding = parseVideoUnderstanding(call.arguments, input.durationMs);
+                const understanding = parseVideoUnderstanding(call.arguments, input.durationMs, true);
                 input.onCharge(call.headers);
                 return understanding;
             } catch (error) {
@@ -420,7 +418,7 @@ async function understandVideo(input: {
             latestError = error;
         }
     }
-    throw new Error(`来源视频理解失败：${toSafeGenerationErrorMessage(latestError, "视频理解模型未返回完整的 48 条镜头分析")}`);
+    throw new Error(`来源视频理解失败：${toSafeGenerationErrorMessage(latestError, "视频理解模型未返回完整的镜头分析")}`);
 }
 
 async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationMs: number; candidate: ResolvedLogicalModel; model: string; origin: string; credential: string; task: RemakeAnalysisTask; idempotencyKey: string }) {
@@ -428,7 +426,7 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
     const fileId = await uploadDoubaoVideo(input.candidate, input.bytes);
     try {
         await waitForDoubaoFile(input.candidate, fileId);
-        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs);
+        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs, true);
         const body = {
             model: input.candidate.upstreamModel,
             input: [
@@ -458,9 +456,9 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
     }
 }
 
-export function buildDoubaoVideoUnderstandingPrompt(durationMs: number) {
+export function buildDoubaoVideoUnderstandingPrompt(durationMs: number, segmented = false) {
     if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error("原视频时长无效");
-    return REMAKE_FEISHU_ANALYSIS_PROMPT;
+    return segmented ? remakePersonSegmentAnalysisPrompt(durationMs) : REMAKE_FEISHU_ANALYSIS_PROMPT;
 }
 
 async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer) {
@@ -540,7 +538,7 @@ function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
     });
 }
 
-export function parseVideoUnderstanding(argumentsText: string, durationMs: number): VideoUnderstandingResult {
+export function parseVideoUnderstanding(argumentsText: string, durationMs: number, segmented = false): VideoUnderstandingResult {
     const response = argumentsText.trim();
     const fence = response.match(/^```(?:json|text|markdown|yaml)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
     const text = (fence?.[1] ?? response).trim();
@@ -556,23 +554,23 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
         payload = parsed as Record<string, unknown>;
     } else {
         // 正文缺分镜或字段时保留具体原因，不能误报成 JSON 错误。
-        payload = parseRemakePersonAnalysisBody(text);
+        payload = parseRemakePersonAnalysisBody(text, segmented);
     }
     if (payload.sourceCopy !== undefined && (typeof payload.sourceCopy !== "string" || payload.sourceCopy.length > 200_000)) throw new Error("视频理解模型返回的原文案字段无效");
     const sourceCopy = typeof payload.sourceCopy === "string" ? payload.sourceCopy.trim() : "";
     const items = records(payload.frames);
-    if (items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型返回了 ${items.length} 个分镜，必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`);
+    if (segmented ? !items.length || items.length > REMAKE_PERSON_MAX_FRAMES : items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型返回了 ${items.length} 个分镜，${segmented ? "必须返回实际镜头，数量在1至600之间" : `必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`}`);
     const durationSeconds = roundedSeconds(durationMs / 1_000);
     const byOrdinal = new Map<number, VideoFrameAnalysis>();
     for (const item of items) {
-        const ordinal = strictOrdinal(item.ordinal, REMAKE_FRAME_COUNT);
+        const ordinal = strictOrdinal(item.ordinal, segmented ? items.length : REMAKE_FRAME_COUNT);
         if (!ordinal || byOrdinal.has(ordinal)) throw new Error("视频理解模型返回了重复或无效的镜头编号");
         const rawStart = parseTimestamp(item.startTime);
         const rawEnd = parseTimestamp(item.endTime);
         if (rawStart === null || rawEnd === null || !Number.isFinite(rawStart) || !Number.isFinite(rawEnd) || rawStart < 0 || rawEnd <= rawStart) throw new Error(`镜头 ${ordinal} 的时间字段不合格`);
         const time = roundedSeconds(rawStart);
         let endTime = roundedSeconds(rawEnd);
-        if (ordinal === REMAKE_FRAME_COUNT && Math.abs(Math.round(endTime * 1_000) - durationMs) <= VIDEO_END_TOLERANCE_MS) endTime = durationSeconds;
+        if (ordinal === items.length && Math.abs(Math.round(endTime * 1_000) - durationMs) <= VIDEO_END_TOLERANCE_MS) endTime = durationSeconds;
         if (endTime <= time || endTime > durationSeconds) {
             throw new Error(`镜头 ${ordinal} 的时间字段不合格（开始 ${time} 秒，结束 ${endTime} 秒，视频时长 ${durationSeconds} 秒）`);
         }
@@ -587,14 +585,14 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
         byOrdinal.set(ordinal, { ordinal, time, endTime, subtitle, sellingPoint, shotType, description, subjectRatio, hasFace: item.hasFace });
     }
     const frames = Array.from(byOrdinal.values()).sort((left, right) => left.ordinal - right.ordinal);
-    if (frames.some((frame, index) => frame.ordinal !== index + 1)) throw new Error("视频理解模型没有覆盖完整的 1-48 镜头编号");
+    if (frames.some((frame, index) => frame.ordinal !== index + 1)) throw new Error("视频理解模型没有覆盖连续的全部镜头编号");
     if (frames[0]?.time !== 0) throw new Error("视频理解模型的第一段必须从视频开头开始");
     for (const [index, frame] of frames.entries()) {
         const previous = frames[index - 1];
-        if (previous && frame.time !== previous.endTime) throw new Error(`分镜${frame.ordinal}从${frame.time}秒开始，上一分镜在${previous.endTime}秒结束；48段时间线必须连续且无重叠`);
+        if (previous && frame.time !== previous.endTime) throw new Error(`分镜${frame.ordinal}从${frame.time}秒开始，上一分镜在${previous.endTime}秒结束；分镜时间线必须连续且无重叠`);
     }
     if (frames.at(-1)?.endTime !== durationSeconds) throw new Error(`最后一个分镜结束于${frames.at(-1)?.endTime}秒，必须精确结束于视频实际结尾${durationSeconds}秒`);
-    return { frames, sourceCopy };
+    return { frames: segmented ? splitRemakePersonShots(frames, durationMs) : frames, sourceCopy };
 }
 
 async function extractAnalyzedFrames(input: { sourcePath: string; workDirectory: string; analysis: VideoFrameAnalysis[]; task: RemakeAnalysisTask; onAsset: (storageKey: string) => void }): Promise<ExtractedFrame[]> {
@@ -614,13 +612,14 @@ async function extractAnalyzedFrames(input: { sourcePath: string; workDirectory:
             taskId: input.task.id,
             originalName: `remake-person-frame-${String(sample.ordinal).padStart(2, "0")}.jpg`,
             assetIndex: sample.ordinal - 1,
-            assetCount: REMAKE_FRAME_COUNT,
+            assetCount: samples.length,
         });
         const frameUrl = asset.serverUrl || asset.url;
         const storageKey = storageKeyFromAssetUrl(frameUrl);
         if (storageKey) input.onAsset(storageKey);
         return {
             ordinal: sample.ordinal,
+            ...(sample.segmentIndex ? { segmentIndex: sample.segmentIndex } : {}),
             time: sample.time,
             endTime: sample.endTime,
             frameUrl,
@@ -639,7 +638,7 @@ async function extractAnalyzedFrames(input: { sourcePath: string; workDirectory:
 }
 
 async function createAndPersistContactSheets(input: { frames: ExtractedFrame[]; task: RemakeAnalysisTask; onAsset: (storageKey: string) => void }): Promise<RemakeContactSheetInput[]> {
-    const batches = Array.from({ length: REMAKE_FRAME_COUNT / FRAME_BATCH_SIZE }, (_, index) => input.frames.slice(index * FRAME_BATCH_SIZE, (index + 1) * FRAME_BATCH_SIZE));
+    const batches = remakePersonFrameGroups(input.frames).map((group) => input.frames.slice(group.startFrame - 1, group.endFrame));
     return mapConcurrent(batches, 2, async (batch, batchIndex) => {
         const groupOrdinal = batchIndex + 1;
         const bytes = await createContactSheet(batch);
@@ -671,14 +670,16 @@ async function createAndPersistContactSheets(input: { frames: ExtractedFrame[]; 
 }
 
 async function createContactSheet(batch: ExtractedFrame[]) {
-    if (batch.length !== FRAME_BATCH_SIZE) throw new Error("十二宫格必须包含完整的 12 个帧单元");
-    const cellWidth = CONTACT_SHEET_WIDTH / CONTACT_SHEET_COLUMNS;
-    const cellHeight = CONTACT_SHEET_HEIGHT / CONTACT_SHEET_ROWS;
+    const { columns, rows } = remakePersonGridLayout(batch.length);
     const composites: OverlayOptions[] = [];
     for (const [index, frame] of batch.entries()) {
-        const image = await sharp(frame.bytes).resize(cellWidth, cellHeight, { fit: "cover", position: "centre" }).toBuffer();
-        const left = (index % CONTACT_SHEET_COLUMNS) * cellWidth;
-        const top = Math.floor(index / CONTACT_SHEET_COLUMNS) * cellHeight;
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        const left = Math.floor(column * CONTACT_SHEET_WIDTH / columns);
+        const top = Math.floor(row * CONTACT_SHEET_HEIGHT / rows);
+        const cellWidth = Math.floor((column + 1) * CONTACT_SHEET_WIDTH / columns) - left;
+        const cellHeight = Math.floor((row + 1) * CONTACT_SHEET_HEIGHT / rows) - top;
+        const image = await sharp(frame.bytes).resize(cellWidth, cellHeight, { fit: "contain", background: "#111111" }).toBuffer();
         composites.push({ input: image, left, top });
     }
     return sharp({ create: { width: CONTACT_SHEET_WIDTH, height: CONTACT_SHEET_HEIGHT, channels: 3, background: "#111111" } })
@@ -697,7 +698,7 @@ async function planSemanticCopy(input: {
     task: RemakeAnalysisTask;
     onCharge: (headers: Headers) => void;
 }): Promise<CopyPlan> {
-    if (!input.sourceCopy.trim()) return buildCopyPlan(emptyCopySegmentation(), input.frames);
+    if (!input.sourceCopy.trim()) return buildCopyPlan(emptyCopySegmentation(remakePersonCopyFrameGroups(input.frames).length), input.frames);
     let latestError: unknown;
     for (const candidate of input.candidates) {
         const baseKey = systemAiIdempotencyKey("remake-person-copy-planning", input.task.userId, input.task.id, candidate.channelId, candidate.upstreamModel);
@@ -708,8 +709,8 @@ async function planSemanticCopy(input: {
                 cookie: Object.keys(workerHeaders).length ? "" : input.credential,
                 candidate,
                 messages: [
-                    { role: "system", content: REMAKE_FEISHU_COPY_PROMPT },
-                    { role: "user", content: JSON.stringify({ "48镜头解析": renderFeishuVideoAnalysis(input.frames), "原文案": input.sourceCopy, "用户选择": "选项A：保持原文" }) },
+                    { role: "system", content: input.frames[0]?.segmentIndex ? remakePersonSegmentCopyPrompt(input.frames) : REMAKE_FEISHU_COPY_PROMPT },
+                    { role: "user", content: JSON.stringify({ "镜头解析": renderFeishuVideoAnalysis(input.frames), "原文案": input.sourceCopy, "用户选择": "选项A：保持原文" }) },
                 ],
                 boards: [],
                 allowTextOnly: true,
@@ -730,7 +731,7 @@ async function planSemanticCopy(input: {
             latestError = error;
         }
     }
-    throw new Error(`原文案切分失败：${toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的 16 段语义切分")}`);
+    throw new Error(`原文案切分失败：${toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的语义切分")}`);
 }
 
 function planningHeaders(model: string, candidate: ResolvedLogicalModel, idempotencyKey: string, workerHeaders: Record<string, string>) {
@@ -744,7 +745,7 @@ function planningHeaders(model: string, candidate: ResolvedLogicalModel, idempot
 }
 
 export function parseOriginalCopyPlan(raw: string, sourceCopy: string, frames: RemakeFrame[]): CopyPlan {
-    const texts = parseRemakePersonCopyBody(raw);
+    const texts = parseRemakePersonCopyBody(raw, remakePersonCopyFrameGroups(frames));
     const lengths = texts.map((text) => Array.from(normalizeCoverageText(text)).length);
     if (texts.map(normalizeCoverageText).join("") !== normalizeCoverageText(sourceCopy)) throw new Error("选项A的字幕表没有按原顺序完整覆盖原文案");
     const nonempty = lengths.flatMap((length, index) => length ? [index] : []);
@@ -786,18 +787,19 @@ function restoreExactSourceSegments(source: string, normalizedLengths: number[])
 }
 
 function buildCopyPlan(segmentation: CopySegmentation, frames: RemakeFrame[]): CopyPlan {
-    if (segmentation.segments.length !== REMAKE_COPY_BLOCK_COUNT || segmentation.texts.length !== REMAKE_COPY_BLOCK_COUNT || segmentation.paragraphOrdinalsByBlock.length !== REMAKE_COPY_BLOCK_COUNT || frames.length !== REMAKE_FRAME_COUNT) {
-        throw new Error("无法生成完整的 16 个文案区间");
+    const ranges = remakePersonCopyFrameGroups(frames);
+    if (!ranges.length || segmentation.segments.length !== ranges.length || segmentation.texts.length !== ranges.length || segmentation.paragraphOrdinalsByBlock.length !== ranges.length) {
+        throw new Error("无法生成完整的全部文案区间");
     }
     const blocks = segmentation.segments.map((sourceText, index): RemakeCopyBlock => {
         const ordinal = index + 1;
-        const firstFrameOrdinal = index * 3 + 1;
-        const firstFrame = frames[firstFrameOrdinal - 1];
-        const lastFrame = frames[firstFrameOrdinal + 1];
+        const frameOrdinals = ranges[index];
+        const firstFrame = frames[frameOrdinals[0] - 1];
+        const lastFrame = frames[frameOrdinals.at(-1)! - 1];
         return {
             id: `copy-block-${ordinal}`,
             ordinal,
-            frameOrdinals: [firstFrameOrdinal, firstFrameOrdinal + 1, firstFrameOrdinal + 2],
+            frameOrdinals,
             startTime: firstFrame.time,
             endTime: lastFrame.endTime,
             sourceText,
@@ -812,7 +814,7 @@ function buildCopyPlan(segmentation: CopySegmentation, frames: RemakeFrame[]): C
         sourceText: block.sourceText,
         text: block.text,
     }));
-    const statuses = blocks.map((block, index) => classifyCopyBlock(block, frames.slice(index * REMAKE_FRAMES_PER_COPY_BLOCK, index * REMAKE_FRAMES_PER_COPY_BLOCK + REMAKE_FRAMES_PER_COPY_BLOCK)));
+    const statuses = blocks.map((block, index) => classifyCopyBlock(block, frames.filter((frame) => ranges[index].includes(frame.ordinal))));
     const countStatus = (status: CopyBlockStatus) => statuses.filter((value) => value === status).length;
     const optionRaw = hasNarration ? "A: 保持原文案" : REMAKE_NO_NARRATION_TEXT;
     return {
@@ -820,7 +822,7 @@ function buildCopyPlan(segmentation: CopySegmentation, frames: RemakeFrame[]): C
         copy: {
             status: "completed",
             optionRaw,
-            rawReport: renderFeishuCopyReport(blocks, segmentation.paragraphs, mappings, statuses, optionRaw),
+            rawReport: renderFeishuCopyReport(blocks, segmentation.paragraphs, mappings, statuses, optionRaw, frames),
             paragraphs: segmentation.paragraphs,
             mappings,
             checks: { sequential: true, noDuplicates: true, noSkips: true },
@@ -835,12 +837,12 @@ function buildCopyPlan(segmentation: CopySegmentation, frames: RemakeFrame[]): C
     };
 }
 
-function emptyCopySegmentation(): CopySegmentation {
+function emptyCopySegmentation(count = REMAKE_COPY_BLOCK_COUNT): CopySegmentation {
     return {
-        segments: Array.from({ length: REMAKE_COPY_BLOCK_COUNT }, () => ""),
-        texts: Array.from({ length: REMAKE_COPY_BLOCK_COUNT }, () => ""),
+        segments: Array.from({ length: count }, () => ""),
+        texts: Array.from({ length: count }, () => ""),
         paragraphs: [],
-        paragraphOrdinalsByBlock: Array.from({ length: REMAKE_COPY_BLOCK_COUNT }, () => []),
+        paragraphOrdinalsByBlock: Array.from({ length: count }, () => []),
     };
 }
 
@@ -872,39 +874,39 @@ function isCharacterSubsequence(source: string, target: string) {
 
 function renderFeishuVideoAnalysis(frames: VideoFrameAnalysis[]) {
     const sectionNames = ["第一部分", "第二部分", "第三部分", "第四部分"];
-    return Array.from({ length: REMAKE_FRAME_COUNT / FRAME_BATCH_SIZE }, (_, groupIndex) => {
-        const batch = frames.slice(groupIndex * FRAME_BATCH_SIZE, (groupIndex + 1) * FRAME_BATCH_SIZE);
-        const start = groupIndex * FRAME_BATCH_SIZE + 1;
-        const end = start + FRAME_BATCH_SIZE - 1;
+    return remakePersonFrameGroups(frames).map((group, groupIndex) => {
+        const start = group.startFrame;
+        const end = group.endFrame;
+        const batch = frames.slice(start - 1, end);
         const recordsText = batch
             .map(
                 (frame) =>
                     `分镜${frame.ordinal}:\n时间: "${formatTimestamp(frame.time)}-${formatTimestamp(frame.endTime)}"\n字幕: "${quotedText(frame.subtitle)}"\n卖点: "${quotedText(frame.sellingPoint)}"\n镜头类型: "${quotedText(frame.shotType)}"\n画面描述: "${quotedText(frame.description)}"\n人物占比: "${quotedText(frame.subjectRatio)}"\n是否包含人脸: "${frame.hasFace ? "是" : "否"}"`,
             )
             .join("\n\n");
-        return `### ${sectionNames[groupIndex]}：分镜${start}-${end}\n${recordsText}`;
+        return `### ${sectionNames[groupIndex] || `第${groupIndex + 1}部分`}：分镜${start}-${end}\n${recordsText}`;
     }).join("\n\n---\n\n");
 }
 
-function renderFeishuCopyReport(blocks: RemakeCopyBlock[], paragraphs: Array<{ ordinal: number; text: string }>, mappings: Array<{ blockOrdinal: number; paragraphOrdinals: number[] }>, statuses: CopyBlockStatus[], optionRaw: string) {
+function renderFeishuCopyReport(blocks: RemakeCopyBlock[], paragraphs: Array<{ ordinal: number; text: string }>, mappings: Array<{ blockOrdinal: number; paragraphOrdinals: number[] }>, statuses: CopyBlockStatus[], optionRaw: string, frames: RemakeFrame[]) {
     const mappingByBlock = new Map(mappings.map((mapping) => [mapping.blockOrdinal, mapping.paragraphOrdinals]));
     const allocationRows = blocks
         .map((block) => {
             const paragraphReferences = (mappingByBlock.get(block.ordinal) || []).map((ordinal) => `段落${ordinal}`).join("、") || "-";
-            return `| 区间${block.ordinal} | 分镜${block.frameOrdinals[0]}-${block.frameOrdinals[2]} | ${paragraphReferences} |`;
+            return `| 区间${block.ordinal} | 分镜${block.frameOrdinals[0]}-${block.frameOrdinals.at(-1)} | ${paragraphReferences} |`;
         })
         .join("\n");
-    const statusRows = blocks.map((block, index) => `| 区间${block.ordinal} | 分镜${block.frameOrdinals[0]}-${block.frameOrdinals[2]} | ${reportCell(Array.from(block.text).slice(0, 20).join(""))} | ${copyStatusLabel(statuses[index])} |`).join("\n");
+    const statusRows = blocks.map((block, index) => `| 区间${block.ordinal} | 分镜${block.frameOrdinals[0]}-${block.frameOrdinals.at(-1)} | ${reportCell(Array.from(block.text).slice(0, 20).join(""))} | ${copyStatusLabel(statuses[index])} |`).join("\n");
     const countStatus = (status: CopyBlockStatus) => statuses.filter((value) => value === status).length;
     const numerals = ["一", "二", "三", "四"];
-    const groups = Array.from({ length: 4 }, (_, groupIndex) => {
+    const groups = remakePersonFrameGroups(frames).map((group, groupIndex) => {
         const rows = blocks
-            .slice(groupIndex * 4, groupIndex * 4 + 4)
-            .map((block) => `| 分镜${block.frameOrdinals[0]}-${block.frameOrdinals[2]} | ${reportCell(block.text)} |`)
+            .filter((block) => block.frameOrdinals[0] >= group.startFrame && block.frameOrdinals.at(-1)! <= group.endFrame)
+            .map((block) => `| 分镜${block.frameOrdinals[0]}-${block.frameOrdinals.at(-1)} | ${reportCell(block.text)} |`)
             .join("\n");
-        return `=== 第${numerals[groupIndex]}部分：分镜${groupIndex * 12 + 1}-${groupIndex * 12 + 12}（第${numerals[groupIndex]}张十二宫格） ===\n\n| 分镜区间 | 字幕 |\n| --- | --- |\n${rows}`;
+        return `=== 第${numerals[groupIndex] || groupIndex + 1}部分：分镜${group.startFrame}-${group.endFrame}（第${numerals[groupIndex] || groupIndex + 1}张分镜拼图） ===\n\n| 分镜区间 | 字幕 |\n| --- | --- |\n${rows}`;
     }).join("\n\n---\n\n");
-    return `=== 文案切分结果 ===\n\n- 文案段落数量：${paragraphs.length} 个\n- 分镜区间数量：${REMAKE_COPY_BLOCK_COUNT} 个\n\n段落分配表：\n| 区间 | 分镜范围 | 文案段落 |\n| --- | --- | --- |\n${allocationRows}\n\n---\n\n=== 处理方式 ===\n\n选择：${optionRaw}\n\n---\n\n=== 顺序填充检查 ===\n\n| 区间 | 分镜范围 | 文案内容（前 20 字符） | 状态 |\n| --- | --- | --- | --- |\n${statusRows}\n\n检查结果：\n- 顺序正确：是\n- 无重复：是\n- 无跳跃：是\n\n---\n\n=== 字幕补全校对统计 ===\n\n- 保持不变：${countStatus("unchanged")} 个区间\n- 补全字幕：${countStatus("completed")} 个区间\n- 校对修正：${countStatus("corrected")} 个区间\n- 字幕为空：${countStatus("empty")} 个区间\n\n---\n\n${groups}`;
+    return `=== 文案切分结果 ===\n\n- 文案段落数量：${paragraphs.length} 个\n- 分镜区间数量：${blocks.length} 个\n\n段落分配表：\n| 区间 | 分镜范围 | 文案段落 |\n| --- | --- | --- |\n${allocationRows}\n\n---\n\n=== 处理方式 ===\n\n选择：${optionRaw}\n\n---\n\n=== 顺序填充检查 ===\n\n| 区间 | 分镜范围 | 文案内容（前 20 字符） | 状态 |\n| --- | --- | --- | --- |\n${statusRows}\n\n检查结果：\n- 顺序正确：是\n- 无重复：是\n- 无跳跃：是\n\n---\n\n=== 字幕补全校对统计 ===\n\n- 保持不变：${countStatus("unchanged")} 个区间\n- 补全字幕：${countStatus("completed")} 个区间\n- 校对修正：${countStatus("corrected")} 个区间\n- 字幕为空：${countStatus("empty")} 个区间\n\n---\n\n${groups}`;
 }
 
 function copyStatusLabel(status: CopyBlockStatus) {

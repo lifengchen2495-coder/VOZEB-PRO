@@ -81,8 +81,8 @@ export async function buildRemakeProductionVisualBoards(input: {
     groupOrdinal?: number;
 }): Promise<RemakeProductionVisualBoard[]> {
     const allGroups = [...input.redrawnContactSheets].sort((left, right) => left.groupOrdinal - right.groupOrdinal);
-    if (allGroups.length !== 4 || allGroups.some((group, index) => group.groupOrdinal !== index + 1 || group.frameOrdinals.length !== 12 || group.frameOrdinals.some((ordinal, frameIndex) => ordinal !== index * 12 + frameIndex + 1))) {
-        throw new RemakeProductionVisionError("生产视觉规划必须读取连续四组重绘十二宫格", 409);
+    if (!allGroups.length || allGroups.some((group, index) => group.groupOrdinal !== index + 1 || !group.frameOrdinals.length) || allGroups.flatMap((group) => group.frameOrdinals).some((ordinal, index) => ordinal !== index + 1)) {
+        throw new RemakeProductionVisionError("生产视觉规划必须读取连续的全部分组重绘分镜图", 409);
     }
     const groups = input.groupOrdinal === undefined ? allGroups : allGroups.filter((group) => group.groupOrdinal === input.groupOrdinal);
     if (!groups.length) throw new RemakeProductionVisionError("视频提示词分组无效", 400);
@@ -95,7 +95,7 @@ export async function buildRemakeProductionVisualBoards(input: {
     const product = input.product ? await readProductionImage(input.product, "原产品参考图", input.origin, input.cookie, budget, referenceOptions) : undefined;
     const redrawnContactSheets: LoadedImage[] = [];
     for (const group of groups) {
-        const label = `第 ${group.groupOrdinal} 组重绘十二宫格`;
+        const label = `第 ${group.groupOrdinal} 组重绘分镜拼图`;
         const image = await readProductionImage(group.asset, label, input.origin, input.cookie, budget);
         const dimensionError = remakeContactSheetDimensionError(image.width, image.height);
         if (dimensionError) throw new RemakeProductionVisionError(`${label}不满足生产要求：${dimensionError}`, 422);
@@ -216,7 +216,7 @@ async function createContactSheetBoard(images: LoadedImage[], groups: Array<{ gr
     const width = singleGroup ? 720 : CONTACT_SHEET_BOARD_WIDTH;
     const height = singleGroup ? 1280 + LABEL_HEIGHT : CONTACT_SHEET_BOARD_HEIGHT;
     const tileWidth = singleGroup ? width : width / 2;
-    const tileHeight = singleGroup ? height : height / 2;
+    const tileHeight = singleGroup ? height : Math.floor(height / Math.ceil(groups.length / 2));
     const imageHeight = tileHeight - LABEL_HEIGHT;
     const overlays: OverlayOptions[] = [];
     for (const [index, image] of images.entries()) {
@@ -237,13 +237,13 @@ async function createContactSheetBoard(images: LoadedImage[], groups: Array<{ gr
         height,
         bytes,
         description: singleGroup
-            ? `第 ${groups[0].groupOrdinal} 组重绘十二宫格，按 3×4 从左到右、从上到下对应分镜 ${groups[0].frameOrdinals[0]}-${groups[0].frameOrdinals[11]}。`
-            : "按左上、右上、左下、右下顺序对应第 1 至第 4 组重绘十二宫格，每组内部均按 3×4 从左到右、从上到下对应连续 12 帧。",
+            ? `第 ${groups[0].groupOrdinal} 组重绘分镜图，从左到右、从上到下对应分镜 ${groups[0].frameOrdinals[0]}-${groups[0].frameOrdinals.at(-1)}，共 ${groups[0].frameOrdinals.length} 镜。`
+            : `按从左到右、从上到下顺序对应 ${groups.length} 组重绘分镜图，各组实际镜头编号见 layout。`,
         layout: groups.map((group, index) => ({
             order: index + 1,
             role: "redrawn-contact-sheet" as const,
             label: `GROUP ${group.groupOrdinal}`,
-            position: singleGroup ? "center" : ["top-left", "top-right", "bottom-left", "bottom-right"][index],
+            position: singleGroup ? "center" : `row-${Math.floor(index / 2) + 1}-column-${index % 2 + 1}`,
             provided: true,
             groupOrdinal: group.groupOrdinal,
             frameOrdinals: [...group.frameOrdinals],

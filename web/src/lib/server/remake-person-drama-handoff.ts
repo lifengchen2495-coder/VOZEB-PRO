@@ -1,3 +1,4 @@
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import type { DramaCharacter, DramaProject, DramaShot, DramaSourceAsset } from "@/lib/drama-project-contract";
 import type { RemakeCopyBlock, RemakeFrame, RemakeProject } from "@/lib/server/remake-person-project-contract";
 import { createDramaProjectForUser, DramaProjectServiceError, updateDramaProjectForUser } from "@/lib/server/drama-project-service";
@@ -98,7 +99,7 @@ function populateDramaProject(created: DramaProject, project: RemakeProject): Dr
                 ...episode,
                 title: "复刻生产稿",
                 script: project.copyBlocks.map(resolveCopyText).filter(Boolean).join("\n\n") || project.sourceCopy,
-                outline: "按原视频 48 个抽帧单元组织为 16 个连续生产区间。",
+                outline: `按原视频 ${project.frames.length} 个抽帧单元组织为 ${project.copyBlocks.length} 个连续生产区间。`,
                 sourceRange: "电商视频复刻分析结果",
                 reviewStatus: "visual_ready",
                 shots: buildRemakeDramaShots(project),
@@ -185,8 +186,8 @@ function narratorCharacter(voice: RemakeProject["voice"]): DramaCharacter {
 
 function assertHandoffReady(project: RemakeProject) {
     if (!project.sourceVideo?.url) throw new RemakeDramaHandoffError("请先上传原视频", 409);
-    if (project.frames.length !== 48) throw new RemakeDramaHandoffError("请先完成 48 帧抽取", 409);
-    if (project.copyBlocks.length !== 16) throw new RemakeDramaHandoffError("请先生成 16 个文案区间", 409);
+    if (!remakePersonFrameGroups(project.frames).length) throw new RemakeDramaHandoffError("请先完成 全部分镜抽帧", 409);
+    if (project.copyBlocks.length !== remakePersonCopyFrameGroups(project.frames).length) throw new RemakeDramaHandoffError("请先生成 全部文案区间", 409);
 }
 
 function resolveCopyText(block: RemakeCopyBlock) {

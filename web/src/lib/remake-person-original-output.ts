@@ -7,11 +7,11 @@ function field(section: string, labels: string, ordinal?: number) {
     return value.trim();
 }
 
-export function parseRemakePersonAnalysisBody(raw: string) {
+export function parseRemakePersonAnalysisBody(raw: string, variableCount = false) {
     const headings = [...raw.matchAll(/^[ \t]*(?:#{1,6}[ \t]*)?(?:[-*][ \t]+)?(?:\*\*|__)?分镜[ \t]*(\d+)[ \t]*(?:\*\*|__)?[ \t]*[:：]?[ \t]*(?:\*\*|__)?[ \t]*\r?$/gmu)];
-    if (headings.length !== 48) throw new Error(`视频理解模型返回了 ${headings.length} 个分镜，必须返回完整的 48 条镜头分析`);
+    if (variableCount ? !headings.length || headings.length > 600 : headings.length !== 48) throw new Error(`视频理解模型返回了 ${headings.length} 个分镜，${variableCount ? "须返回1至600个实际镜头" : "必须返回完整的 48 条镜头分析"}`);
     const frames = headings.map((heading, index) => {
-        if (Number(heading[1]) !== index + 1) throw new Error("视频分析镜头编号必须从1至48连续排列");
+        if (Number(heading[1]) !== index + 1) throw new Error("视频分析镜头编号必须从1连续排列");
         const ordinal = Number(heading[1]);
         const section = raw.slice(heading.index! + heading[0].length, headings[index + 1]?.index ?? raw.length);
         const times = field(section, "时间", ordinal).split(/\s*[-–—~～至]\s*/);
@@ -29,7 +29,7 @@ export function parseRemakePersonAnalysisBody(raw: string) {
     return { sourceCopy: field(raw, "sourceCopy|原文案"), frames };
 }
 
-export function parseRemakePersonCopyBody(raw: string) {
+export function parseRemakePersonCopyBody(raw: string, expectedRanges = Array.from({ length: 16 }, (_, i) => [i * 3 + 1, i * 3 + 3])) {
     const rows: Array<{ first: number; last: number; text: string }> = [];
     let inTable = false;
     for (const line of raw.split(/\r?\n/)) {
@@ -42,8 +42,8 @@ export function parseRemakePersonCopyBody(raw: string) {
         if (!range || cells.length !== 2) throw new Error("文案预处理字幕表格式不完整");
         rows.push({ first: Number(range[1]), last: Number(range[2]), text: cells[1] === "-" ? "" : cells[1] });
     }
-    if (rows.length !== 16 || rows.some((row, index) => row.first !== index * 3 + 1 || row.last !== index * 3 + 3)) {
-        throw new Error("文案预处理须依次返回分镜1-3至46-48的16个字幕区间，不能缺失、重复或乱序");
+    if (rows.length !== expectedRanges.length || rows.some((row, index) => row.first !== expectedRanges[index][0] || row.last !== expectedRanges[index].at(-1))) {
+        throw new Error(`文案预处理须依次返回${expectedRanges.length}个字幕区间（${expectedRanges.map((range) => `分镜${range[0]}-${range.at(-1)}`).join("、")}），不能缺失、重复或乱序`);
     }
     return rows.map((row) => row.text);
 }

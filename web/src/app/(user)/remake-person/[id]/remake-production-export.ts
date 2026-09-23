@@ -1,3 +1,4 @@
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import { remakePersonGroupTiming, remakePersonSeconds } from "@/lib/remake-person-timing";
 import { remakeVideosReady } from "./remake-production-utils";
 import { saveAs } from "file-saver";
@@ -60,9 +61,9 @@ export async function downloadRemakeProductionBundle(project: RemakeProject): Pr
     files.push(
         { name: "文案/原文案.txt", data: project.sourceCopy },
         { name: "文案/文案预处理报告.md", data: project.copy.rawReport },
-        { name: "分析/48镜头解析.md", data: project.analysis.raw || "" },
+        { name: "分析/镜头解析.md", data: project.analysis.raw || "" },
         { name: "分析/抽帧时间点.txt", data: project.analysis.timestamps.map(formatTimestamp).join(",") },
-        { name: "分析/48镜头结构.json", data: JSON.stringify(project.frames, null, 2) },
+        { name: "分析/镜头结构.json", data: JSON.stringify(project.frames, null, 2) },
         {
             name: "提示词/生图-全部.txt",
             data: project.groups
@@ -132,8 +133,8 @@ function productionMedia(project: RemakeProject): Array<{ kind: ExportManifestEn
         !noNarration && project.references.audio ? { kind: "audio" as const, name: "参考素材/原视频音频", asset: project.references.audio } : null,
     ];
     const groups = project.groups.flatMap((group) => [
-        group.sourceContactSheet ? { kind: "source-contact-sheet" as const, name: `十二宫格/来源-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.sourceContactSheet } : null,
-        group.imageGeneration.result ? { kind: "storyboard-contact-sheet" as const, name: `十二宫格/最终换人-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
+        group.sourceContactSheet ? { kind: "source-contact-sheet" as const, name: `分镜拼图/来源-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.sourceContactSheet } : null,
+        group.imageGeneration.result ? { kind: "storyboard-contact-sheet" as const, name: `分镜拼图/最终换人-${String(group.ordinal).padStart(2, "0")}-${group.id}`, asset: group.imageGeneration.result } : null,
         group.videoGeneration.result ? { kind: "generated-video" as const, name: `独立视频/${String(group.ordinal).padStart(2, "0")}-${group.id}-${remakePersonSeconds(remakePersonGroupTiming(project, group.id)!.durationMs)}秒`, asset: group.videoGeneration.result } : null,
     ]);
     const merged = project.mergedVideo ? [{ kind: "merged-video" as const, name: "成片/换人不换品", asset: project.mergedVideo }] : [];
@@ -145,15 +146,15 @@ function assertCompleteProductionBundle(project: RemakeProject) {
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     if (!project.sourceVideo?.url) missing.push("原始视频");
     if (project.analysis.status !== "completed" || project.analysis.mode !== "video") missing.push("完整视频分析");
-    if (project.frames.length !== 48 || project.frames.some((frame, index) => frame.ordinal !== index + 1 || frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("48 张抽帧");
+    if (!remakePersonFrameGroups(project.frames).length || project.frames.some((frame, index) => frame.ordinal !== index + 1 || frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("全部镜头抽帧");
     if (!project.references.background?.url) missing.push("背景图");
     if (!noNarration && !project.references.audio?.url) missing.push("原视频音频");
     if (!project.copy.rawReport.trim()) missing.push("文案预处理报告");
-    if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (noNarration ? Boolean(block.sourceText.trim() || block.text.trim()) : Boolean(block.sourceText.trim()) !== Boolean(block.text.trim())))) {
-        missing.push(noNarration ? "无口播分镜预处理" : "16 个文案区间");
+    if (project.copyBlocks.length !== remakePersonCopyFrameGroups(project.frames).length || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (noNarration ? Boolean(block.sourceText.trim() || block.text.trim()) : Boolean(block.sourceText.trim()) !== Boolean(block.text.trim())))) {
+        missing.push(noNarration ? "无口播分镜预处理" : "全部文案区间");
     }
     if (
-        project.groups.length !== 4 ||
+        !project.groups.length ||
         project.groups.some(
             (group, index) =>
                 group.ordinal !== index + 1 ||
@@ -166,7 +167,7 @@ function assertCompleteProductionBundle(project: RemakeProject) {
                 !group.videoGeneration.result?.url,
         )
     ) {
-        missing.push("来源十二宫格、4 组换人生图、视频 Prompt 和按原片时长生成的视频");
+        missing.push("来源分镜拼图、全部分组换人生图、视频 Prompt 和按原片时长生成的视频");
     }
     if (!remakeVideosReady(project)) missing.push("与原片时间轴一致的视频");
     if (missing.length) throw new Error(`生产包不完整：缺少${Array.from(new Set(missing)).join("、")}，请补齐或重新生成后再下载`);
@@ -199,7 +200,7 @@ function seedanceAssetBindings(project: RemakeProject, manifest: ExportManifestE
             "@人物图": character,
             "@人物补充": characterSupplement,
             "@背景图": background,
-            "@十二宫格图": exportedPath(`十二宫格/最终换人-${suffix}`),
+            [remakePersonGroupTiming(project, group.id)?.version === 2 ? "@分镜图" : "@十二宫格图"]: exportedPath(`分镜拼图/最终换人-${suffix}`),
             "@音频文件": audio,
             "独立视频": exportedPath(`独立视频/${suffix}-${remakePersonSeconds(remakePersonGroupTiming(project, group.id)!.durationMs)}秒`),
         };

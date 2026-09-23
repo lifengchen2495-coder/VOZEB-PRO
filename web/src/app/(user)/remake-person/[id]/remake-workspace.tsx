@@ -1,5 +1,7 @@
 "use client";
 
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Drawer, Dropdown, Input, Modal, Skeleton, Tag, Tooltip } from "antd";
 import { ArrowLeft, Check, CircleAlert, CloudCheck, CloudOff, CloudUpload, FileOutput, Images, LoaderCircle, MoreHorizontal, PanelLeft, RefreshCw, Send, SlidersHorizontal, Video, WandSparkles } from "lucide-react";
@@ -574,9 +576,9 @@ export function RemakeWorkspace() {
     const analysisReady =
         project.analysis.status === "completed" &&
         project.analysis.mode === "video" &&
-        project.frames.length === 48 &&
+        remakePersonFrameGroups(project.frames).length > 0 &&
         project.frames.every((frame) => frame.analysisStatus === "available") &&
-        project.copyBlocks.length === 16 &&
+        project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.copy.status === "completed" &&
         project.copy.checks.sequential &&
         project.copy.checks.noDuplicates &&
@@ -646,13 +648,17 @@ export function RemakeWorkspace() {
 
             <RemakeFlowNavigation stage={flowStage} analysisReady={analysisReady} imagesReady={imagesReady} productionReady={productionReady} onChange={changeFlowStage} />
 
+            {project.frames.length > 0 && project.frames.every((frame) => frame.segmentIndex === undefined) ? (
+                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">当前项目沿用旧分组。点击“重新分析”后按每 15 秒分组，最后一组使用剩余时长，并按实际镜头数重新生成分镜图和视频。</p>
+            ) : null}
+
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 {flowStage === "analysis" ? (
                     <div className="flex h-full min-h-0 min-w-0 flex-col">
                         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-3 py-2 sm:px-4">
                             <div className="min-w-0">
                                 <div className="text-xs font-medium text-muted-foreground">阶段 01</div>
-                                <div className="truncate text-sm font-semibold">来源视频理解与 48 镜头解析</div>
+                                <div className="truncate text-sm font-semibold">来源视频理解与镜头解析</div>
                             </div>
                             <Tag color={analysisReady ? "success" : analysisActive ? "processing" : "default"} className="!m-0">
                                 {analysisReady ? "分析就绪" : analysisActive ? "分析中" : "等待完成"}
@@ -735,7 +741,7 @@ export function RemakeWorkspace() {
 function RemakeFlowNavigation({ stage, analysisReady, imagesReady, productionReady, onChange }: { stage: RemakeFlowStage; analysisReady: boolean; imagesReady: boolean; productionReady: boolean; onChange: (stage: RemakeFlowStage) => void }) {
     const steps: Array<{ key: RemakeFlowStage; label: string; icon: React.ReactNode; completed: boolean }> = [
         { key: "analysis", label: "来源分析", icon: <Video className="size-4" />, completed: analysisReady },
-        { key: "images", label: "十二宫格重绘", icon: <Images className="size-4" />, completed: imagesReady },
+        { key: "images", label: "分镜拼图重绘", icon: <Images className="size-4" />, completed: imagesReady },
         { key: "production", label: "生产内容", icon: <FileOutput className="size-4" />, completed: productionReady },
     ];
     return (

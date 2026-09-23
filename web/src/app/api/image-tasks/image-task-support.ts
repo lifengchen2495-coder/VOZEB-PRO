@@ -319,7 +319,7 @@ export function imageTaskRequestPrompt(task: Pick<ImageTask, "projectId" | "gene
     // /api/image-tasks validates this project's reserved slot, owner, prompt and references
     // before storing the task. Keep its workflow prompt intact through every provider path.
     if (task.projectId?.startsWith("frame-remake-") && /^frame-remake-(?:template|image):[^:\s]+$/.test(task.generationSlotId || "")) return task.prompt;
-    if (task.projectId?.startsWith("remake-person-") && /^remake-person:(?:1-12|13-24|25-36|37-48):storyboard$/.test(task.generationSlotId || "")) return task.prompt;
+    if (task.projectId?.startsWith("remake-person-") && /^remake-person:\d+-\d+:storyboard$/.test(task.generationSlotId || "")) return task.prompt;
     return decorate();
 }
 

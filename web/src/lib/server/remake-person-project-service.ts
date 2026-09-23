@@ -1,3 +1,4 @@
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
 import { remakePersonGroupTiming, remakePersonTaskTimingMatches, remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { invalidateRemakeMergedVideo } from "./remake-person-merge-contract";
 import { createHash } from "node:crypto";
@@ -29,8 +30,6 @@ import {
     normalizeRemakeSourceVideo,
     normalizeRemakeTimestamps,
     normalizeRemakeVideoPrompt,
-    REMAKE_COPY_BLOCK_COUNT,
-    REMAKE_FRAME_COUNT,
     REMAKE_NO_NARRATION_TEXT,
     type HydratedRemakeProject,
     type RemakeAnalysisMode,
@@ -198,7 +197,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
     // 指令属于项目设置；上游重置也保留，修改时仅清对应组的视频下游。
     const instructionGroups = normalizeRemakeRangeGroups(input.groups, current.groups);
     groups = groups.map((group, index) => {
-        const videoPromptInstructions = instructionGroups[index].videoPromptInstructions || "";
+        const videoPromptInstructions = instructionGroups[index]?.videoPromptInstructions || "";
         const changed = videoPromptInstructions !== (current.groups[index]?.videoPromptInstructions || "");
         return { ...group, videoPromptInstructions, ...(changed ? { videoPrompt: "", videoGeneration: { status: "idle" as const } } : {}) };
     });
@@ -211,7 +210,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
               fallback: sourceCopyChanged ? [] : current.copyBlocks,
               mappings: copy.mappings,
           });
-    if (!sourceCopyChanged && hasOwn(input, "copyBlocks") && copy.status === "completed" && copy.mappings.length === REMAKE_COPY_BLOCK_COUNT) {
+    if (!sourceCopyChanged && hasOwn(input, "copyBlocks") && copy.status === "completed" && copy.mappings.length === remakePersonCopyFrameGroups(frames).length) {
         const blocksByOrdinal = new Map(copyBlocks.map((block) => [block.ordinal, block]));
         const mappings = copy.mappings.map((mapping) => ({ ...mapping, text: blocksByOrdinal.get(mapping.blockOrdinal)?.text || "" }));
         const unchangedBlocks = copyBlocks.filter((block) => block.text.trim() && block.text === block.sourceText).length;
@@ -349,17 +348,17 @@ export async function completeRemakeProjectAnalysis(input: {
         const normalized = normalizeRemakeProjectWorkflow(current);
         if (normalized.analysis.taskId !== input.task.id) return current;
         const frames = normalizeRemakeFrames(input.frames);
-        if (frames.length !== REMAKE_FRAME_COUNT || frames.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("视频分析必须返回完整的 12 个帧单元", 400);
+        if (!remakePersonFrameGroups(frames).length || frames.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("视频分析必须返回完整的分镜帧单元", 400);
         const timestamps = input.timestamps === undefined ? frames.map((frame) => frame.time) : normalizeRemakeTimestamps(input.timestamps);
-        if (timestamps.length !== REMAKE_FRAME_COUNT) throw new RemakeProjectServiceError("视频分析必须返回完整的 12 个抽帧时间点", 400);
+        if (timestamps.length !== frames.length) throw new RemakeProjectServiceError("视频分析必须返回全部抽帧时间点", 400);
         const sourceCopy = normalized.sourceCopy.trim() || cleanText(input.sourceCopy, MAX_SOURCE_COPY_LENGTH);
         const copy = normalizeRemakeCopyState(input.copy, normalized.copy);
         const copyBlocks = input.copyBlocks
             ? normalizeRemakeCopyBlocks(input.copyBlocks, { frames, sourceCopy, strategy: normalized.copyStrategy, mappings: copy.mappings, requireComplete: true })
             : buildRemakeCopyBlocks({ frames, sourceCopy, strategy: normalized.copyStrategy, existing: normalized.copyBlocks, mappings: copy.mappings });
-        if (copyBlocks.length !== REMAKE_COPY_BLOCK_COUNT) throw new RemakeProjectServiceError("视频分析必须返回完整的 16 个语义文案区间", 400);
-        const groups = mergeRemakeContactSheets(emptyRemakeRangeGroups().map((group, index) => ({ ...group, videoPromptInstructions: normalized.groups[index]?.videoPromptInstructions || "" })), input.contactSheets);
-        if (input.contactSheets && groups.some((group) => !group.sourceContactSheet)) throw new RemakeProjectServiceError("视频分析必须返回完整的 4 组十二宫格拼图，每组 1 张", 400);
+        if (copyBlocks.length !== remakePersonCopyFrameGroups(frames).length) throw new RemakeProjectServiceError("视频分析必须返回完整的语义文案区间", 400);
+        const groups = mergeRemakeContactSheets(emptyRemakeRangeGroups(frames).map((group, index) => ({ ...group, videoPromptInstructions: normalized.groups[index]?.videoPromptInstructions || "" })), input.contactSheets);
+        if (input.contactSheets && groups.some((group) => !group.sourceContactSheet)) throw new RemakeProjectServiceError("视频分析必须返回全部分组分镜拼图，每组 1 张", 400);
         const audio = input.audio === undefined ? normalized.references.audio : normalizeRemakeMediaAsset(input.audio);
         if (input.audio && !audio) throw new RemakeProjectServiceError("原视频参考音频信息不完整", 400);
         let pipeline = withPipelineStep(normalized.pipeline, "analysis", "completed", "references", input.task.id);
@@ -402,7 +401,7 @@ export async function completeRemakeProductionForUser(userId: string, id: string
         } else if (expectedRevision !== undefined && expectedRevision !== normalized.revision) {
             throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
         }
-        if (normalized.frames.length !== REMAKE_FRAME_COUNT) throw new RemakeProjectServiceError("请先完成 48 帧视频分析", 409);
+        if (!remakePersonFrameGroups(normalized.frames).length) throw new RemakeProjectServiceError("请先完成全部分镜视频分析", 409);
         const copy = normalizeRemakeCopyState(input.copy, normalized.copy);
         const copyBlocks = input.copyBlocks
             ? normalizeRemakeCopyBlocks(input.copyBlocks, {
@@ -419,15 +418,15 @@ export async function completeRemakeProductionForUser(userId: string, id: string
                   mappings: copy.mappings,
                   requireComplete: true,
               });
-        if (copyBlocks.length !== REMAKE_COPY_BLOCK_COUNT) throw new RemakeProjectServiceError("请提交完整的 16 个语义文案区间", 400);
+        if (copyBlocks.length !== remakePersonCopyFrameGroups(normalized.frames).length) throw new RemakeProjectServiceError("请提交完整的语义文案区间", 400);
         const promptPatches = normalizeVideoPromptPatches(input.videoPrompts);
         if (input.groupId !== undefined) {
             const target = normalized.groups.find((group) => group.id === input.groupId);
             if (!target || input.videoPrompts?.length !== 1 || promptPatches.length !== 1 || promptPatches[0].ordinal !== target.ordinal) {
                 throw new RemakeProjectServiceError("请提交指定分组的一条完整视频提示词", 400);
             }
-        } else if (input.videoPrompts && (input.videoPrompts.length !== 4 || promptPatches.length !== 4)) {
-            throw new RemakeProjectServiceError("请提交完整的 4 组视频提示词", 400);
+        } else if (input.videoPrompts && (input.videoPrompts.length !== normalized.groups.length || promptPatches.length !== normalized.groups.length)) {
+            throw new RemakeProjectServiceError("请提交全部分组的视频提示词", 400);
         }
         if (normalized.groups.some((group) => (input.groupId === undefined || group.id === input.groupId) && (group.videoGeneration.status === "queued" || group.videoGeneration.status === "running"))) {
             throw new RemakeProjectServiceError("本组视频任务尚未结束，请完成后再生成 Prompt", 409);
@@ -436,10 +435,10 @@ export async function completeRemakeProductionForUser(userId: string, id: string
             group.videoPrompt !== normalized.groups[index]?.videoPrompt ? { ...group, videoGeneration: { status: "idle" as const } } : group,
         );
         const promptsReady = groups.every((group) => Boolean(group.videoPrompt));
-        if (!promptsReady && input.groupId === undefined) throw new RemakeProjectServiceError("4 组视频提示词尚未完整生成", 409);
+        if (!promptsReady && input.groupId === undefined) throw new RemakeProjectServiceError("全部分组视频提示词尚未完整生成", 409);
         const noNarration = isRemakeNoNarrationCopy(normalized.sourceCopy);
         const copyReady = copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
-        if (!copyReady) throw new RemakeProjectServiceError(noNarration ? "无口播视频的 16 个语义文案区间必须保持为空" : "16 个语义文案区间的空字幕与原文分配不一致", 409);
+        if (!copyReady) throw new RemakeProjectServiceError(noNarration ? "无口播视频的 全部语义文案区间必须保持为空" : "全部语义文案区间的空字幕与原文分配不一致", 409);
         const imagesReady = groups.every((group) => group.imageGeneration.status === "completed" && Boolean(group.imageGeneration.result));
         const stage = promptsReady ? (imagesReady ? "ready" : "prompts-ready") : "prompts";
         let pipeline = withPipelineStep(normalized.pipeline, "copy", "completed", stage, copy.taskId);
@@ -463,20 +462,20 @@ export async function validateRemakePersonImageRequest(input: {
     size?: string;
     hasMask?: boolean;
 }) {
-    if (!input.projectId.startsWith("remake-person-") || !/^remake-person:(?:1-12|13-24|25-36|37-48):storyboard$/.test(input.slotId)) {
+    if (!input.projectId.startsWith("remake-person-") || !/^remake-person:\d+-\d+:storyboard$/.test(input.slotId)) {
         throw new RemakeProjectServiceError("换人生图的项目或分镜组标识不完整", 400);
     }
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
     const group = project.groups.find((item) => remakeImageGenerationSlotId("storyboard", item.id) === input.slotId);
     if (!group?.sourceContactSheet?.url || !project.references.background?.url) {
-        throw new RemakeProjectServiceError("请先准备该组来源十二宫格拼图和背景图", 409);
+        throw new RemakeProjectServiceError("请先准备该组来源分镜拼图和背景图", 409);
     }
     if (input.hasMask || !sameRemakeTaskReferences({ references: input.references || [] }, "storyboard", group, project.references, project.frames)) {
-        throw new RemakeProjectServiceError("换人生图只接收 1 张来源十二宫格拼图、背景图及已上传的人物图和产品图，请刷新页面后重试，不要传入 12 张散帧", 409);
+        throw new RemakeProjectServiceError("换人生图只接收 1 张来源分镜拼图、背景图及已上传的人物图和产品图，请刷新页面后重试，不要传入多张散帧", 409);
     }
     const prompt = canonicalRemakeImagePrompt("storyboard", group, project.references, project.frames, project.productInfo);
     if (input.prompt !== prompt || group.imageGeneration.prompt !== prompt) {
-        throw new RemakeProjectServiceError("生图提示词与当前十二宫格和参考素材不一致，请刷新并保存后重试", 409);
+        throw new RemakeProjectServiceError("生图提示词与当前分镜拼图和参考素材不一致，请刷新并保存后重试", 409);
     }
     if (input.size !== "9:16" || (project.modelSelection.image && input.model !== project.modelSelection.image)) {
         throw new RemakeProjectServiceError("生图模型或比例与已保存项目不一致，请刷新后重试", 409);
@@ -484,10 +483,10 @@ export async function validateRemakePersonImageRequest(input: {
 }
 
 export async function assertRemakeImageGenerationsForUser(userId: string, project: Pick<HydratedRemakeProject, "id" | "references" | "groups" | "frames" | "modelSelection" | "productInfo">) {
-    if (project.groups.length !== 4) throw new RemakeProjectServiceError("四组十二宫格生图任务不完整", 409);
+    if (project.groups.length !== remakePersonFrameGroups(project.frames).length || !project.groups.length) throw new RemakeProjectServiceError("全部分组分镜拼图生图任务不完整", 409);
     await Promise.all(
         project.groups.map(async (group) => {
-            if (group.imageGeneration.status !== "completed" || !group.imageGeneration.taskId || !group.imageGeneration.result) throw new RemakeProjectServiceError(`分镜 ${group.id} 的最终十二宫格尚未由有效任务完成`, 409);
+            if (group.imageGeneration.status !== "completed" || !group.imageGeneration.taskId || !group.imageGeneration.result) throw new RemakeProjectServiceError(`分镜 ${group.id} 的最终分镜拼图尚未由有效任务完成`, 409);
             const authoritative = await authoritativeRemakeImageGeneration({
                 userId,
                 projectId: project.id,
@@ -501,7 +500,7 @@ export async function assertRemakeImageGenerationsForUser(userId: string, projec
                 selectedModel: project.modelSelection.image,
             });
             if (authoritative.status !== "completed" || mediaIdentity(authoritative.result?.url) !== mediaIdentity(group.imageGeneration.result.url)) {
-                throw new RemakeProjectServiceError(`分镜 ${group.id} 的十二宫格结果与生成任务不一致`, 409);
+                throw new RemakeProjectServiceError(`分镜 ${group.id} 的分镜拼图结果与生成任务不一致`, 409);
             }
         }),
     );
@@ -607,7 +606,7 @@ async function authoritativeRemakeImageGeneration(input: {
     const attemptNo = taskRecord?.attemptNo ?? 0;
     if (attemptNo !== requestedAttempt || attemptNo < minimumAttempt) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的图片任务重试版本不一致`, 409);
     if (task.kind !== "edit" || task.config?.size !== "9:16") {
-        throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的十二宫格必须由 9:16 图片编辑任务生成`, 409);
+        throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的分镜拼图必须由 9:16 图片编辑任务生成`, 409);
     }
     const taskModel = task.config.logicalModel || task.config.model;
     if (task.prompt !== prompt || (input.selectedModel && taskModel !== input.selectedModel) || !sameRemakeTaskReferences(task, input.stage, input.group, input.references, input.frames, savedTask)) {
@@ -627,7 +626,7 @@ function authoritativeImageAsset(task: ImageTask, groupId: string): RemakeMediaA
     const storageKey = localMediaStorageKeyFromValue(url);
     if (!storageKey || (!url.startsWith("/api/generation-log-assets/") && !url.startsWith("/api/reference-assets/"))) return undefined;
     const dimensionError = remakeContactSheetDimensionError(result?.width, result?.height);
-    if (dimensionError) throw new RemakeProjectServiceError(`分镜 ${groupId} 的十二宫格结果不合格：${dimensionError}`, 409);
+    if (dimensionError) throw new RemakeProjectServiceError(`分镜 ${groupId} 的分镜拼图结果不合格：${dimensionError}`, 409);
     return {
         url,
         storageKey,
@@ -725,7 +724,7 @@ function deriveRemakePipeline(input: {
 
     const referencesReady = Boolean(input.references.background?.url);
     const imagesReady =
-        input.groups.length === 4 &&
+        input.groups.length > 0 &&
         input.groups.every(
             (group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url,
         );
@@ -735,8 +734,8 @@ function deriveRemakePipeline(input: {
     const imageError = input.groups.some((group) => group.imageGeneration.status === "error");
     const noNarration = isRemakeNoNarrationCopy(input.sourceCopy);
     const copyReady =
-        input.copy.status === "completed" && input.copyBlocks.length === REMAKE_COPY_BLOCK_COUNT && input.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
-    const promptsReady = input.groups.length === 4 && input.groups.every((group) => Boolean(group.videoPrompt.trim()));
+        input.copy.status === "completed" && input.copyBlocks.length > 0 && input.copy.mappings.length === input.copyBlocks.length && input.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
+    const promptsReady = input.groups.length > 0 && input.groups.every((group) => Boolean(group.videoPrompt.trim()));
     pipeline.steps.references.status = referencesReady ? "completed" : "pending";
     pipeline.steps.images.status = imagesReady ? "completed" : imageError ? "error" : imageActive ? "running" : "pending";
     pipeline.steps.copy = {
@@ -795,7 +794,7 @@ function normalizeVideoPromptPatches(value: RemakeVideoPromptInput[] | undefined
     const prompts = new Map<number, { ordinal: number; videoPrompt: string }>();
     for (const item of value) {
         const source = object(item);
-        const ordinal = integerInRange(source.groupOrdinal, 1, 4);
+        const ordinal = integerInRange(source.groupOrdinal, 1, REMAKE_PERSON_MAX_FRAMES);
         const videoPrompt = normalizeRemakeVideoPrompt(source.prompt);
         if (ordinal && videoPrompt && !prompts.has(ordinal)) prompts.set(ordinal, { ordinal, videoPrompt });
     }
@@ -824,9 +823,9 @@ function sourceVideoInput(value: unknown, allowEmpty: boolean) {
 
 function normalizeEditableFrames(input: Record<string, unknown>, current: RemakeFrame[]) {
     if (!hasOwn(input, "frames")) return current;
-    if (current.length !== REMAKE_FRAME_COUNT) throw new RemakeProjectServiceError("视频分析完成后才能编辑帧解析", 409);
+    if (!remakePersonFrameGroups(current).length) throw new RemakeProjectServiceError("视频分析完成后才能编辑帧解析", 409);
     const incoming = normalizeRemakeFrames(input.frames);
-    if (incoming.length !== REMAKE_FRAME_COUNT || incoming.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("请提交完整的 12 个帧分析单元", 400);
+    if (incoming.length !== current.length || incoming.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("请提交全部帧分析单元", 400);
     return current.map((frame, index) => ({
         ...frame,
         subtitle: incoming[index].subtitle,

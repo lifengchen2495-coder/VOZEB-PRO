@@ -1,7 +1,9 @@
+import { remakePersonFrameGroups } from "./remake-person-layout";
 export const REMAKE_PERSON_OUTPUT_FPS = 30;
 
 export type RemakePersonTiming = {
-    version: 1;
+    version: 1 | 2;
+    frameOrdinals?: number[];
     groupId: string;
     sourceDurationMs: number;
     startMs: number;
@@ -13,12 +15,13 @@ export type RemakePersonTiming = {
 
 export type RemakePersonTimelineInput = {
     sourceVideo?: { durationMs?: number };
-    frames: Array<{ ordinal: number; time: number; endTime: number }>;
+    frames: Array<{ ordinal: number; time: number; endTime: number; segmentIndex?: number }>;
 };
 
 export function remakePersonTimings(project: RemakePersonTimelineInput): RemakePersonTiming[] {
     const frames = [...project.frames].sort((left, right) => left.ordinal - right.ordinal);
-    if (frames.length !== 48) return [];
+    const groups = remakePersonFrameGroups(frames);
+    if (!groups.length) return [];
     const durationMs = Math.round(project.sourceVideo?.durationMs || frames.at(-1)!.endTime * 1000);
     if (!Number.isSafeInteger(durationMs) || durationMs <= 0) return [];
     let previousEnd = 0;
@@ -29,12 +32,13 @@ export function remakePersonTimings(project: RemakePersonTimelineInput): RemakeP
         previousEnd = end;
     }
     if (Math.abs(previousEnd - durationMs) > 2) return [];
-    const timings: RemakePersonTiming[] = Array.from({ length: 4 }, (_, index) => {
-        const first = index * 12;
+    const timings: RemakePersonTiming[] = groups.map((group, index) => {
+        const first = group.startFrame - 1;
         const startMs = index === 0 ? 0 : Math.round(frames[first].time * 1000);
-        const endMs = index === 3 ? durationMs : Math.round(frames[first + 12].time * 1000);
-        const outputFrames = Math.round(endMs * REMAKE_PERSON_OUTPUT_FPS / 1000) - Math.round(startMs * REMAKE_PERSON_OUTPUT_FPS / 1000);
-        return { version: 1, groupId: `${first + 1}-${first + 12}`, sourceDurationMs: durationMs, startMs, endMs, durationMs: endMs - startMs, outputFrames, requestSeconds: Math.max(1, Math.ceil((endMs - startMs) / 1000)) };
+        const endMs = index === groups.length - 1 ? durationMs : Math.round(frames[group.endFrame].time * 1000);
+        const outputFrames = Math.max(1, Math.round(endMs * REMAKE_PERSON_OUTPUT_FPS / 1000) - Math.round(startMs * REMAKE_PERSON_OUTPUT_FPS / 1000));
+        const segmented = frames[0].segmentIndex !== undefined;
+        return { version: segmented ? 2 : 1, ...(segmented ? { frameOrdinals: frames.slice(first, group.endFrame).map((frame) => frame.ordinal) } : {}), groupId: group.id, sourceDurationMs: durationMs, startMs, endMs, durationMs: endMs - startMs, outputFrames, requestSeconds: Math.max(1, Math.ceil((endMs - startMs) / 1000)) };
     });
     return timings.every((timing) => timing.outputFrames > 0) ? timings : [];
 }

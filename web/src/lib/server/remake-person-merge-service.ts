@@ -81,8 +81,8 @@ async function mergeAndPersist(input: MergeRequest, project: HydratedRemakeProje
 }
 
 export function assertMergeReady(project: HydratedRemakeProject) {
-    if (remakePersonTimings(project).length !== 4) throw new RemakeProjectServiceError("原视频时间轴不完整，请重新分析", 409);
-    if (project.groups.length !== 4 || project.groups.some((group, index) => group.ordinal !== index + 1 || group.videoGeneration.status !== "completed" || !group.videoGeneration.taskId || !group.videoGeneration.result?.url)) throw new RemakeProjectServiceError("请先按原视频时长完成四组视频", 409);
+    if (!remakePersonTimings(project).length) throw new RemakeProjectServiceError("原视频时间轴不完整，请重新分析", 409);
+    if (!project.groups.length || project.groups.length !== remakePersonTimings(project).length || project.groups.some((group, index) => group.ordinal !== index + 1 || group.videoGeneration.status !== "completed" || !group.videoGeneration.taskId || !group.videoGeneration.result?.url)) throw new RemakeProjectServiceError("请先按原视频时长完成全部分组视频", 409);
 }
 
 export function remakeMergeNormalizationArgs(source: string, output: string, hasAudio: boolean, settings: RemakeVideoSettings | undefined, timing: RemakePersonTiming, sourceDimensions?: RemakeVideoDimensions) {

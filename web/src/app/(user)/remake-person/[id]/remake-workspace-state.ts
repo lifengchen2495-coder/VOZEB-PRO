@@ -1,3 +1,4 @@
+import { remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import { remakePersonGroupTiming, remakePersonTimingKey } from "@/lib/remake-person-timing";
 import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets, type RemakeTaskStatus } from "../remake-contract";
@@ -5,7 +6,7 @@ import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch
 export type RemakeWorkspacePatch = RemakeEditablePatch & Partial<Pick<RemakeProject, "copy" | "pipeline">>;
 
 export function recoveredFlowStage(project: RemakeProject): "analysis" | "images" | "production" {
-    if (project.groups.length === 4 && project.groups.every(groupImagesReady)) return "production";
+    if (project.groups.length > 0 && project.groups.every(groupImagesReady)) return "production";
     if (project.pipeline.stage === "references" || project.pipeline.stage === "images" || project.analysis.status === "completed") return "images";
     return "analysis";
 }
@@ -135,7 +136,7 @@ export function rebaseRemakeConflict(dirty: RemakeWorkspacePatch, local: RemakeP
 
 export function invalidateRemakeProduction(project: RemakeProject, patch: RemakeWorkspacePatch): RemakeWorkspacePatch {
     const groups = (patch.groups || project.groups).map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } }));
-    const imagesReady = groups.length === 4 && groups.every(groupImagesReady);
+    const imagesReady = groups.length > 0 && groups.every(groupImagesReady);
     const sourceCopyChanged = patch.sourceCopy !== undefined && patch.sourceCopy !== project.sourceCopy;
     return {
         ...patch,
@@ -149,7 +150,7 @@ export function invalidateRemakeProduction(project: RemakeProject, patch: Remake
             paragraphs: sourceCopyChanged ? [] : project.copy.paragraphs,
             mappings: sourceCopyChanged ? [] : project.copy.mappings,
             checks: { sequential: false, noDuplicates: false, noSkips: false },
-            stats: sourceCopyChanged ? { paragraphCount: 0, unchangedBlocks: 0, completedBlocks: 0, correctedBlocks: 0, emptyBlocks: 16 } : project.copy.stats,
+            stats: sourceCopyChanged ? { paragraphCount: 0, unchangedBlocks: 0, completedBlocks: 0, correctedBlocks: 0, emptyBlocks: project.copyBlocks.length } : project.copy.stats,
             error: "",
         },
         pipeline: {
@@ -177,14 +178,14 @@ export function invalidateRemakeImages(project: RemakeProject, patch: RemakeWork
     };
 }
 
-export function isRemakeCopyPlanReady(project: Pick<RemakeProject, "sourceCopy" | "copy" | "copyBlocks">) {
+export function isRemakeCopyPlanReady(project: Pick<RemakeProject, "sourceCopy" | "copy" | "copyBlocks" | "frames">) {
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     return (
         project.copy.status === "completed" &&
         project.copy.checks.sequential &&
         project.copy.checks.noDuplicates &&
         project.copy.checks.noSkips &&
-        project.copyBlocks.length === 16 &&
+        project.copyBlocks.length > 0 && project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())))
     );
 }
@@ -207,8 +208,8 @@ export function editRemakeCopyBlock(project: RemakeProject, blockId: string, pat
         },
         error: "",
     };
-    const copyReady = isRemakeCopyPlanReady({ sourceCopy: project.sourceCopy, copy, copyBlocks });
-    const imagesReady = groups.length === 4 && groups.every(groupImagesReady);
+    const copyReady = isRemakeCopyPlanReady({ sourceCopy: project.sourceCopy, copy, copyBlocks, frames: project.frames });
+    const imagesReady = groups.length > 0 && groups.every(groupImagesReady);
     return {
         copyBlocks,
         groups,

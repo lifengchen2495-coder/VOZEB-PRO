@@ -1,3 +1,4 @@
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import { remakePersonGroupTiming, remakePersonResultMatches } from "@/lib/remake-person-timing";
 import type { ImageGenerationResult } from "@/services/api/image";
 import { remakeStoryboardPrompt, remakeStoryboardPromptReferences } from "@/lib/remake-person-image-prompt";
@@ -56,11 +57,11 @@ export function remakeReferencesReady(project: Pick<RemakeProject, "references">
 }
 
 export function remakeImagesReady(project: Pick<RemakeProject, "groups">) {
-    return project.groups.length === 4 && project.groups.every((group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
+    return project.groups.length > 0 && project.groups.every((group) => group.imageGeneration.status === "completed" && group.imageGeneration.result?.url);
 }
 
 export function remakeVideosReady(project: Pick<RemakeProject, "groups" | "frames" | "sourceVideo">) {
-    return project.groups.length === 4 && project.groups.every((group) => group.videoGeneration.status === "completed" && group.videoGeneration.result?.url && remakePersonResultMatches(remakePersonGroupTiming(project, group.id), group.videoGeneration.result));
+    return project.groups.length > 0 && project.groups.every((group) => group.videoGeneration.status === "completed" && group.videoGeneration.result?.url && remakePersonResultMatches(remakePersonGroupTiming(project, group.id), group.videoGeneration.result));
 }
 
 export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo" | "sourceCopy" | "productInfo" | "analysis" | "frames" | "copyBlocks" | "references" | "groups" | "copy" | "voice">) {
@@ -69,7 +70,7 @@ export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo"
         Boolean(project.sourceVideo?.url) &&
         project.analysis.status === "completed" &&
         project.analysis.mode === "video" &&
-        project.frames.length === 48 &&
+        remakePersonFrameGroups(project.frames).length > 0 &&
         project.frames.every((frame, index) => frame.ordinal === index + 1 && frame.analysisStatus === "available" && Boolean(frame.frameUrl));
     const copyReady =
         project.copy.status === "completed" &&
@@ -77,10 +78,10 @@ export function remakeProductionReady(project: Pick<RemakeProject, "sourceVideo"
         project.copy.checks.noDuplicates &&
         project.copy.checks.noSkips &&
         Boolean(project.copy.rawReport.trim()) &&
-        project.copyBlocks.length === 16 &&
+        project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.copyBlocks.every((block, index) => block.ordinal === index + 1 && (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim())));
     const referencesReady = Boolean(project.references.background?.url && (noNarration || project.references.audio?.url));
-    const promptsReady = project.groups.length === 4 && project.groups.every((group, index) => group.ordinal === index + 1 && Boolean(group.sourceContactSheet?.url && group.videoPrompt.trim()));
+    const promptsReady = project.groups.length > 0 && project.groups.every((group, index) => group.ordinal === index + 1 && Boolean(group.sourceContactSheet?.url && group.videoPrompt.trim()));
     const voiceReady = noNarration || project.voice === "female" || project.voice === "male";
     return analysisReady && copyReady && referencesReady && remakeImagesReady(project) && promptsReady && voiceReady && remakeVideosReady(project);
 }

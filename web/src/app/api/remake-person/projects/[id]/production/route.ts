@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 import { readJsonBodyResult } from "@/lib/auth/request";
 import { getCurrentUser } from "@/lib/auth/session";
 import { resolveInternalOrigin } from "@/lib/server/internal-origin";
-import { REMAKE_PRODUCTION_GROUP_IDS } from "@/lib/server/remake-person-production-prompt";
 import { buildRemakeProductionForUser, RemakeProductionError } from "@/lib/server/remake-person-production-service";
 import { RemakeProjectServiceError } from "@/lib/server/remake-person-project-service";
 import { checkGenerationRateLimit, rateLimitHeaders } from "@/lib/server/security";
@@ -25,7 +24,7 @@ export async function POST(request: Request, context: Context) {
     const revision = optionalRevision(parsed.data.revision);
     if (revision === null) return NextResponse.json({ code: 400, data: null, msg: "项目版本号无效" }, { status: 400 });
     const groupId = parsed.data.groupId;
-    if (groupId !== undefined && (typeof groupId !== "string" || !REMAKE_PRODUCTION_GROUP_IDS.some((id) => id === groupId))) {
+    if (groupId !== undefined && (typeof groupId !== "string" || !/^\d{1,3}-\d{1,3}$/.test(groupId))) {
         return NextResponse.json({ code: 400, data: null, msg: "视频提示词分组无效" }, { status: 400 });
     }
     const inputVersion = parsed.data.inputVersion;
@@ -43,7 +42,7 @@ export async function POST(request: Request, context: Context) {
                 groupId,
                 inputVersion: inputVersion?.toLowerCase(),
             });
-            return NextResponse.json({ code: 0, data: { project }, msg: groupId ? `分镜 ${groupId} Prompt 已生成` : "一组 Seedance 生产包已生成" });
+            return NextResponse.json({ code: 0, data: { project }, msg: groupId ? `分镜 ${groupId} Prompt 已生成` : "Seedance 生产包已生成" });
         } catch (error) {
             if (error instanceof RemakeProjectServiceError || error instanceof RemakeProductionError) return NextResponse.json({ code: error.status, data: null, msg: error.message }, { status: error.status });
             throw error;

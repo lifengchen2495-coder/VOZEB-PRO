@@ -1,3 +1,4 @@
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
 import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 
 export const REMAKE_FRAME_COUNT = 48;
@@ -30,7 +31,7 @@ export type RemakePipelineStep = (typeof REMAKE_PIPELINE_STEPS)[number];
 export type RemakePipelineStage = RemakePipelineStep | "prompts-ready" | "ready" | "failed";
 export type RemakePipelineStepStatus = "pending" | "queued" | "running" | "completed" | "error";
 export type RemakeWorkStatus = "idle" | "queued" | "running" | "completed" | "error";
-export type RemakeRangeGroupId = (typeof REMAKE_RANGE_GROUP_DEFINITIONS)[number]["id"];
+export type RemakeRangeGroupId = string;
 
 export type RemakeModelSelection = {
     image: string;
@@ -81,6 +82,7 @@ export type RemakePipeline = {
 };
 
 export type RemakeFrame = {
+    segmentIndex?: number;
     ordinal: number;
     time: number;
     endTime: number;
@@ -99,7 +101,7 @@ export type RemakeFrame = {
 export type RemakeCopyBlock = {
     id: string;
     ordinal: number;
-    frameOrdinals: [number, number, number];
+    frameOrdinals: number[];
     startTime: number;
     endTime: number;
     sourceText: string;
@@ -379,18 +381,19 @@ export function normalizeRemakeFrames(value: unknown): RemakeFrame[] {
     }
     return Array.from(byOrdinal.values())
         .sort((left, right) => left.ordinal - right.ordinal)
-        .slice(0, REMAKE_FRAME_COUNT);
+        .slice(0, REMAKE_PERSON_MAX_FRAMES);
 }
 
 export function normalizeRemakeFrame(value: unknown): RemakeFrame | null {
     const source = object(value);
-    const ordinal = integerInRange(source.ordinal, 1, REMAKE_FRAME_COUNT);
+    const ordinal = integerInRange(source.ordinal, 1, REMAKE_PERSON_MAX_FRAMES);
     const frameUrl = cleanText(source.frameUrl, 4_000);
     if (!ordinal || !frameUrl) return null;
     const time = nonNegativeNumber(source.time);
     const endTime = Math.max(time, nonNegativeNumber(source.endTime));
     return {
         ordinal,
+        ...(integerInRange(source.segmentIndex, 1, REMAKE_PERSON_MAX_FRAMES) ? { segmentIndex: Number(source.segmentIndex) } : {}),
         time,
         endTime,
         frameUrl,
@@ -407,7 +410,7 @@ export function normalizeRemakeFrame(value: unknown): RemakeFrame | null {
 }
 
 export function normalizeRemakeTimestamps(value: unknown): number[] {
-    if (!Array.isArray(value) || value.length !== REMAKE_FRAME_COUNT) return [];
+    if (!Array.isArray(value) || !value.length || value.length > REMAKE_PERSON_MAX_FRAMES) return [];
     const timestamps = value.map(optionalNonNegativeNumber);
     return timestamps.every((item): item is number => item !== undefined) ? timestamps : [];
 }
@@ -442,17 +445,17 @@ export function normalizeRemakeCopyState(value: unknown, fallback: RemakeCopySta
         },
         stats: {
             paragraphCount: hasOwn(stats, "paragraphCount") ? nonNegativeInteger(stats.paragraphCount) : fallback.stats.paragraphCount,
-            unchangedBlocks: hasOwn(stats, "unchangedBlocks") ? boundedCount(stats.unchangedBlocks, REMAKE_COPY_BLOCK_COUNT) : fallback.stats.unchangedBlocks,
-            completedBlocks: hasOwn(stats, "completedBlocks") ? boundedCount(stats.completedBlocks, REMAKE_COPY_BLOCK_COUNT) : fallback.stats.completedBlocks,
-            correctedBlocks: hasOwn(stats, "correctedBlocks") ? boundedCount(stats.correctedBlocks, REMAKE_COPY_BLOCK_COUNT) : fallback.stats.correctedBlocks,
-            emptyBlocks: hasOwn(stats, "emptyBlocks") ? boundedCount(stats.emptyBlocks, REMAKE_COPY_BLOCK_COUNT) : fallback.stats.emptyBlocks,
+            unchangedBlocks: hasOwn(stats, "unchangedBlocks") ? boundedCount(stats.unchangedBlocks, REMAKE_PERSON_MAX_FRAMES) : fallback.stats.unchangedBlocks,
+            completedBlocks: hasOwn(stats, "completedBlocks") ? boundedCount(stats.completedBlocks, REMAKE_PERSON_MAX_FRAMES) : fallback.stats.completedBlocks,
+            correctedBlocks: hasOwn(stats, "correctedBlocks") ? boundedCount(stats.correctedBlocks, REMAKE_PERSON_MAX_FRAMES) : fallback.stats.correctedBlocks,
+            emptyBlocks: hasOwn(stats, "emptyBlocks") ? boundedCount(stats.emptyBlocks, REMAKE_PERSON_MAX_FRAMES) : fallback.stats.emptyBlocks,
         },
         error: hasOwn(source, "error") ? cleanText(source.error, 1_000) || undefined : fallback.error,
     };
 }
 
-export function emptyRemakeRangeGroups(): RemakeRangeGroup[] {
-    return REMAKE_RANGE_GROUP_DEFINITIONS.map((definition) => ({
+export function emptyRemakeRangeGroups(frames?: RemakeFrame[]): RemakeRangeGroup[] {
+    return (frames ? remakePersonFrameGroups(frames) : REMAKE_RANGE_GROUP_DEFINITIONS).map((definition) => ({
         id: definition.id,
         ordinal: definition.ordinal,
         frameOrdinals: frameOrdinalRange(definition.startFrame, definition.endFrame),
@@ -469,12 +472,13 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
     if (Array.isArray(value)) {
         for (const item of value) {
             const source = object(item);
-            const ordinal = groupOrdinal(source);
+            const ordinal = fallback.find((group) => group.id === source.id)?.ordinal || groupOrdinal(source);
             if (ordinal && !incomingByOrdinal.has(ordinal)) incomingByOrdinal.set(ordinal, source);
         }
     }
-    const emptyGroups = emptyRemakeRangeGroups();
-    return REMAKE_RANGE_GROUP_DEFINITIONS.map((definition) => {
+    const emptyGroups = fallback;
+    return fallback.map((base) => {
+        const definition = { id: base.id, ordinal: base.ordinal, startFrame: base.frameOrdinals[0], endFrame: base.frameOrdinals.at(-1)! };
         const previous = fallbackByOrdinal.get(definition.ordinal) || emptyGroups[definition.ordinal - 1];
         const source = incomingByOrdinal.get(definition.ordinal) || {};
         const generationSource = object(source.imageGeneration);
@@ -512,10 +516,10 @@ export function normalizeRemakeRangeGroups(value: unknown, fallback: RemakeRange
 }
 
 export function mergeRemakeContactSheets(groups: RemakeRangeGroup[], value: unknown): RemakeRangeGroup[] {
-    if (!Array.isArray(value)) return normalizeRemakeRangeGroups(groups);
+    if (!Array.isArray(value)) return normalizeRemakeRangeGroups(groups, groups);
     const patches = value.flatMap((item) => {
         const source = object(item);
-        const groupOrdinal = integerInRange(source.groupOrdinal, 1, REMAKE_RANGE_GROUP_COUNT);
+        const groupOrdinal = integerInRange(source.groupOrdinal, 1, groups.length);
         const asset = normalizeRemakeMediaAsset(source.asset);
         return groupOrdinal && asset ? [{ ordinal: groupOrdinal, sourceContactSheet: asset }] : [];
     });
@@ -524,13 +528,14 @@ export function mergeRemakeContactSheets(groups: RemakeRangeGroup[], value: unkn
 
 export function buildRemakeCopyBlocks(input: { frames: RemakeFrame[]; sourceCopy: string; strategy: RemakeCopyStrategy; existing?: RemakeCopyBlock[]; mappings?: RemakeCopyMapping[] }): RemakeCopyBlock[] {
     const frames = normalizeRemakeFrames(input.frames);
-    if (frames.length !== REMAKE_FRAME_COUNT || frames.some((frame, index) => frame.ordinal !== index + 1)) return [];
+    const ranges = remakePersonCopyFrameGroups(frames);
+    if (!ranges.length) return [];
     const existing = new Map((input.existing || []).map((block) => [block.ordinal, block]));
     const mappings = new Map((input.mappings || []).map((mapping) => [mapping.blockOrdinal, mapping]));
-    return Array.from({ length: REMAKE_COPY_BLOCK_COUNT }, (_, index) => {
+    return ranges.map((frameOrdinals, index) => {
         const ordinal = index + 1;
-        const firstFrame = frames[index * REMAKE_FRAMES_PER_COPY_BLOCK];
-        const lastFrame = frames[index * REMAKE_FRAMES_PER_COPY_BLOCK + REMAKE_FRAMES_PER_COPY_BLOCK - 1];
+        const firstFrame = frames[frameOrdinals[0] - 1];
+        const lastFrame = frames[frameOrdinals.at(-1)! - 1];
         const previous = existing.get(ordinal);
         const mapping = mappings.get(ordinal);
         const sourceText = mapping?.sourceText ?? previous?.sourceText ?? "";
@@ -538,7 +543,7 @@ export function buildRemakeCopyBlocks(input: { frames: RemakeFrame[]; sourceCopy
         return {
             id: `copy-block-${ordinal}`,
             ordinal,
-            frameOrdinals: [firstFrame.ordinal, firstFrame.ordinal + 1, lastFrame.ordinal],
+            frameOrdinals,
             startTime: firstFrame.time,
             endTime: lastFrame.endTime,
             sourceText,
@@ -548,16 +553,17 @@ export function buildRemakeCopyBlocks(input: { frames: RemakeFrame[]; sourceCopy
 }
 
 export function normalizeRemakeCopyBlocks(value: unknown, input: { frames: RemakeFrame[]; sourceCopy: string; strategy: RemakeCopyStrategy; fallback?: RemakeCopyBlock[]; mappings?: RemakeCopyMapping[]; requireComplete?: boolean }): RemakeCopyBlock[] {
+    const ranges = remakePersonCopyFrameGroups(input.frames);
     const incoming = Array.isArray(value)
         ? value.flatMap((item) => {
               const source = object(item);
-              const ordinal = integerInRange(source.ordinal, 1, REMAKE_COPY_BLOCK_COUNT);
+              const ordinal = integerInRange(source.ordinal, 1, ranges.length);
               if (!ordinal) return [];
               return [
                   {
                       id: `copy-block-${ordinal}`,
                       ordinal,
-                      frameOrdinals: [ordinal * 3 - 2, ordinal * 3 - 1, ordinal * 3] as [number, number, number],
+                      frameOrdinals: ranges[ordinal - 1],
                       startTime: nonNegativeNumber(source.startTime),
                       endTime: nonNegativeNumber(source.endTime),
                       sourceText: sourceSegment(source.sourceText),
@@ -567,7 +573,7 @@ export function normalizeRemakeCopyBlocks(value: unknown, input: { frames: Remak
           })
         : [];
     const uniqueIncoming = new Map(incoming.map((block) => [block.ordinal, block]));
-    if (input.requireComplete && (incoming.length !== REMAKE_COPY_BLOCK_COUNT || uniqueIncoming.size !== REMAKE_COPY_BLOCK_COUNT)) return [];
+    if (input.requireComplete && (incoming.length !== ranges.length || uniqueIncoming.size !== ranges.length)) return [];
     return buildRemakeCopyBlocks({
         frames: input.frames,
         sourceCopy: input.sourceCopy,
@@ -594,12 +600,12 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
         copy.checks.sequential &&
         copy.checks.noDuplicates &&
         copy.checks.noSkips &&
-        copy.mappings.length === REMAKE_COPY_BLOCK_COUNT &&
+        copy.mappings.length === normalizedCopyBlocks.length &&
         copy.mappings.every(
             (mapping, index) => mapping.blockOrdinal === index + 1 && (noNarration ? !mapping.sourceText.trim() && !mapping.text.trim() && mapping.paragraphOrdinals.length === 0 : Boolean(mapping.sourceText.trim()) === Boolean(mapping.text.trim())),
         );
     const copyBlocks = trustedSemanticCopy ? normalizedCopyBlocks : normalizedCopyBlocks.map((block) => ({ ...block, sourceText: "", text: "" }));
-    const timestampFallback = frames.length === REMAKE_FRAME_COUNT ? frames.map((frame) => frame.time) : [];
+    const timestampFallback = frames.length ? frames.map((frame) => frame.time) : [];
     const timestamps = normalizeRemakeTimestamps(project.analysis.timestamps);
     const pipelineFallback = defaultRemakePipeline({ hasSourceVideo: Boolean(project.sourceVideo?.url), analysisStatus: project.analysis.status });
     return {
@@ -620,7 +626,7 @@ export function normalizeRemakeProjectWorkflow(project: RemakeProject): Hydrated
         modelSelection: normalizeRemakeModelSelection(project.modelSelection),
         videoSettings: normalizeRemakeVideoSettings(project.videoSettings),
         references: normalizeRemakeReferences(project.references),
-        groups: normalizeRemakeRangeGroups(project.groups),
+        groups: normalizeRemakeRangeGroups(project.groups, frames.length ? emptyRemakeRangeGroups(frames) : emptyRemakeRangeGroups()),
         copy,
     };
 }
@@ -647,7 +653,7 @@ function normalizeCopyMappings(value: unknown): RemakeCopyMapping[] {
     const mappings = new Map<number, RemakeCopyMapping>();
     for (const item of value) {
         const source = object(item);
-        const blockOrdinal = integerInRange(source.blockOrdinal, 1, REMAKE_COPY_BLOCK_COUNT);
+        const blockOrdinal = integerInRange(source.blockOrdinal, 1, REMAKE_PERSON_MAX_FRAMES);
         if (!blockOrdinal || mappings.has(blockOrdinal)) continue;
         mappings.set(blockOrdinal, {
             blockOrdinal,
@@ -670,7 +676,7 @@ function normalizedAssetProperty(source: Record<string, unknown>, key: keyof Rem
 }
 
 function groupOrdinal(source: Record<string, unknown>) {
-    const direct = integerInRange(source.ordinal, 1, REMAKE_RANGE_GROUP_COUNT);
+    const direct = integerInRange(source.ordinal, 1, REMAKE_PERSON_MAX_FRAMES);
     if (direct) return direct;
     const id = cleanText(firstDefined(source.id, source.rangeId), 20);
     return REMAKE_RANGE_GROUP_DEFINITIONS.find((definition) => definition.id === id)?.ordinal || 0;

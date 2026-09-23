@@ -29,7 +29,7 @@ export type RemakeProductionInputProject = {
     analysis: { status: string; taskId?: string; runId?: string; mode?: string };
     modelSelection: { prompt: string; image: string };
     frames: Array<{
-        ordinal: number; time: number; endTime: number; frameUrl: string; analysisStatus: string;
+        ordinal: number; time: number; endTime: number; segmentIndex?: number; frameUrl: string; analysisStatus: string;
         subtitle: string; sellingPoint: string; shotType: string; description: string; subjectRatio: string; hasFace?: boolean;
     }>;
     copyBlocks: Array<{ ordinal: number; frameOrdinals: number[]; sourceText: string; text: string }>;
@@ -52,7 +52,7 @@ export function remakeProductionInputSnapshot(project: RemakeProductionInputProj
     const selected = groupIds === undefined ? undefined : new Set(groupIds);
     return JSON.stringify({
         promptVersion: REMAKE_PERSON_PROMPT_VERSION,
-        timingVersion: 1,
+        timingVersion: project.frames.some((frame) => frame.segmentIndex !== undefined) ? 2 : 1,
         id: project.id,
         sourceVideo: { asset: mediaInput(project.sourceVideo), durationMs: project.sourceVideo?.durationMs ?? null },
         sourceCopy: project.sourceCopy,
@@ -63,6 +63,7 @@ export function remakeProductionInputSnapshot(project: RemakeProductionInputProj
         modelSelection: { prompt: project.modelSelection.prompt, image: project.modelSelection.image },
         frames: project.frames.map((frame) => ({
             ordinal: frame.ordinal, time: frame.time, endTime: frame.endTime, frameUrl: frame.frameUrl, analysisStatus: frame.analysisStatus,
+            ...(frame.segmentIndex !== undefined ? { segmentIndex: frame.segmentIndex } : {}),
             subtitle: frame.subtitle, sellingPoint: frame.sellingPoint, shotType: frame.shotType, description: frame.description, subjectRatio: frame.subjectRatio, hasFace: frame.hasFace ?? null,
         })),
         copyBlocks: project.copyBlocks.map((block) => ({ ordinal: block.ordinal, frameOrdinals: block.frameOrdinals, sourceText: block.sourceText, text: block.text })),

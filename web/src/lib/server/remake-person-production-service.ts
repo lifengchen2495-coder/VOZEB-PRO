@@ -1,9 +1,10 @@
+import { remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import { remakePersonTimings } from "@/lib/remake-person-timing";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
 import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
 import { isRemakeNoNarrationCopy } from "@/lib/server/remake-person-project-contract";
-import { assertRemakeVideoPrompt, remakeProductionMessages, REMAKE_PRODUCTION_GROUP_IDS, renderRemakeCopyReport, type RemakeProductionPromptInput } from "@/lib/server/remake-person-production-prompt";
+import { assertRemakeVideoPrompt, remakeProductionMessages, renderRemakeCopyReport, type RemakeProductionPromptInput } from "@/lib/server/remake-person-production-prompt";
 import { assertRemakeImageGenerationsForUser, completeRemakeProductionForUser, getRemakeProjectForUser, remakeProductionInputVersion, RemakeProjectServiceError } from "@/lib/server/remake-person-project-service";
 import { buildRemakeProductionVisualBoards, RemakeProductionVisionError, requestRemakeProductionVisionPrompt, resolveRemakeProductionVisionProtocol } from "@/lib/server/remake-person-production-vision-runtime";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
@@ -25,7 +26,7 @@ const runtime = globalThis as typeof globalThis & { __vozebProRemakePersonProduc
 
 export async function buildRemakeProductionForUser(input: RemakeProductionRequest) {
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
-    const selectedGroups = REMAKE_PRODUCTION_GROUP_IDS.filter((groupId) => input.groupId === undefined || groupId === input.groupId);
+    const selectedGroups = project.groups.map((group) => group.id).filter((groupId) => input.groupId === undefined || groupId === input.groupId);
     if (!selectedGroups.length) throw new RemakeProductionError("视频提示词分组无效", 400);
     const expectedInputVersion = remakeProductionInputVersion(project, selectedGroups);
     if (input.inputVersion !== undefined) {
@@ -55,7 +56,7 @@ export async function buildRemakeProductionForUser(input: RemakeProductionReques
     return operation.promise;
 }
 
-async function generateRemakeProduction(input: RemakeProductionRequest, project: Awaited<ReturnType<typeof getRemakeProjectForUser>>, selectedGroups: typeof REMAKE_PRODUCTION_GROUP_IDS[number][], expectedInputVersion: string) {
+async function generateRemakeProduction(input: RemakeProductionRequest, project: Awaited<ReturnType<typeof getRemakeProjectForUser>>, selectedGroups: string[], expectedInputVersion: string) {
     await assertProductionReady(input.userId, project);
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
 
@@ -73,7 +74,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
             background: project.references.background!,
             character: project.references.character,
             product: project.references.product,
-            groupOrdinal: input.groupId === undefined ? undefined : REMAKE_PRODUCTION_GROUP_IDS.indexOf(selectedGroups[0]) + 1,
+            groupOrdinal: input.groupId === undefined ? undefined : project.groups.find((group) => group.id === selectedGroups[0])!.ordinal,
             redrawnContactSheets: project.groups.map((group) => ({
                 groupOrdinal: group.ordinal,
                 frameOrdinals: group.frameOrdinals,
@@ -82,7 +83,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
         });
     } catch (error) {
         if (error instanceof RemakeProductionVisionError) throw new RemakeProductionError(error.message, error.status);
-        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "产品、人物、背景图或最终十二宫格读取失败，无法执行真实视觉规划"), 502);
+        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "产品、人物、背景图或最终分镜拼图读取失败，无法执行真实视觉规划"), 502);
     }
 
     const promptInput: RemakeProductionPromptInput = {
@@ -95,6 +96,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
             time: frame.time,
             endTime: frame.endTime,
             ordinal: frame.ordinal,
+            segmentIndex: frame.segmentIndex,
             subtitle: frame.subtitle,
             sellingPoint: frame.sellingPoint,
             shotType: frame.shotType,
@@ -148,7 +150,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
                     });
                     chargedHeaders = call.headers;
                     assertRemakeVideoPrompt(call.text, promptInput, groupId);
-                    prompts.push({ groupOrdinal: REMAKE_PRODUCTION_GROUP_IDS.indexOf(groupId) + 1, prompt: call.text });
+                    prompts.push({ groupOrdinal: project.groups.find((group) => group.id === groupId)!.ordinal, prompt: call.text });
                     completedCharges.push({ headers: call.headers, idempotencyKey });
                     generated = true;
                     break;
@@ -205,12 +207,12 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
 }
 
 async function assertProductionReady(userId: string, project: Awaited<ReturnType<typeof getRemakeProjectForUser>>) {
-    if (project.analysis.status !== "completed" || project.analysis.mode !== "video" || project.frames.length !== 48 || project.frames.some((frame, index) => frame.ordinal !== index + 1 || frame.analysisStatus !== "available")) {
-        throw new RemakeProductionError("请先使用视频理解完成全部 48 个镜头解析", 409);
+    if (project.analysis.status !== "completed" || project.analysis.mode !== "video" || !remakePersonTimings(project).length || project.frames.some((frame, index) => frame.ordinal !== index + 1 || frame.analysisStatus !== "available")) {
+        throw new RemakeProductionError("请先使用视频理解完成全部镜头解析", 409);
     }
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
-    if (project.copyBlocks.length !== 16 || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (hasNarration ? Boolean(block.sourceText.trim()) !== Boolean(block.text.trim()) : Boolean(block.sourceText.trim() || block.text.trim())))) {
-        throw new RemakeProductionError("请先完成 16 个语义文案区间", 409);
+    if (project.copyBlocks.length !== remakePersonCopyFrameGroups(project.frames).length || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (hasNarration ? Boolean(block.sourceText.trim()) !== Boolean(block.text.trim()) : Boolean(block.sourceText.trim() || block.text.trim())))) {
+        throw new RemakeProductionError("请先完成全部语义文案区间", 409);
     }
     if (project.copy.status !== "completed" || !project.copy.checks.sequential || !project.copy.checks.noDuplicates || !project.copy.checks.noSkips) {
         throw new RemakeProductionError("文案语义切分尚未通过顺序、重复和跳跃检查", 409);
@@ -227,15 +229,15 @@ async function assertProductionReady(userId: string, project: Awaited<ReturnType
             stats: project.copy.stats,
         });
     } catch (error) {
-        throw new RemakeProductionError(error instanceof Error ? error.message : "16 个文案区间未完整覆盖原文案", 409);
+        throw new RemakeProductionError(error instanceof Error ? error.message : "全部文案区间未完整覆盖原文案", 409);
     }
     if (!project.references.background) {
         throw new RemakeProductionError("请先上传背景图", 409);
     }
     if (hasNarration && !project.references.audio) throw new RemakeProductionError("原视频音频尚未提取，请重新执行视频理解", 409);
     if (hasNarration && project.voice !== "female" && project.voice !== "male") throw new RemakeProductionError("请选择男性配音或女性配音", 409);
-    if (project.groups.length !== 4 || project.groups.some((group) => !group.sourceContactSheet || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
-        throw new RemakeProductionError("请先完成四组保留产品的换人十二宫格", 409);
+    if (project.groups.length !== remakePersonTimings(project).length || project.groups.some((group) => !group.sourceContactSheet || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
+        throw new RemakeProductionError("请先完成全部分组保留产品的换人分镜拼图", 409);
     }
     await assertRemakeImageGenerationsForUser(userId, project);
 }

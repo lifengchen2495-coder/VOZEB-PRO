@@ -2,11 +2,11 @@ import type { RemakeProductionCopyReportInput } from "./remake-production-prompt
 
 type CopyReportProject = {
     sourceCopy: string;
-    copyBlocks: RemakeProductionCopyReportInput["blocks"];
+    copyBlocks: Array<Omit<RemakeProductionCopyReportInput["blocks"][number], "frameOrdinals"> & { frameOrdinals: number[] }>;
     copy: Omit<RemakeProductionCopyReportInput, "sourceCopy" | "blocks"> & { status: string; rawReport: string };
 };
 
-export function restoreRemakeCopyReport<T extends CopyReportProject>(project: T, render: (input: RemakeProductionCopyReportInput) => string): T {
+export function restoreRemakeCopyReport<T extends CopyReportProject>(project: T, render: (input: T["copy"] & { sourceCopy: string; blocks: T["copyBlocks"] }) => string): T {
     const { copy, copyBlocks } = project;
     if (copy.rawReport.trim() || copy.status !== "completed" || !copy.checks.sequential || !copy.checks.noDuplicates || !copy.checks.noSkips) return project;
     const counts = [copy.stats.unchangedBlocks, copy.stats.completedBlocks, copy.stats.correctedBlocks, copy.stats.emptyBlocks];

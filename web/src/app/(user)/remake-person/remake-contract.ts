@@ -1,3 +1,4 @@
+import { remakePersonFrameGroups } from "@/lib/remake-person-layout";
 import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 
 export type RemakeCopyStrategy = "keep" | "manual";
@@ -56,6 +57,7 @@ export type RemakeSourceVideo = {
 };
 
 export type RemakeFrame = {
+    segmentIndex?: number;
     id: string;
     ordinal: number;
     time: number;
@@ -75,7 +77,7 @@ export type RemakeFrame = {
 export type RemakeCopyBlock = {
     id: string;
     ordinal: number;
-    frameOrdinals: [number, number, number];
+    frameOrdinals: number[];
     startTime: number;
     endTime: number;
     sourceText: string;
@@ -115,7 +117,7 @@ export type RemakeReferenceAssets = {
 };
 
 export type RemakeRangeGroup = {
-    id: (typeof REMAKE_GROUP_DEFINITIONS)[number]["id"];
+    id: string;
     ordinal: number;
     frameOrdinals: number[];
     sourceContactSheet?: RemakeMediaAsset;
@@ -399,7 +401,7 @@ function normalizeCopyBlock(value: unknown, index: number): RemakeCopyBlock {
     const ordinal = Math.max(1, Math.round(numberValue(firstDefined(block.ordinal, block.order, block.index), index + 1)));
     const rawOrdinals = arrayValue(firstDefined(block.frameOrdinals, block.frame_ordinals, block.frameRange, block.frame_range)).map((value) => Math.max(1, Math.round(numberValue(value, 1))));
     const fallbackStart = Math.max(1, Math.round(numberValue(firstDefined(block.startFrame, block.start_frame, block.startOrdinal), index * 3 + 1)));
-    const frameOrdinals: [number, number, number] = [rawOrdinals[0] || fallbackStart, rawOrdinals[1] || fallbackStart + 1, rawOrdinals[2] || fallbackStart + 2];
+    const frameOrdinals = rawOrdinals.length ? rawOrdinals : [fallbackStart, fallbackStart + 1, fallbackStart + 2];
     const startTime = secondsValue(firstDefined(block.startTime, block.start_time), 0);
     const endTime = Math.max(startTime, secondsValue(firstDefined(block.endTime, block.end_time), startTime));
     return {
@@ -425,9 +427,10 @@ function normalizeReferences(value: unknown): RemakeReferenceAssets {
     };
 }
 
-function normalizeGroups(value: unknown): RemakeRangeGroup[] {
+function normalizeGroups(value: unknown, frames: RemakeFrame[]): RemakeRangeGroup[] {
     const incoming = arrayValue(value).map(record);
-    return REMAKE_GROUP_DEFINITIONS.map((definition) => {
+    const definitions = frames.length ? remakePersonFrameGroups(frames).map((group) => ({ ...group, start: group.startFrame, end: group.endFrame })) : REMAKE_GROUP_DEFINITIONS;
+    return definitions.map((definition) => {
         const group = incoming.find((item) => stringValue(item.id) === definition.id || numberValue(item.ordinal) === definition.ordinal) || {};
         const replacement = record(firstDefined(group.replacementGeneration, group.replacement_generation));
         const generation = record(firstDefined(group.imageGeneration, group.image_generation, group.generation));
@@ -435,7 +438,7 @@ function normalizeGroups(value: unknown): RemakeRangeGroup[] {
         return {
             id: definition.id,
             ordinal: definition.ordinal,
-            frameOrdinals: Array.from({ length: 12 }, (_, index) => definition.start + index),
+            frameOrdinals: Array.from({ length: definition.end - definition.start + 1 }, (_, index) => definition.start + index),
             sourceContactSheet: normalizeMediaAsset(firstDefined(group.sourceContactSheet, group.source_contact_sheet, group.sourceCollage, group.source_collage, group.contactSheet, group.contact_sheet)),
             replacementGeneration: {
                 status: normalizeImageGenerationStatus(firstDefined(replacement.status, group.replacementStatus, group.replacement_status)),
@@ -589,7 +592,7 @@ export function normalizeRemakeProject(value: unknown): RemakeProject {
     const sourceVideo = normalizeSourceVideo(firstDefined(project.sourceVideo, project.source_video, project.video, project.source));
     const modelSelection = normalizeModelSelection(firstDefined(project.modelSelection, project.model_selection, project.models));
     const references = normalizeReferences(firstDefined(project.references, project.referenceAssets, project.reference_assets));
-    const groups = normalizeGroups(firstDefined(project.groups, project.rangeGroups, project.range_groups));
+    const groups = normalizeGroups(firstDefined(project.groups, project.rangeGroups, project.range_groups), frames);
     const copy = normalizeSemanticCopy(firstDefined(project.copy, project.copyReport, project.copy_report));
     const analysis: RemakeAnalysis = {
         status: normalizeAnalysisStatus(firstDefined(analysisRecord.status, project.analysisStatus, project.analysis_status)),
