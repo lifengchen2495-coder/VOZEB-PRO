@@ -378,7 +378,7 @@ export function resolveChannelModelAdvancedConfig(config: SystemChannelAdvancedC
 
 export function upgradeHuifengModelCatalog(channel: SystemModelChannel): SystemModelChannel {
     const advanced = channel.advancedConfig;
-    if (advanced?.protocol !== "huifeng" || (advanced.huifengCatalogVersion || 0) >= HUIFENG_CATALOG_VERSION) return channel;
+    if (!advanced || !channelUsesHuifengVideo(channel) || (advanced.huifengCatalogVersion || 0) >= HUIFENG_CATALOG_VERSION) return channel;
     const model = HUIFENG_SEEDANCE_20_ANMIAO_MODEL;
     const hasModel = channel.models.some((item) => normalizeModelId(item) === model);
     // 只补本次新增模型；已有配置但被移出列表的模型视为管理员主动删除。
@@ -397,17 +397,34 @@ export function upgradeHuifengModelCatalog(channel: SystemModelChannel): SystemM
     };
 }
 
-export function addMissingProtocolModels(channel: SystemModelChannel): SystemModelChannel {
+function channelUsesHuifengVideo(channel: SystemModelChannel) {
+    if (channel.advancedConfig?.protocol === "huifeng") return true;
+    return channel.models.some((model) => {
+        const config = resolveChannelModelConfig(channel.advancedConfig, model);
+        return config?.capability === "video" && config.protocol === "huifeng";
+    });
+}
+
+export function channelBuiltInModels(channel: SystemModelChannel) {
     const protocol = channel.advancedConfig?.protocol || "auto";
-    const definition = channelProtocolDefinition(protocol);
-    const missing = (definition.builtInModels || []).filter((item) => !channel.models.some((model) => normalizeModelId(model) === normalizeModelId(item.id)));
+    const models = (channelProtocolDefinition(protocol).builtInModels || []).map((item) => ({ ...item, protocol }));
+    // 混合渠道可能仅单个视频模型使用汇风协议，仍需提供新增满血版的同步入口。
+    if (protocol !== "huifeng" && channelUsesHuifengVideo(channel)) {
+        const seedance = channelProtocolDefinition("huifeng").builtInModels!.find((item) => item.id === HUIFENG_SEEDANCE_20_ANMIAO_MODEL)!;
+        models.push({ ...seedance, protocol: "huifeng" });
+    }
+    return models;
+}
+
+export function addMissingProtocolModels(channel: SystemModelChannel): SystemModelChannel {
+    const missing = channelBuiltInModels(channel).filter((item) => !channel.models.some((model) => normalizeModelId(model) === normalizeModelId(item.id)));
     if (!missing.length) return channel;
     return {
         ...channel,
         models: [...channel.models, ...missing.map((item) => item.id)],
         advancedConfig: {
             ...(channel.advancedConfig || emptyAdvancedConfig()),
-            modelConfigs: { ...channel.advancedConfig?.modelConfigs, ...Object.fromEntries(missing.map((item) => [normalizeModelId(item.id), protocolModelConfig(protocol, item.capability, item.id)!])) },
+            modelConfigs: { ...channel.advancedConfig?.modelConfigs, ...Object.fromEntries(missing.map((item) => [normalizeModelId(item.id), protocolModelConfig(item.protocol, item.capability, item.id)!])) },
             modelCapabilities: { ...channel.advancedConfig?.modelCapabilities, ...Object.fromEntries(missing.map((item) => [normalizeModelId(item.id), item.capability])) },
         },
     };

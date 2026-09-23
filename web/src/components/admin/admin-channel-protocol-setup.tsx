@@ -5,7 +5,7 @@ import { Alert, App, Button, Checkbox, Input, Select, Tag } from "antd";
 import { FileSearch, WandSparkles } from "lucide-react";
 
 import { LabeledControl } from "@/components/admin/admin-settings-controls";
-import { addMissingProtocolModels, applyChannelProtocol, channelProtocolDefinition, channelProtocolOptions } from "@/lib/channel-protocol-registry";
+import { addMissingProtocolModels, applyChannelProtocol, channelBuiltInModels, channelProtocolDefinition, channelProtocolOptions } from "@/lib/channel-protocol-registry";
 import type { ChannelProtocolDraft } from "@/lib/channel-protocol-draft";
 import type { LogicalModelCapability, SystemChannelAdvancedConfig, SystemChannelAuthMode, SystemChannelProtocol, SystemModelChannel } from "@/lib/auth/store";
 import { normalizeModelId } from "@/lib/model-capability";
@@ -23,7 +23,8 @@ export function AdminChannelProtocolSetup({ channel, protocolLocked = false, onC
     const { message } = App.useApp();
     const protocol = channel.advancedConfig?.protocol || "auto";
     const definition = channelProtocolDefinition(protocol);
-    const hasNewBuiltInModels = definition.builtInModels?.some((item) => !channel.models.some((model) => normalizeModelId(model) === normalizeModelId(item.id)));
+    const builtInModels = channelBuiltInModels(channel);
+    const hasNewBuiltInModels = builtInModels.some((item) => !channel.models.some((model) => normalizeModelId(model) === normalizeModelId(item.id)));
     const detectedCapabilities = channelDetectedCapabilities(channel);
     const [documentationUrl, setDocumentationUrl] = useState(channel.advancedConfig?.documentationUrl || "");
     const [documentationText, setDocumentationText] = useState("");
@@ -137,7 +138,7 @@ export function AdminChannelProtocolSetup({ channel, protocolLocked = false, onC
                                 ))}
                             {!detectedCapabilities.size ? <Tag className="m-0">待拉取模型</Tag> : null}
                             {definition.strict ? <Tag className="m-0">严格路径</Tag> : null}
-                            {definition.builtInModels?.length ? <Tag className="m-0">内置 {definition.builtInModels.length} 个模型</Tag> : null}
+                            {builtInModels.length ? <Tag className="m-0">内置 {builtInModels.length} 个模型</Tag> : null}
                             {hasNewBuiltInModels ? <Button size="small" onClick={() => onChange(addMissingProtocolModels(channel))}>同步内置模型</Button> : null}
                         </div>
                     </div>
