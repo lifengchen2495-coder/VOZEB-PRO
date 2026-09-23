@@ -16,6 +16,7 @@ export function normalizeSystemChannelAdvancedConfig(config: Partial<SystemChann
     const modelCatalogPaths = Array.from(new Set((Array.isArray(config.modelCatalogPaths) ? config.modelCatalogPaths : []).map(normalizeApiPath).filter(Boolean))).slice(0, 12);
     return {
         protocol,
+        ...(normalizePositiveInteger(config.huifengCatalogVersion) ? { huifengCatalogVersion: normalizePositiveInteger(config.huifengCatalogVersion) } : {}),
         ...(config.authMode === "none" || config.authMode === "bearer" || config.authMode === "x-api-key" || config.authMode === "custom-header" ? { authMode: config.authMode } : {}),
         ...(textOrEmpty(config.authHeader, 120) ? { authHeader: textOrEmpty(config.authHeader, 120) } : {}),
         ...(textOrEmpty(config.authPrefix, 120) ? { authPrefix: textOrEmpty(config.authPrefix, 120) } : {}),

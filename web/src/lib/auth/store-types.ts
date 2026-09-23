@@ -47,6 +47,7 @@ export type SystemChannelAdvancedConfig = {
     documentationUrl?: string;
     globalAiOpcPreset?: GlobalAiOpcPresetId;
     globalAiOpcPresets?: GlobalAiOpcPresetId[];
+    huifengCatalogVersion?: number;
     textModel: string;
     imageModel: string;
     videoModel: string;

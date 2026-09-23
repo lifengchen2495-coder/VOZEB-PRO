@@ -1,8 +1,10 @@
 import type { ApiCallFormat, LogicalModelCapability, SystemChannelAdvancedConfig, SystemChannelAuthMode, SystemChannelModelConfig, SystemChannelProtocol, SystemModelChannel } from "@/lib/auth/store-types";
 import { inferModelCapability, normalizeModelId } from "@/lib/model-capability";
 import { SEEDANCE_SPECIAL_MODELS } from "@/lib/seedance-special";
-import { HUIFENG_BASE_URL, HUIFENG_DEFAULT_VIDEO_OPERATION, HUIFENG_VIDEO_MODELS } from "@/lib/huifeng-media";
+import { HUIFENG_BASE_URL, HUIFENG_DEFAULT_VIDEO_OPERATION, HUIFENG_SEEDANCE_20_ANMIAO_MODEL, HUIFENG_VIDEO_MODELS } from "@/lib/huifeng-media";
 import { normalizeYumengModelCenterBaseUrl, YUMENG_DEFAULT_IMAGE_OPERATION, YUMENG_DEFAULT_VIDEO_OPERATION, YUMENG_MODEL_CENTER_BASE_URL, YUMENG_MODEL_CENTER_MODELS } from "@/lib/yumeng-model-center";
+
+const HUIFENG_CATALOG_VERSION = 1;
 
 type ProtocolOperation = Omit<SystemChannelModelConfig, "capability" | "source" | "protocol" | "apiFormat"> & {
     capability: LogicalModelCapability;
@@ -374,6 +376,27 @@ export function resolveChannelModelAdvancedConfig(config: SystemChannelAdvancedC
     return { ...config, ...modelAdvanced };
 }
 
+export function upgradeHuifengModelCatalog(channel: SystemModelChannel): SystemModelChannel {
+    const advanced = channel.advancedConfig;
+    if (advanced?.protocol !== "huifeng" || (advanced.huifengCatalogVersion || 0) >= HUIFENG_CATALOG_VERSION) return channel;
+    const model = HUIFENG_SEEDANCE_20_ANMIAO_MODEL;
+    const hasModel = channel.models.some((item) => normalizeModelId(item) === model);
+    // 只补本次新增模型；已有配置但被移出列表的模型视为管理员主动删除。
+    const shouldAdd = !hasModel && !advanced.modelConfigs?.[model] && !advanced.modelCapabilities?.[model];
+    return {
+        ...channel,
+        models: shouldAdd ? [...channel.models, model] : channel.models,
+        advancedConfig: {
+            ...advanced,
+            huifengCatalogVersion: HUIFENG_CATALOG_VERSION,
+            ...(hasModel || shouldAdd ? {
+                modelConfigs: { ...advanced.modelConfigs, [model]: advanced.modelConfigs?.[model] || protocolModelConfig("huifeng", "video", model)! },
+                modelCapabilities: { ...advanced.modelCapabilities, [model]: advanced.modelCapabilities?.[model] || "video" },
+            } : {}),
+        },
+    };
+}
+
 export function addMissingProtocolModels(channel: SystemModelChannel): SystemModelChannel {
     const protocol = channel.advancedConfig?.protocol || "auto";
     const definition = channelProtocolDefinition(protocol);
@@ -420,6 +443,7 @@ export function applyChannelProtocol(channel: SystemModelChannel, protocol: Syst
         advancedConfig: {
             ...advanced,
             protocol,
+            ...(protocol === "huifeng" ? { huifengCatalogVersion: HUIFENG_CATALOG_VERSION } : {}),
             authMode: definition.authMode,
             modelCatalogPaths: definition.modelCatalogPaths,
             ...primaryAdvanced,

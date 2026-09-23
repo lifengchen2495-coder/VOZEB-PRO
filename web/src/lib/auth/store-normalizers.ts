@@ -7,7 +7,7 @@ import { ECOMMERCE_IMAGE_SKILL } from "@/lib/server/agent-skills/ecommerce-image
 import { YANAI_BEAUTY_SKILL } from "@/lib/server/agent-skills/yanai-beauty";
 import { DEFAULT_CREATIVE_SHORTCUT_SKILLS } from "@/lib/server/agent-skills/creative-shortcuts";
 import { deriveLogicalModelsConfig, normalizeDefaultModelsConfig, normalizeLogicalModelsConfig } from "@/lib/model-routing-config";
-import { applyChannelProtocol } from "@/lib/channel-protocol-registry";
+import { applyChannelProtocol, upgradeHuifengModelCatalog } from "@/lib/channel-protocol-registry";
 import { resolveConfiguredModelPointCost } from "@/lib/model-point-cost";
 import { normalizeModelBillingRules } from "@/lib/model-billing-config";
 import { normalizeSystemChannelAdvancedConfig } from "./store-normalizers-channel";
@@ -623,7 +623,7 @@ export function normalizeSystemChannel(channel: Partial<SystemModelChannel>): Sy
         enabled: channel.enabled !== false,
         advancedConfig: normalizeSystemChannelAdvancedConfig(channel.advancedConfig),
     };
-    return normalized.advancedConfig?.protocol === "yumeng" ? applyChannelProtocol(normalized, "yumeng") : normalized;
+    return normalized.advancedConfig?.protocol === "yumeng" ? applyChannelProtocol(normalized, "yumeng") : upgradeHuifengModelCatalog(normalized);
 }
 
 export function normalizePoints(value: unknown, fallback: number) {
