@@ -443,8 +443,7 @@ export function RemakeWorkspace() {
         setBuildingGroupIds([...productionBuildRef.current]);
         try {
             if (!(await flushSave())) {
-                message.warning("请先处理保存冲突，再生成生产内容");
-                return;
+                throw new Error("项目保存失败，请先处理保存错误或冲突，再生成生产内容");
             }
             const current = projectRef.current;
             if (!current) return;
@@ -462,14 +461,12 @@ export function RemakeWorkspace() {
                     applyConcurrentProject(remote);
                     setTask(recoveredTask(remote));
                     setSaveState(savingPromiseRef.current ? "saving" : hasRemakePatch(pendingPatchRef.current) ? "pending" : "saved");
-                    message.warning(reason.message);
-                    return;
                 } catch (refreshReason) {
-                    message.error(refreshReason instanceof Error ? refreshReason.message : "项目最新版本加载失败");
-                    return;
+                    throw new Error(refreshReason instanceof Error ? refreshReason.message : "项目最新版本加载失败");
                 }
             }
-            message.error(reason instanceof Error ? reason.message : "生产内容生成失败");
+            // 交还生成卡片保存错误状态，不能只弹出一次消息后吞掉失败。
+            throw reason;
         } finally {
             targets.forEach((group) => productionBuildRef.current.delete(group.id));
             editingLockedRef.current = productionBuildRef.current.size > 0 || isRemakeAnalysisActive(analyzing, task?.status) || handoffPending || Boolean(projectRef.current?.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running"));

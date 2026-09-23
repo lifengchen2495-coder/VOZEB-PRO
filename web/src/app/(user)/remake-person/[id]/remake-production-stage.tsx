@@ -26,6 +26,8 @@ import type { RemakeGroupPatch } from "./remake-image-stage";
 import { mergeRemakeVideos } from "../remake-api";
 import { isRemakeCopyPlanReady } from "./remake-workspace-state";
 
+type PromptBuildError = { message: string; model: string };
+
 export function RemakeProductionStage({
     project,
     getCurrentProject,
@@ -75,6 +77,9 @@ export function RemakeProductionStage({
     const activeTasksRef = useRef(new Map<string, AbortController>());
     const promptBuildPendingRef = useRef(new Set<string>());
     const batchPromptBuildPendingRef = useRef(false);
+    const [pendingPromptGroupIds, setPendingPromptGroupIds] = useState<string[]>([]);
+    const [batchPromptBuildPending, setBatchPromptBuildPending] = useState(false);
+    const [promptErrors, setPromptErrors] = useState<Record<string, PromptBuildError>>({});
     const startingGroupsRef = useRef(new Set<string>());
     const deferredGroupsRef = useRef(new Set<string>());
     const resumeTimersRef = useRef(new Set<number>());
@@ -93,8 +98,8 @@ export function RemakeProductionStage({
     const reportReady = project.copy.status === "completed" && Boolean(project.copy.rawReport.trim());
     const productionReady = remakeProductionReady(project) && !project.groups.some(hasInstructionChanges);
     const videoActive = project.groups.some((group) => isVideoActive(group)) || startingGroupsRef.current.size > 0;
-    const sharedBusy = savingInstructions || merging || building || buildingGroupIds.length > 0 || promptBuildPendingRef.current.size > 0 || batchPromptBuildPendingRef.current || videoActive;
-    const isPromptBuilding = useCallback((groupId: string) => building || batchPromptBuildPendingRef.current || buildingGroupIds.includes(groupId) || promptBuildPendingRef.current.has(groupId), [building, buildingGroupIds]);
+    const sharedBusy = savingInstructions || merging || building || buildingGroupIds.length > 0 || pendingPromptGroupIds.length > 0 || batchPromptBuildPending || videoActive;
+    const isPromptBuilding = useCallback((groupId: string) => building || batchPromptBuildPending || buildingGroupIds.includes(groupId) || pendingPromptGroupIds.includes(groupId), [building, buildingGroupIds, batchPromptBuildPending, pendingPromptGroupIds]);
     const emitGroupChange = useCallback(
         (groupId: string, patch: RemakeGroupPatch) => {
             const current = latestProjectRef.current;
@@ -375,20 +380,34 @@ export function RemakeProductionStage({
         if (!productionPrerequisites(latestProjectRef.current).ready) return;
         if (groupId) {
             const group = latestProjectRef.current.groups.find((item) => item.id === groupId);
-            if (!group || isPromptBuilding(groupId) || isVideoActive(group) || startingGroupsRef.current.has(groupId) || deferredGroupsRef.current.has(groupId)) return;
+            if (!group || promptBuildPendingRef.current.has(groupId) || isPromptBuilding(groupId) || isVideoActive(group) || startingGroupsRef.current.has(groupId) || deferredGroupsRef.current.has(groupId)) return;
             promptBuildPendingRef.current.add(groupId);
+            setPendingPromptGroupIds([...promptBuildPendingRef.current]);
         } else {
             if (buildingGroupIds.length || promptBuildPendingRef.current.size || startingGroupsRef.current.size || latestProjectRef.current.groups.some(isVideoActive)) return;
             batchPromptBuildPendingRef.current = true;
+            setBatchPromptBuildPending(true);
         }
+        const targetIds: string[] = latestProjectRef.current.groups.filter((group) => !groupId || group.id === groupId).map((group) => group.id);
+        setPromptErrors((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !targetIds.includes(id))));
         try {
+            if (!selectedPromptModel) throw new Error("请先选择可用的 Prompt 文本模型");
+            // 把页面显示的默认模型保存到项目，避免后台另用系统默认模型。
+            if (!latestProjectRef.current.modelSelection.prompt) emitModelChange("prompt", selectedPromptModel);
             await saveInstructions(groupId);
             await onBuild(groupId);
         } catch (reason) {
-            message.error(reason instanceof Error ? reason.message : "生成指令保存失败，请重试");
+            const detail = reason instanceof Error ? reason.message : "视频 Prompt 生成失败，请重试";
+            setPromptErrors((current) => ({ ...current, ...Object.fromEntries(targetIds.map((id) => [id, { message: detail, model: selectedPromptModel }])) }));
+            message.error(detail);
         } finally {
-            if (groupId) promptBuildPendingRef.current.delete(groupId);
-            else batchPromptBuildPendingRef.current = false;
+            if (groupId) {
+                promptBuildPendingRef.current.delete(groupId);
+                setPendingPromptGroupIds([...promptBuildPendingRef.current]);
+            } else {
+                batchPromptBuildPendingRef.current = false;
+                setBatchPromptBuildPending(false);
+            }
         }
     };
 
@@ -545,6 +564,8 @@ export function RemakeProductionStage({
                                     }}
                                     onSavePrompt={() => savePrompt(group.id)}
                                     building={isPromptBuilding(group.id)}
+                                    promptError={promptErrors[group.id]}
+                                    promptModel={selectedPromptModel}
                                     promptDisabled={isPromptBuilding(group.id) || !prerequisites.ready || isVideoActive(group) || startingGroupsRef.current.has(group.id)}
                                     disabled={hasInstructionChanges(group) || !group.videoPrompt.trim() || group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !project.references.background?.url || startingGroupsRef.current.has(group.id)}
                                     instructionValue={remakeVideoPromptInstructions(group.id)}
@@ -583,7 +604,7 @@ function ModelControl({ label, children }: { label: string; children: React.Reac
     return <label className="grid min-w-0 gap-1 text-[11px] text-muted-foreground"><span>{label}</span>{children}</label>;
 }
 
-function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptChange, onSavePrompt, building, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
+function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptChange, onSavePrompt, building, promptError, promptModel, promptDisabled, disabled, onBuild, onGenerate, onCopy }: {
     group: RemakeRangeGroup;
     resolution: string;
     timing?: RemakePersonTiming;
@@ -591,6 +612,8 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
     onPromptChange: (prompt: string) => void;
     onSavePrompt: () => Promise<void>;
     building: boolean;
+    promptError?: PromptBuildError;
+    promptModel: string;
     promptDisabled: boolean;
     disabled: boolean;
     instructionValue?: string;
@@ -621,7 +644,7 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
                     </Tooltip>
                     <Tooltip title={`${group.videoPrompt ? "重新生成" : "生成"}分镜 ${group.id} 的 Prompt`}>
                         <Button size="small" loading={building} disabled={promptDisabled} icon={group.videoPrompt ? <RefreshCw className="size-3.5" /> : <Sparkles className="size-3.5" />} aria-label={`${group.videoPrompt ? "重新生成" : "生成"}分镜 ${group.id} Prompt`} onClick={onBuild}>
-                            {group.videoPrompt ? "重新生成 Prompt" : "生成 Prompt"}
+                            {promptError ? "重试 Prompt" : group.videoPrompt ? "重新生成 Prompt" : "生成 Prompt"}
                         </Button>
                     </Tooltip>
                     <Button size="small" type={generation.status === "completed" ? "default" : "primary"} loading={active} disabled={building || (!generation.needsReview && (disabled || active))} aria-label={`${generation.needsReview ? "检查" : "生成"}分镜 ${group.id} 视频${generation.needsReview ? "状态" : ""}`} icon={generation.needsReview || generation.status === "completed" || generation.status === "error" ? <RefreshCw className="size-3.5" /> : <Play className="size-3.5" />} onClick={onGenerate}>
@@ -629,6 +652,8 @@ function VideoGroupCard({ group, resolution, timing, editingDisabled, onPromptCh
                     </Button>
                 </div>
             </div>
+            {building ? <PromptBuildStatus model={promptModel} /> : null}
+            {!building && promptError ? <div role="alert" className="border-b border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-300">{promptError.message}<div className="mt-1">本次 Prompt 模型：{promptError.model || "未选择"}。可点击“重试 Prompt”，或在上方切换 Prompt 模型后重试。</div></div> : null}
             <div className="p-3">
                 <details>
                     <summary className="cursor-pointer text-xs font-medium">分镜 {group.id} 视频提示词生成指令（表格原文）</summary>
@@ -669,6 +694,16 @@ function VideoGenerationTag({ generation }: { generation: RemakeRangeGroup["vide
     const color = generation.needsReview ? "warning" : status === "completed" ? "success" : status === "error" ? "error" : status === "queued" || status === "running" ? "processing" : "default";
     const label = generation.needsReview ? "待确认" : status === "completed" ? "视频完成" : status === "error" ? "视频失败" : status === "queued" ? "视频排队" : status === "running" ? "视频生成中" : "视频未生成";
     return <Tag color={color} className="!m-0">{label}</Tag>;
+}
+
+function PromptBuildStatus({ model }: { model: string }) {
+    const [elapsed, setElapsed] = useState(0);
+    useEffect(() => {
+        const startedAt = Date.now();
+        const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+        return () => window.clearInterval(timer);
+    }, []);
+    return <div role="status" className="border-b border-border px-3 py-2 text-xs leading-5 text-muted-foreground">正在生成 Prompt · {model} · 已等待 {elapsed} 秒。完成后会自动填入下方，失败原因会显示在本组。</div>;
 }
 
 function ProductionLoading({ text }: { text: string }) {
