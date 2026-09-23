@@ -568,6 +568,22 @@ async function authoritativeRemakeImageGeneration(input: {
     productInfo: string;
 }): Promise<RemakeRangeGroup["imageGeneration"]> {
     if (input.requested.status === "idle") return { status: "idle", prompt: "", attemptNo: input.requested.attemptNo };
+    const previous = input.previous;
+    // 整组保存会携带未操作分组的旧草稿；尚未创建任务的草稿也可能保留旧版图片绑定。
+    // 仅保留同一次草稿或记录其失败，新的排队、重试和结果仍须校验当前提示词。
+    if (
+        previous && !previous.taskId && !input.requested.taskId && !previous.result && !input.requested.result &&
+        previous.prompt === input.requested.prompt && previous.model === input.requested.model &&
+        (previous.attemptNo ?? 0) === (input.requested.attemptNo ?? 0) &&
+        (previous.status === "queued" || previous.status === "running" || previous.status === "error") &&
+        (input.requested.status === previous.status || input.requested.status === "error")
+    ) {
+        return {
+            ...previous,
+            status: input.requested.status,
+            error: input.requested.status === "error" ? input.requested.error || previous.error || "图片任务创建失败" : previous.error,
+        };
+    }
     let prompt = canonicalRemakeImagePrompt(input.stage, input.group, input.references, input.frames, input.productInfo);
     // 已保存的旧任务仍可查看结果或失败原因；新请求必须使用拼图和当前图片绑定。
     const savedTask = Boolean(input.previous?.taskId && input.requested.taskId === input.previous.taskId && input.requested.prompt === input.previous.prompt);

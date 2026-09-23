@@ -78,11 +78,14 @@ export async function buildRemakeProductionVisualBoards(input: {
     character?: RemakeProductionVisionAsset;
     product?: RemakeProductionVisionAsset;
     redrawnContactSheets: Array<{ groupOrdinal: number; frameOrdinals: number[]; asset: RemakeProductionVisionAsset }>;
+    groupOrdinal?: number;
 }): Promise<RemakeProductionVisualBoard[]> {
-    const groups = [...input.redrawnContactSheets].sort((left, right) => left.groupOrdinal - right.groupOrdinal);
-    if (groups.length !== 4 || groups.some((group, index) => group.groupOrdinal !== index + 1 || group.frameOrdinals.length !== 12 || group.frameOrdinals.some((ordinal, frameIndex) => ordinal !== index * 12 + frameIndex + 1))) {
+    const allGroups = [...input.redrawnContactSheets].sort((left, right) => left.groupOrdinal - right.groupOrdinal);
+    if (allGroups.length !== 4 || allGroups.some((group, index) => group.groupOrdinal !== index + 1 || group.frameOrdinals.length !== 12 || group.frameOrdinals.some((ordinal, frameIndex) => ordinal !== index * 12 + frameIndex + 1))) {
         throw new RemakeProductionVisionError("生产视觉规划必须读取连续四组重绘十二宫格", 409);
     }
+    const groups = input.groupOrdinal === undefined ? allGroups : allGroups.filter((group) => group.groupOrdinal === input.groupOrdinal);
+    if (!groups.length) throw new RemakeProductionVisionError("视频提示词分组无效", 400);
 
     const budget = { remaining: REMAKE_PRODUCTION_SOURCE_IMAGES_TOTAL_MAX_BYTES };
     // 旧上传记录可能保存了超时兜底尺寸，参考图以实际解码尺寸为准。
@@ -209,8 +212,11 @@ async function createReferenceBoard(background: LoadedImage, character?: LoadedI
 }
 
 async function createContactSheetBoard(images: LoadedImage[], groups: Array<{ groupOrdinal: number; frameOrdinals: number[] }>): Promise<RemakeProductionVisualBoard> {
-    const tileWidth = CONTACT_SHEET_BOARD_WIDTH / 2;
-    const tileHeight = CONTACT_SHEET_BOARD_HEIGHT / 2;
+    const singleGroup = groups.length === 1;
+    const width = singleGroup ? 720 : CONTACT_SHEET_BOARD_WIDTH;
+    const height = singleGroup ? 1280 + LABEL_HEIGHT : CONTACT_SHEET_BOARD_HEIGHT;
+    const tileWidth = singleGroup ? width : width / 2;
+    const tileHeight = singleGroup ? height : height / 2;
     const imageHeight = tileHeight - LABEL_HEIGHT;
     const overlays: OverlayOptions[] = [];
     for (const [index, image] of images.entries()) {
@@ -222,20 +228,22 @@ async function createContactSheetBoard(images: LoadedImage[], groups: Array<{ gr
         overlays.push({ input: await fitImage(image.bytes, tileWidth, imageHeight), left, top: top + LABEL_HEIGHT });
         overlays.push({ input: labelSvg(tileWidth, LABEL_HEIGHT, `GROUP ${group.groupOrdinal} | FRAMES ${firstFrame}-${lastFrame}`), left, top });
     }
-    const bytes = await renderBoard(CONTACT_SHEET_BOARD_WIDTH, CONTACT_SHEET_BOARD_HEIGHT, overlays);
+    const bytes = await renderBoard(width, height, overlays);
     return {
         ordinal: 2,
         id: "redrawn-contact-sheets-board",
         mimeType: "image/jpeg",
-        width: CONTACT_SHEET_BOARD_WIDTH,
-        height: CONTACT_SHEET_BOARD_HEIGHT,
+        width,
+        height,
         bytes,
-        description: "按左上、右上、左下、右下顺序对应第 1 至第 4 组重绘十二宫格，每组内部均按 3×4 从左到右、从上到下对应连续 12 帧。",
+        description: singleGroup
+            ? `第 ${groups[0].groupOrdinal} 组重绘十二宫格，按 3×4 从左到右、从上到下对应分镜 ${groups[0].frameOrdinals[0]}-${groups[0].frameOrdinals[11]}。`
+            : "按左上、右上、左下、右下顺序对应第 1 至第 4 组重绘十二宫格，每组内部均按 3×4 从左到右、从上到下对应连续 12 帧。",
         layout: groups.map((group, index) => ({
             order: index + 1,
             role: "redrawn-contact-sheet" as const,
             label: `GROUP ${group.groupOrdinal}`,
-            position: ["top-left", "top-right", "bottom-left", "bottom-right"][index],
+            position: singleGroup ? "center" : ["top-left", "top-right", "bottom-left", "bottom-right"][index],
             provided: true,
             groupOrdinal: group.groupOrdinal,
             frameOrdinals: [...group.frameOrdinals],

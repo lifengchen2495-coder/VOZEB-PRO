@@ -73,6 +73,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
             background: project.references.background!,
             character: project.references.character,
             product: project.references.product,
+            groupOrdinal: input.groupId === undefined ? undefined : REMAKE_PRODUCTION_GROUP_IDS.indexOf(selectedGroups[0]) + 1,
             redrawnContactSheets: project.groups.map((group) => ({
                 groupOrdinal: group.ordinal,
                 frameOrdinals: group.frameOrdinals,
@@ -128,7 +129,8 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
             let latestError: unknown;
             let generated = false;
             for (const candidate of candidates) {
-                const idempotencyKey = systemAiIdempotencyKey("remake-person-feishu-video-prompt", input.userId, project.id, remakeProductionInputVersion(project, [groupId]), groupId, candidate.channelId, candidate.upstreamModel);
+                // 单组拼图改变了请求正文，不能复用旧四组拼图的计费请求标识。
+                const idempotencyKey = systemAiIdempotencyKey("remake-person-feishu-video-prompt", input.userId, project.id, remakeProductionInputVersion(project, [groupId]), groupId, candidate.channelId, candidate.upstreamModel, ...(input.groupId === undefined ? [] : ["single-board-v1"]));
                 let chargedHeaders: Headers | undefined;
                 try {
                     const call = await requestRemakeProductionVisionPrompt({
@@ -156,7 +158,11 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
                     latestError = error;
                 }
             }
-            if (!generated) throw new RemakeProductionError(toSafeGenerationErrorMessage(latestError, `分镜 ${groupId} 的视频提示词生成失败`));
+            if (!generated) {
+                const status = latestError instanceof RemakeProductionVisionError ? latestError.status : 422;
+                const detail = toSafeGenerationErrorMessage(latestError, `分镜 ${groupId} 的视频提示词生成失败`);
+                throw new RemakeProductionError(`分镜 ${groupId} 的 Prompt 生成失败：${detail}`, status);
+            }
         }
         if (input.groupId !== undefined) {
             return await completeRemakeProductionForUser(input.userId, project.id, {
