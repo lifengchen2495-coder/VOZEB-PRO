@@ -46,7 +46,7 @@ import { getRemakeProjectForUser as getRemakeProductProjectForUser, RemakeProjec
 import { getRemakeProjectForUser as getRemakePersonProjectForUser, RemakeProjectServiceError as RemakePersonProjectServiceError } from "@/lib/server/remake-person-project-service";
 import { validateOmniClothingVideoRequest, OmniClothingError } from "@/lib/server/omni-clothing-project-service";
 import { validateOmniVideoRequest, OmniProjectError } from "@/lib/server/omni-remake-project-service";
-import { buildHuifengVideoRequest, HUIFENG_CREATE_PATH, HUIFENG_OMNI_EDIT_MODEL, HUIFENG_QUERY_PATH, HUIFENG_SEEDANCE_20_ANMIAO_MODEL } from "@/lib/huifeng-media";
+import { buildHuifengVideoRequest, HUIFENG_CREATE_PATH, HUIFENG_OMNI_EDIT_MODEL, HUIFENG_QUERY_PATH } from "@/lib/huifeng-media";
 import { parseHuifengVideoCreateResponse } from "@/lib/server/huifeng-video-response";
 
 const CREATE_PATHS = ["/video/generations", "/videos/generations", "/videos/videos", "/videos"];
@@ -260,8 +260,8 @@ export async function POST(request: Request) {
                         }
                         assertReferenceUrls(channel.advancedConfig, references, Boolean(globalPreset));
                     }
-                    const needsRemakeAudioConversion = channel.advancedConfig?.protocol === "seedance" || channel.advancedConfig?.protocol === "volcengine-video" || (huifengVideo && channel.model === HUIFENG_SEEDANCE_20_ANMIAO_MODEL);
-                    if ((isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake) && needsRemakeAudioConversion && references.some((reference) => reference.type === "audio")) {
+                    // 复刻音频用于参考音色；所有渠道都使用限长样本，避免自定义协议透传整段原音频。
+                    if ((isRemakeVideoRequest || isRemake15VideoRequest || fixedRemake) && references.some((reference) => reference.type === "audio")) {
                         providerReferences = await normalizeRemakeVideoAudioReferences({ references, userId: user.id, internalOrigin: origin, publicOrigin, projectId: remakeProjectId });
                     }
                     if (huifengVideo) providerReferences = await Promise.all(providerReferences.map((reference) => signProviderReference(reference, user, publicOrigin, true)));
