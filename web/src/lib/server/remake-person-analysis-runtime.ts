@@ -69,7 +69,7 @@ const INLINE_VIDEO_TARGET_BYTES = 22 * 1024 * 1024;
 const MAX_INLINE_VIDEO_BYTES = 24 * 1024 * 1024;
 const FRAME_EXTRACTION_CONCURRENCY = 4;
 const FRAME_PERSISTENCE_CONCURRENCY = 4;
-// Allow one frame at the analysis video's 12 fps plus timestamp rounding, only at the final boundary.
+// Allow one analysis frame plus timestamp rounding; whole-second rounding is checked separately below.
 const VIDEO_END_TOLERANCE_MS = 100;
 const CONTACT_SHEET_WIDTH = 1_080;
 const CONTACT_SHEET_HEIGHT = 1_920;
@@ -570,7 +570,11 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
         if (rawStart === null || rawEnd === null || !Number.isFinite(rawStart) || !Number.isFinite(rawEnd) || rawStart < 0 || rawEnd <= rawStart) throw new Error(`镜头 ${ordinal} 的时间字段不合格`);
         const time = roundedSeconds(rawStart);
         let endTime = roundedSeconds(rawEnd);
-        if (ordinal === items.length && Math.abs(Math.round(endTime * 1_000) - durationMs) <= VIDEO_END_TOLERANCE_MS) endTime = durationSeconds;
+        const endMs = Math.round(endTime * 1_000);
+        // 模型可能将真实片尾 38.267 秒四舍五入为 38 秒。只校正最后一镜，
+        // 且整秒值必须恰好等于真实时长四舍五入的结果，不放宽其他时间轴校验。
+        const roundedToWholeSecond = endMs === Math.round(durationMs / 1_000) * 1_000;
+        if (ordinal === items.length && (Math.abs(endMs - durationMs) <= VIDEO_END_TOLERANCE_MS || roundedToWholeSecond)) endTime = durationSeconds;
         if (endTime <= time || endTime > durationSeconds) {
             throw new Error(`镜头 ${ordinal} 的时间字段不合格（开始 ${time} 秒，结束 ${endTime} 秒，视频时长 ${durationSeconds} 秒）`);
         }
