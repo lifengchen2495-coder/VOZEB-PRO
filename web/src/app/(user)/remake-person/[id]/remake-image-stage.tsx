@@ -330,7 +330,7 @@ export function RemakeImageStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 02</div>
                         <h2 className="mt-1 text-lg font-semibold">更换人物与背景 · 保留原产品</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">上传背景图，可补充原产品参考图和人物图，按原产品与动作按每段实际镜头生成分镜拼图。</p>
+                        <p className="mt-1 text-sm text-muted-foreground">上传背景图，可补充原产品参考图和人物图，保留原产品与动作，按四组各 12 镜生成四张十二宫格图。</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                         <ModelPicker

@@ -1,4 +1,4 @@
-import { remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
+import { isOriginalRemakePersonLayout, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import { remakePersonTimings } from "@/lib/remake-person-timing";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
@@ -207,6 +207,7 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
 }
 
 async function assertProductionReady(userId: string, project: Awaited<ReturnType<typeof getRemakeProjectForUser>>) {
+    if (!isOriginalRemakePersonLayout(project.frames)) throw new RemakeProductionError("请重新分析，恢复48个分镜、四组各12镜后再生成", 409);
     if (project.analysis.status !== "completed" || project.analysis.mode !== "video" || !remakePersonTimings(project).length || project.frames.some((frame, index) => frame.ordinal !== index + 1 || frame.analysisStatus !== "available")) {
         throw new RemakeProductionError("请先使用视频理解完成全部镜头解析", 409);
     }

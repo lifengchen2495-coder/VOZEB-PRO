@@ -1,4 +1,5 @@
 import { remakePersonGroupTiming, remakePersonPromptDurationError, type RemakePersonTiming } from "@/lib/remake-person-timing";
+import { isOriginalRemakePersonLayout } from "@/lib/remake-person-layout";
 import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { FrameRemakeError, validateFrameRemakeGeneration } from "@/lib/server/frame-remake-project-service";
 import { after, NextResponse } from "next/server";
@@ -152,6 +153,7 @@ export async function POST(request: Request) {
                     }
                     prompt = group.videoPrompt;
                     if (fixedRemake.projectPrefix === "remake-person-") {
+                        if (!isOriginalRemakePersonLayout(project.frames)) return NextResponse.json({ error: "请重新分析，恢复48个分镜、四组各12镜后再生成" }, { status: 409 });
                         remakePersonTiming = remakePersonGroupTiming(project, group.id);
                         const timingError = remakePersonPromptDurationError(prompt, remakePersonTiming);
                         if (timingError) return NextResponse.json({ error: timingError }, { status: 409 });

@@ -1,5 +1,5 @@
-import { groupRemakePersonAnalysis, remakePersonAnalysisSegments, remakePersonFrameGroups, remakePersonCopyFrameGroups, remakePersonGridLayout } from "@/lib/remake-person-layout";
-import { remakePersonSegmentAnalysisPrompt, remakePersonSegmentCopyPrompt } from "@/lib/remake-person-segment-prompts";
+import { isOriginalRemakePersonLayout, remakePersonFrameGroups, remakePersonCopyFrameGroups, remakePersonGridLayout } from "@/lib/remake-person-layout";
+import { remakePersonSegmentCopyPrompt } from "@/lib/remake-person-segment-prompts";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,7 +107,6 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             timeoutMs: 10 * 60_000,
         });
         const probe = await probeSourceVideo(sourcePath);
-        remakePersonAnalysisSegments(probe.durationMs);
         const models = await resolveAnalysisModels();
 
         await updateRemakeAnalysisTaskProgress(task, { stage: "transcoding", progress: 12 });
@@ -229,7 +228,7 @@ function isStrictAnalysisComplete(project: Awaited<ReturnType<typeof markRemakeP
     return (
         project.analysis.status === "completed" &&
         project.analysis.mode === "video" &&
-        project.frames.length === REMAKE_FRAME_COUNT &&
+        isOriginalRemakePersonLayout(project.frames) &&
         remakePersonFrameGroups(project.frames).length > 0 &&
         project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.groups?.filter((group) => group.sourceContactSheet?.url).length === remakePersonFrameGroups(project.frames).length &&
@@ -409,7 +408,7 @@ async function understandVideo(input: {
             const call = await requestDoubaoVideoUnderstanding({ ...input, candidate, idempotencyKey });
             input.onResponse(call.arguments);
             try {
-                const understanding = parseVideoUnderstanding(call.arguments, input.durationMs, true);
+                const understanding = parseVideoUnderstanding(call.arguments, input.durationMs);
                 input.onCharge(call.headers);
                 return understanding;
             } catch (error) {
@@ -428,7 +427,7 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
     const fileId = await uploadDoubaoVideo(input.candidate, input.bytes);
     try {
         await waitForDoubaoFile(input.candidate, fileId);
-        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs, true);
+        const prompt = buildDoubaoVideoUnderstandingPrompt(input.durationMs);
         const body = {
             model: input.candidate.upstreamModel,
             input: [
@@ -458,9 +457,10 @@ async function requestDoubaoVideoUnderstanding(input: { bytes: Buffer; durationM
     }
 }
 
-export function buildDoubaoVideoUnderstandingPrompt(durationMs: number, segmented = false) {
+export function buildDoubaoVideoUnderstandingPrompt(durationMs: number, _segmented = false) {
+    void _segmented;
     if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error("原视频时长无效");
-    return segmented ? remakePersonSegmentAnalysisPrompt(durationMs) : REMAKE_FEISHU_ANALYSIS_PROMPT;
+    return REMAKE_FEISHU_ANALYSIS_PROMPT;
 }
 
 async function uploadDoubaoVideo(candidate: ResolvedLogicalModel, bytes: Buffer) {
@@ -540,7 +540,8 @@ function uniqueCandidates(candidates: ResolvedLogicalModel[]) {
     });
 }
 
-export function parseVideoUnderstanding(argumentsText: string, durationMs: number, segmented = false): VideoUnderstandingResult {
+export function parseVideoUnderstanding(argumentsText: string, durationMs: number, _segmented = false): VideoUnderstandingResult {
+    void _segmented;
     const response = argumentsText.trim();
     const fence = response.match(/^```(?:json|text|markdown|yaml)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
     const text = (fence?.[1] ?? response).trim();
@@ -598,7 +599,7 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
         if (previous && frame.time !== previous.endTime) throw new Error(`分镜${frame.ordinal}从${frame.time}秒开始，上一分镜在${previous.endTime}秒结束；分镜时间线必须连续且无重叠`);
     }
     if (frames.at(-1)?.endTime !== durationSeconds) throw new Error(`最后一个分镜结束于${frames.at(-1)?.endTime}秒，必须精确结束于视频实际结尾${durationSeconds}秒`);
-    return { frames: segmented ? groupRemakePersonAnalysis(frames, durationMs) : frames, sourceCopy };
+    return { frames, sourceCopy };
 }
 
 async function extractAnalyzedFrames(input: { sourcePath: string; workDirectory: string; analysis: VideoFrameAnalysis[]; task: RemakeAnalysisTask; onAsset: (storageKey: string) => void }): Promise<ExtractedFrame[]> {

@@ -1,6 +1,6 @@
 "use client";
 
-import { remakePersonFrameGroups, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
+import { isOriginalRemakePersonLayout, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Drawer, Dropdown, Input, Modal, Skeleton, Tag, Tooltip } from "antd";
@@ -576,7 +576,7 @@ export function RemakeWorkspace() {
     const analysisReady =
         project.analysis.status === "completed" &&
         project.analysis.mode === "video" &&
-        remakePersonFrameGroups(project.frames).length > 0 &&
+        isOriginalRemakePersonLayout(project.frames) &&
         project.frames.every((frame) => frame.analysisStatus === "available") &&
         project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.copy.status === "completed" &&
@@ -586,8 +586,8 @@ export function RemakeWorkspace() {
         project.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim()))) &&
         (noNarration || Boolean(project.references.audio?.url)) &&
         project.groups.every((group) => group.sourceContactSheet?.url);
-    const imagesReady = remakeImagesReady(project);
-    const productionReady = remakeProductionReady(project);
+    const imagesReady = analysisReady && remakeImagesReady(project);
+    const productionReady = analysisReady && remakeProductionReady(project);
     const changeFlowStage = (next: RemakeFlowStage) => {
         setFlowStage(next);
         setSourceOpen(false);
@@ -648,8 +648,8 @@ export function RemakeWorkspace() {
 
             <RemakeFlowNavigation stage={flowStage} analysisReady={analysisReady} imagesReady={imagesReady} productionReady={productionReady} onChange={changeFlowStage} />
 
-            {project.frames.length > 0 && (project.frames.length !== 48 || project.frames.every((frame) => frame.segmentIndex === undefined)) ? (
-                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">{project.frames.length !== 48 ? `当前旧结果只有 ${project.frames.length} 个分镜。` : "当前项目沿用旧分组。"}点击“重新分析”后固定解析并抽取 48 个分镜，按每 15 秒分组，最后一组使用剩余时长。</p>
+            {project.frames.length > 0 && !isOriginalRemakePersonLayout(project.frames) ? (
+                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">当前结果使用了旧的镜头分组。请点击“重新分析”，恢复 48 个分镜、四组各 12 镜和 16 个文案区间；重新分析后需重新生成分镜图和视频。</p>
             ) : null}
 
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">

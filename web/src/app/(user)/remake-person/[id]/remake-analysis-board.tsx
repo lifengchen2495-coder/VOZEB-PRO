@@ -123,7 +123,7 @@ function FrameGrid({ frames, selectedId, onSelect }: { frames: RemakeFrame[]; se
     const groups = remakePersonFrameGroups(frames);
     const sections = groups.length ? groups.map((group) => ({
         key: group.id,
-        title: `第 ${group.ordinal} 组 · ${formatFrameTime(frames[group.startFrame - 1].time)}–${formatFrameTime(frames[group.endFrame - 1].endTime)} · ${group.endFrame - group.startFrame + 1} 个分镜`,
+        title: `分镜 ${group.startFrame}–${group.endFrame} · ${formatFrameTime(frames[group.startFrame - 1].time)}–${formatFrameTime(frames[group.endFrame - 1].endTime)} · ${group.endFrame - group.startFrame + 1} 个分镜`,
         frames: frames.slice(group.startFrame - 1, group.endFrame),
     })) : [{ key: "all", title: "", frames }];
     return (

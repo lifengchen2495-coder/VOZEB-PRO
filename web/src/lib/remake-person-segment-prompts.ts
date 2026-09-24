@@ -1,5 +1,5 @@
 import { REMAKE_FEISHU_ANALYSIS_PROMPT, REMAKE_FEISHU_COPY_PROMPT, REMAKE_FEISHU_VIDEO_PROMPTS } from "./remake-person-feishu-prompts";
-import { remakePersonAnalysisSegments, remakePersonCopyFrameGroups, remakePersonFrameGroups, remakePersonGridLayout, type RemakeTimelineFrame } from "./remake-person-layout";
+import { remakePersonCopyFrameGroups, remakePersonFrameGroups, remakePersonGridLayout, type RemakeTimelineFrame } from "./remake-person-layout";
 import { remakePersonSeconds, type RemakePersonTiming } from "./remake-person-timing";
 
 // 从归档正文派生，只替换与固定时长、分镜数、区间编号相关的内容。
@@ -10,19 +10,10 @@ function section(text: string, start: string, end: string, replacement: string) 
     return text.slice(0, from) + replacement + "\n\n---\n\n" + text.slice(to);
 }
 
+// 兼容旧调用；新分析直接使用归档原文，不能再追加按时长分配镜头的规则。
 export function remakePersonSegmentAnalysisPrompt(durationMs: number) {
-    const seconds = remakePersonSeconds(durationMs);
-    const segments = remakePersonAnalysisSegments(durationMs);
-    const table = segments.map((group) => `| 第${group.ordinal}部分 | ${remakePersonSeconds(group.startMs)}–${remakePersonSeconds(group.endMs)}秒 | 分镜${group.startFrame}-${group.endFrame} | ${group.frameCount}个 |`).join("\n");
-    let prompt = REMAKE_FEISHU_ANALYSIS_PROMPT
-        .replace("60秒版", "实际时长版")
-        .replace("针对60秒TikTok长视频", `针对实际时长为${seconds}秒的视频`)
-        .replace("- **输出形式**：分为4个部分，每部分12个分镜，用于生成4张十二宫格图", `- **输出形式**：全片固定48个分镜，按每15秒分为${segments.length}个部分，末部分为剩余时长，各部分分镜编号和数量见输出格式`)
-        .replace("- 根据视频实际时长，合理分配48个分镜\n- 平均每个分镜约：视频实际时长 ÷ 48", `- 根据视频实际时长，合理分配48个分镜\n- 平均每个分镜约：视频实际时长 ÷ 48\n- 按输出格式中的时段和数量分配，段内按字幕、卖点和动作确定时间码；不足规定数量时拆分长分镜的实际动作阶段\n- 时间码支持毫秒精度，每部分从规定的起点连续覆盖至终点，分镜不得跨越15秒分组边界\n- 第48个分镜必须结束于${seconds}秒`);
-    prompt = section(prompt, "## 【输出格式】", "## 【输出示例", `## 【输出格式】\n\n**总分镜数：48个，不多不少**。从分镜1连续编号至分镜48，按以下时段分组输出。每组第一镜的开始时间和最后一镜的结束时间必须与表格一致；组内连续覆盖，不跳跃、不重叠。\n\n| 部分 | 视频时段 | 分镜编号 | 分镜数量 |\n|---|---|---|---|\n${table}\n\n每部分生成1张分镜拼图，使用本部分分镜数量，不能强制每组12镜；全片抽取48张对应画面，不能把多镜概括成少数场景。`);
-    return prompt.replace("## 【输出示例（60秒，48个分镜 - 第1部分）】", "## 【输出示例（仅说明字段格式，实际时间和分组以上表为准，全片48镜）】")
-        .replace("...（分镜6-12，同上格式）", "分镜6-48均按上述格式完整输出，不得省略。")
-        .replace("8. **4张十二宫格输出**：分为4个部分，每部分12个分镜", `8. **按15秒分组输出**：全片48镜分为${segments.length}个部分，末部分为剩余时长，严格按照输出格式中的时段和分镜编号分组`);
+    if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error("原视频时长无效");
+    return REMAKE_FEISHU_ANALYSIS_PROMPT;
 }
 
 export function remakePersonSegmentCopyPrompt(frames: RemakeTimelineFrame[]) {

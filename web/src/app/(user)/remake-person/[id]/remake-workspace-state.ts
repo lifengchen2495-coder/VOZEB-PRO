@@ -1,4 +1,4 @@
-import { remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
+import { isOriginalRemakePersonLayout, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
 import { remakePersonGroupTiming, remakePersonTimingKey } from "@/lib/remake-person-timing";
 import { remakeVideoSettingsKey } from "@/lib/remake-person-video-settings";
 import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch, type RemakeMediaAsset, type RemakeProject, type RemakeRangeGroup, type RemakeReferenceAssets, type RemakeTaskStatus } from "../remake-contract";
@@ -6,6 +6,7 @@ import { isRemakeNoNarrationCopy, type RemakeCopyBlock, type RemakeEditablePatch
 export type RemakeWorkspacePatch = RemakeEditablePatch & Partial<Pick<RemakeProject, "copy" | "pipeline">>;
 
 export function recoveredFlowStage(project: RemakeProject): "analysis" | "images" | "production" {
+    if (!isOriginalRemakePersonLayout(project.frames)) return "analysis";
     if (project.groups.length > 0 && project.groups.every(groupImagesReady)) return "production";
     if (project.pipeline.stage === "references" || project.pipeline.stage === "images" || project.analysis.status === "completed") return "images";
     return "analysis";

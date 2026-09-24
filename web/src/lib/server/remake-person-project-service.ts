@@ -1,4 +1,4 @@
-import { remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
+import { isOriginalRemakePersonLayout, remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
 import { remakePersonGroupTiming, remakePersonTaskTimingMatches, remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { invalidateRemakeMergedVideo } from "./remake-person-merge-contract";
 import { createHash } from "node:crypto";
@@ -349,7 +349,7 @@ export async function completeRemakeProjectAnalysis(input: {
         const normalized = normalizeRemakeProjectWorkflow(current);
         if (normalized.analysis.taskId !== input.task.id) return current;
         const frames = normalizeRemakeFrames(input.frames);
-        if (input.frames.length !== REMAKE_FRAME_COUNT || frames.length !== REMAKE_FRAME_COUNT || !remakePersonFrameGroups(frames).length || frames.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("视频分析必须返回完整的48个分镜帧单元", 400);
+        if (input.frames.length !== REMAKE_FRAME_COUNT || !isOriginalRemakePersonLayout(frames)) throw new RemakeProjectServiceError("视频分析必须返回完整的48个分镜帧单元，按四组各12镜分组", 400);
         const timestamps = input.timestamps === undefined ? frames.map((frame) => frame.time) : normalizeRemakeTimestamps(input.timestamps);
         if (timestamps.length !== frames.length) throw new RemakeProjectServiceError("视频分析必须返回全部抽帧时间点", 400);
         const sourceCopy = normalized.sourceCopy.trim() || cleanText(input.sourceCopy, MAX_SOURCE_COPY_LENGTH);
@@ -402,7 +402,7 @@ export async function completeRemakeProductionForUser(userId: string, id: string
         } else if (expectedRevision !== undefined && expectedRevision !== normalized.revision) {
             throw new RemakeProjectServiceError("复刻项目已在其他页面更新，请刷新后重试", 409);
         }
-        if (!remakePersonFrameGroups(normalized.frames).length) throw new RemakeProjectServiceError("请先完成全部分镜视频分析", 409);
+        if (!isOriginalRemakePersonLayout(normalized.frames)) throw new RemakeProjectServiceError("请重新分析，恢复48个分镜、四组各12镜后再生成", 409);
         const copy = normalizeRemakeCopyState(input.copy, normalized.copy);
         const copyBlocks = input.copyBlocks
             ? normalizeRemakeCopyBlocks(input.copyBlocks, {
@@ -467,6 +467,7 @@ export async function validateRemakePersonImageRequest(input: {
         throw new RemakeProjectServiceError("换人生图的项目或分镜组标识不完整", 400);
     }
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
+    if (!isOriginalRemakePersonLayout(project.frames)) throw new RemakeProjectServiceError("请重新分析，恢复48个分镜、四组各12镜后再生成", 409);
     const group = project.groups.find((item) => remakeImageGenerationSlotId("storyboard", item.id) === input.slotId);
     if (!group?.sourceContactSheet?.url || !project.references.background?.url) {
         throw new RemakeProjectServiceError("请先准备该组来源分镜拼图和背景图", 409);
