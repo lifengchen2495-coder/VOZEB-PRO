@@ -73,7 +73,13 @@ export function RemakeAnalysisBoard({
 
             <Tabs
                 activeKey={activeTab}
-                className="remake-workspace-tabs min-h-0 flex-1 [&>.ant-tabs-content-holder]:min-h-0 [&>.ant-tabs-content-holder]:overflow-hidden [&>.ant-tabs-content-holder>.ant-tabs-content]:h-full [&>.ant-tabs-content-holder>.ant-tabs-content>.ant-tabs-tabpane]:h-full [&>.ant-tabs-nav]:!mb-0 [&>.ant-tabs-nav]:shrink-0 [&>.ant-tabs-nav]:px-3 sm:[&>.ant-tabs-nav]:px-4"
+                className="remake-workspace-tabs min-h-0 flex-1 overflow-hidden"
+                classNames={{ header: "px-3 sm:px-4" }}
+                styles={{
+                    header: { marginBottom: 0, flexShrink: 0 },
+                    body: { height: "100%" },
+                    content: { height: "100%", minHeight: 0, overflow: "hidden" },
+                }}
                 onChange={(value) => onTabChange(value as RemakeWorkspaceTab)}
                 items={[
                     {
