@@ -8,6 +8,7 @@ import { App, Button, Image, Input, Progress, Tag, Tooltip } from "antd";
 import { Check, Copy, ImagePlus, Images, LoaderCircle, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { ReferenceImageGenerator } from "@/components/reference-image-generator";
 import { friendlyAgentError } from "@/components/agent/agent-message-format";
 import { imagePreviewUrl } from "@/lib/media-image-url";
 import { createImageGenerationTask, isImageGenerationTaskDeferredError, waitForImageGenerationTask } from "@/services/api/image";
@@ -43,7 +44,7 @@ export type RemakeGroupPatch = {
 };
 
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
-const REFERENCE_SLOTS: Array<{ key: ReferenceKey; label: string; detail: string; required: boolean }> = [
+const REFERENCE_SLOTS: Array<{ key: Exclude<ReferenceKey, "characterSupplement">; label: string; detail: string; required: boolean }> = [
     { key: "product", label: "原产品参考图", detail: "可选，上传原产品清晰图，参考包装、颜色与外观", required: false },
     { key: "character", label: "人物六宫格图", detail: "可选，只参考外貌与服装款式", required: false },
     { key: "background", label: "背景图", detail: "必需，用于替换背景场景", required: true },
@@ -322,6 +323,10 @@ export function RemakeImageStage({
     const imagesReady = remakeImagesReady(project);
     const generationActive = startingStagesRef.current.size > 0 || project.groups.some(activeGeneration);
     const completedCount = project.groups.filter(groupComplete).length;
+    const productReferenceOptions = [
+        ...(project.references.product?.url ? [{ label: "当前原产品参考图", url: project.references.product.url }] : []),
+        ...project.frames.filter((frame) => frame.frameUrl).map((frame) => ({ label: `分镜 ${frame.ordinal} · ${frame.shotType || "原视频画面"}`, url: frame.frameUrl })),
+    ];
 
     return (
         <section className="h-full min-h-0 overflow-y-auto bg-background" aria-label="分镜拼图重绘">
@@ -330,7 +335,7 @@ export function RemakeImageStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 02</div>
                         <h2 className="mt-1 text-lg font-semibold">更换人物与背景 · 保留原产品</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">上传背景图，可补充原产品参考图和人物图，保留原产品与动作，按四组各 12 镜生成四张十二宫格图。</p>
+                        <p className="mt-1 text-sm text-muted-foreground">上传或生成背景图，可补充原产品参考图和人物图，保留原产品与动作，按四组各 12 镜生成四张十二宫格图。</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
                         <ModelPicker
@@ -358,6 +363,36 @@ export function RemakeImageStage({
                             disabled={disabled || Boolean(uploadingKey) || generationActive}
                             onChoose={() => inputRefs.current[slot.key]?.click()}
                             onRemove={() => emitReferenceChange(slot.key, undefined)}
+                            generateAction={
+                                <ReferenceImageGenerator
+                                    projectId={project.id}
+                                    role={slot.key}
+                                    characterLayout={slot.key === "character" ? "six-grid" : undefined}
+                                    referenceOptions={slot.key === "product" ? productReferenceOptions : undefined}
+                                    size={slot.key === "character" ? "3:2" : slot.key === "product" ? "1:1" : "9:16"}
+                                    context={project.title}
+                                    imageModel={selectedImageModel}
+                                    disabled={disabled || Boolean(uploadingKey) || generationActive}
+                                    className="!h-7 !px-1.5"
+                                    onSelect={async (asset) => {
+                                        if (disabled || uploadingKeyRef.current || startingStagesRef.current.size || latestProjectRef.current.groups.some(activeGeneration)) throw new Error("请等待当前操作完成后再使用参考图");
+                                        if (latestProjectRef.current.references[slot.key]?.url === asset.url) {
+                                            if (!(await onFlush())) throw new Error("项目尚未保存，请先处理保存错误后重试");
+                                            return;
+                                        }
+                                        uploadingKeyRef.current = slot.key;
+                                        setUploadingKey(slot.key);
+                                        try {
+                                            emitReferenceChange(slot.key, asset);
+                                            if (!(await onFlush())) throw new Error(`${slot.label}尚未保存，请先处理项目保存错误后重试`);
+                                            message.success(`${slot.label}已采用`);
+                                        } finally {
+                                            uploadingKeyRef.current = undefined;
+                                            setUploadingKey(undefined);
+                                        }
+                                    }}
+                                />
+                            }
                         >
                             <input
                                 ref={(node) => {
@@ -377,7 +412,7 @@ export function RemakeImageStage({
 
                 {!referencesReady ? (
                     <div className="border-b border-amber-300/70 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800 dark:border-amber-800/70 dark:bg-amber-950/20 dark:text-amber-200">
-                        请先上传背景图。更换产品参考图、人物、背景或生图模型后需重新生成。
+                        请先上传或生成背景图。更换产品参考图、人物、背景或生图模型后需重新生成。
                     </div>
                 ) : null}
 
@@ -397,7 +432,7 @@ export function RemakeImageStage({
     );
 }
 
-function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; children: React.ReactNode }) {
+function ReferenceSlot({ label, detail, required, asset, loading, disabled, onChoose, onRemove, generateAction, children }: { label: string; detail: string; required: boolean; asset?: RemakeMediaAsset; loading: boolean; disabled: boolean; onChoose: () => void; onRemove: () => void; generateAction?: React.ReactNode; children: React.ReactNode }) {
     return (
         <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card p-2.5">
             <div className="relative aspect-square w-20 shrink-0 overflow-hidden rounded-md border border-border bg-muted/30">
@@ -411,10 +446,11 @@ function ReferenceSlot({ label, detail, required, asset, loading, disabled, onCh
                     </Tag>
                 </div>
                 <div className="mt-0.5 truncate text-xs text-muted-foreground">{asset?.originalName || detail}</div>
-                <div className="mt-1.5 flex items-center gap-1">
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
                     <Button size="small" type="text" className="!h-7 !px-1.5" icon={<Upload className="size-3.5" />} loading={loading} disabled={disabled} onClick={onChoose}>
                         {asset ? "替换" : "上传"}
                     </Button>
+                    {generateAction}
                     {asset ? <Button size="small" type="text" danger className="!size-7 !min-w-0 !p-0" icon={<Trash2 className="size-3.5" />} disabled={disabled} aria-label={`移除${label}`} onClick={onRemove} /> : null}
                 </div>
             </div>

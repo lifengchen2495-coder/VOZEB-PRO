@@ -453,6 +453,28 @@ export async function completeRemakeProductionForUser(userId: string, id: string
     return next;
 }
 
+export async function validateRemakePersonReferenceImageRequest(input: { userId: string; projectId: string; slotId: string; references?: ImageTask["references"]; hasMask?: boolean }) {
+    if (!input.projectId.startsWith("remake-person-")) throw new RemakeProjectServiceError("换人参考图项目标识不完整", 400);
+    const role = (["product", "character", "background"] as const).find((key) => input.slotId === `reference-image:${input.projectId}:${key}`);
+    if (!role || input.hasMask) throw new RemakeProjectServiceError("参考图生成位置与当前项目不一致，请刷新后重试", 400);
+    const project = await getRemakeProjectForUser(input.userId, input.projectId);
+    if (["queued", "running"].includes(project.analysis.status) || project.groups.some((group) => [group.imageGeneration.status, group.videoGeneration.status].some((status) => status === "queued" || status === "running"))) {
+        throw new RemakeProjectServiceError("请等待当前分析或分镜生成任务完成后再生成参考图", 409);
+    }
+    const references = input.references || [];
+    if (role !== "product") {
+        if (references.length) throw new RemakeProjectServiceError("人物和背景参考图请按当前描述生成", 400);
+        return "generation" as const;
+    }
+    const allowed = new Set([project.references.product?.url, ...project.frames.map((frame) => frame.frameUrl)].filter(Boolean).map((url) => mediaIdentity(url)));
+    const reference = references[0];
+    const identities = reference ? [reference.serverUrl, reference.url, reference.remoteUrl, reference.dataUrl].filter(Boolean).map((url) => mediaIdentity(url)) : [];
+    if (references.length !== 1 || !identities.length || new Set(identities).size !== 1 || !allowed.has(identities[0])) {
+        throw new RemakeProjectServiceError("请选择当前项目中清晰展示原产品的一帧或原产品参考图", 409);
+    }
+    return "edit" as const;
+}
+
 export async function validateRemakePersonImageRequest(input: {
     userId: string;
     projectId: string;
