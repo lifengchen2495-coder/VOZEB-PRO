@@ -648,8 +648,8 @@ export function RemakeWorkspace() {
 
             <RemakeFlowNavigation stage={flowStage} analysisReady={analysisReady} imagesReady={imagesReady} productionReady={productionReady} onChange={changeFlowStage} />
 
-            {project.frames.length > 0 && project.frames.every((frame) => frame.segmentIndex === undefined) ? (
-                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">当前项目沿用旧分组。点击“重新分析”后按每 15 秒分组，最后一组使用剩余时长，并按实际镜头数重新生成分镜图和视频。</p>
+            {project.frames.length > 0 && (project.frames.length !== 48 || project.frames.every((frame) => frame.segmentIndex === undefined)) ? (
+                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">{project.frames.length !== 48 ? `当前旧结果只有 ${project.frames.length} 个分镜。` : "当前项目沿用旧分组。"}点击“重新分析”后固定解析并抽取 48 个分镜，按每 15 秒分组，最后一组使用剩余时长。</p>
             ) : null}
 
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -658,7 +658,7 @@ export function RemakeWorkspace() {
                         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-3 py-2 sm:px-4">
                             <div className="min-w-0">
                                 <div className="text-xs font-medium text-muted-foreground">阶段 01</div>
-                                <div className="truncate text-sm font-semibold">来源视频理解与镜头解析</div>
+                                <div className="truncate text-sm font-semibold">来源视频理解与48镜头解析</div>
                             </div>
                             <Tag color={analysisReady ? "success" : analysisActive ? "processing" : "default"} className="!m-0">
                                 {analysisReady ? "分析就绪" : analysisActive ? "分析中" : "等待完成"}

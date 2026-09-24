@@ -2,7 +2,7 @@
 
 import { Checkbox, Empty, Input, Tag } from "antd";
 import { SlidersHorizontal } from "lucide-react";
-import Image from "next/image";
+import { QueuedMediaImage } from "@/components/queued-media-image";
 
 import { formatFrameTime, type RemakeCopyBlock, type RemakeCopyStrategy, type RemakeFrame } from "../remake-contract";
 import type { RemakeWorkspaceTab } from "./remake-analysis-board";
@@ -47,7 +47,7 @@ function FrameEditor({ frame, disabled, onUpdate }: { frame?: RemakeFrame; disab
         <div className="grid gap-4">
             {frame.frameUrl ? (
                 <div className="relative aspect-video w-full overflow-hidden rounded-md border border-border bg-[#111418]">
-                    <Image src={frame.frameUrl} alt={`抽帧 ${frame.ordinal}`} fill unoptimized sizes="340px" className="object-contain" />
+                    <QueuedMediaImage src={frame.frameUrl} alt={`抽帧 ${frame.ordinal}`} sizes="340px" className="object-contain" />
                 </div>
             ) : null}
             <TimeRange start={frame.time} end={frame.endTime} label="抽帧时间范围" />

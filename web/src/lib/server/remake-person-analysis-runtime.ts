@@ -1,4 +1,4 @@
-import { splitRemakePersonShots, remakePersonFrameGroups, remakePersonCopyFrameGroups, remakePersonGridLayout, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
+import { groupRemakePersonAnalysis, remakePersonAnalysisSegments, remakePersonFrameGroups, remakePersonCopyFrameGroups, remakePersonGridLayout } from "@/lib/remake-person-layout";
 import { remakePersonSegmentAnalysisPrompt, remakePersonSegmentCopyPrompt } from "@/lib/remake-person-segment-prompts";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,6 +107,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             timeoutMs: 10 * 60_000,
         });
         const probe = await probeSourceVideo(sourcePath);
+        remakePersonAnalysisSegments(probe.durationMs);
         const models = await resolveAnalysisModels();
 
         await updateRemakeAnalysisTaskProgress(task, { stage: "transcoding", progress: 12 });
@@ -228,6 +229,7 @@ function isStrictAnalysisComplete(project: Awaited<ReturnType<typeof markRemakeP
     return (
         project.analysis.status === "completed" &&
         project.analysis.mode === "video" &&
+        project.frames.length === REMAKE_FRAME_COUNT &&
         remakePersonFrameGroups(project.frames).length > 0 &&
         project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.groups?.filter((group) => group.sourceContactSheet?.url).length === remakePersonFrameGroups(project.frames).length &&
@@ -554,16 +556,16 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
         payload = parsed as Record<string, unknown>;
     } else {
         // 正文缺分镜或字段时保留具体原因，不能误报成 JSON 错误。
-        payload = parseRemakePersonAnalysisBody(text, segmented);
+        payload = parseRemakePersonAnalysisBody(text);
     }
     if (payload.sourceCopy !== undefined && (typeof payload.sourceCopy !== "string" || payload.sourceCopy.length > 200_000)) throw new Error("视频理解模型返回的原文案字段无效");
     const sourceCopy = typeof payload.sourceCopy === "string" ? payload.sourceCopy.trim() : "";
     const items = records(payload.frames);
-    if (segmented ? !items.length || items.length > REMAKE_PERSON_MAX_FRAMES : items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型返回了 ${items.length} 个分镜，${segmented ? "必须返回实际镜头，数量在1至600之间" : `必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`}`);
+    if (items.length !== REMAKE_FRAME_COUNT) throw new Error(`视频理解模型返回了 ${items.length} 个分镜，必须返回完整的 ${REMAKE_FRAME_COUNT} 条镜头分析`);
     const durationSeconds = roundedSeconds(durationMs / 1_000);
     const byOrdinal = new Map<number, VideoFrameAnalysis>();
     for (const item of items) {
-        const ordinal = strictOrdinal(item.ordinal, segmented ? items.length : REMAKE_FRAME_COUNT);
+        const ordinal = strictOrdinal(item.ordinal, REMAKE_FRAME_COUNT);
         if (!ordinal || byOrdinal.has(ordinal)) throw new Error("视频理解模型返回了重复或无效的镜头编号");
         const rawStart = parseTimestamp(item.startTime);
         const rawEnd = parseTimestamp(item.endTime);
@@ -596,7 +598,7 @@ export function parseVideoUnderstanding(argumentsText: string, durationMs: numbe
         if (previous && frame.time !== previous.endTime) throw new Error(`分镜${frame.ordinal}从${frame.time}秒开始，上一分镜在${previous.endTime}秒结束；分镜时间线必须连续且无重叠`);
     }
     if (frames.at(-1)?.endTime !== durationSeconds) throw new Error(`最后一个分镜结束于${frames.at(-1)?.endTime}秒，必须精确结束于视频实际结尾${durationSeconds}秒`);
-    return { frames: segmented ? splitRemakePersonShots(frames, durationMs) : frames, sourceCopy };
+    return { frames: segmented ? groupRemakePersonAnalysis(frames, durationMs) : frames, sourceCopy };
 }
 
 async function extractAnalyzedFrames(input: { sourcePath: string; workDirectory: string; analysis: VideoFrameAnalysis[]; task: RemakeAnalysisTask; onAsset: (storageKey: string) => void }): Promise<ExtractedFrame[]> {

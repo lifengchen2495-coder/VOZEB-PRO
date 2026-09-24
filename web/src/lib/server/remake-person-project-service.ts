@@ -30,6 +30,7 @@ import {
     normalizeRemakeSourceVideo,
     normalizeRemakeTimestamps,
     normalizeRemakeVideoPrompt,
+    REMAKE_FRAME_COUNT,
     REMAKE_NO_NARRATION_TEXT,
     type HydratedRemakeProject,
     type RemakeAnalysisMode,
@@ -348,7 +349,7 @@ export async function completeRemakeProjectAnalysis(input: {
         const normalized = normalizeRemakeProjectWorkflow(current);
         if (normalized.analysis.taskId !== input.task.id) return current;
         const frames = normalizeRemakeFrames(input.frames);
-        if (!remakePersonFrameGroups(frames).length || frames.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("视频分析必须返回完整的分镜帧单元", 400);
+        if (input.frames.length !== REMAKE_FRAME_COUNT || frames.length !== REMAKE_FRAME_COUNT || !remakePersonFrameGroups(frames).length || frames.some((frame, index) => frame.ordinal !== index + 1)) throw new RemakeProjectServiceError("视频分析必须返回完整的48个分镜帧单元", 400);
         const timestamps = input.timestamps === undefined ? frames.map((frame) => frame.time) : normalizeRemakeTimestamps(input.timestamps);
         if (timestamps.length !== frames.length) throw new RemakeProjectServiceError("视频分析必须返回全部抽帧时间点", 400);
         const sourceCopy = normalized.sourceCopy.trim() || cleanText(input.sourceCopy, MAX_SOURCE_COPY_LENGTH);

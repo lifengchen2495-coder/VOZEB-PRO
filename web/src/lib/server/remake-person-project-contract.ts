@@ -1,7 +1,7 @@
-import { remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
+import { remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES, REMAKE_PERSON_ANALYSIS_FRAMES } from "@/lib/remake-person-layout";
 import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 
-export const REMAKE_FRAME_COUNT = 48;
+export const REMAKE_FRAME_COUNT = REMAKE_PERSON_ANALYSIS_FRAMES;
 export const REMAKE_COPY_BLOCK_COUNT = 16;
 export const REMAKE_FRAMES_PER_COPY_BLOCK = 3;
 export const REMAKE_RANGE_GROUP_COUNT = 4;
