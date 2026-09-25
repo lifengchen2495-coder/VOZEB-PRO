@@ -1,5 +1,5 @@
 import { isOriginalRemakePersonLayout, remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES } from "@/lib/remake-person-layout";
-import { remakePersonGroupTiming, remakePersonTaskTimingMatches, remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
+import { remakePersonGroupTiming, remakePersonTaskTimingMatches, remakePersonResultMatches, remakePersonSeconds, type RemakePersonTiming } from "@/lib/remake-person-timing";
 import { invalidateRemakeMergedVideo } from "./remake-person-merge-contract";
 import { createHash } from "node:crypto";
 import { normalizeRemakeVideoSettings, remakeVideoSettingsKey, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
@@ -66,6 +66,7 @@ import { getVideoTask } from "@/lib/server/video-task-store";
 
 const MAX_PROJECT_BYTES = 5 * 1024 * 1024;
 const MAX_SOURCE_COPY_LENGTH = 200_000;
+const LEGACY_VIDEO_TIMING_ERROR = "此视频使用了旧时长，请按原片时长重新生成 Prompt 和视频";
 
 export class RemakeProjectServiceError extends Error {
     constructor(
@@ -105,7 +106,37 @@ export function listRemakeProjectSummariesForUser(userId: string, input: { page?
 export async function getRemakeProjectForUser(userId: string, id: string) {
     const project = await getRemakeProject(cleanText(id, 160), userId);
     if (!project) throw new RemakeProjectServiceError("复刻项目不存在", 404);
-    return restoreRemakeCopyReport(normalizeRemakeProjectWorkflow(project), renderRemakeCopyReport);
+    const restored = await restoreMisclassifiedRemakeVideos(userId, normalizeRemakeProjectWorkflow(project));
+    return restoreRemakeCopyReport(restored, renderRemakeCopyReport);
+}
+
+async function restoreMisclassifiedRemakeVideos(userId: string, project: HydratedRemakeProject) {
+    const candidates = project.groups.filter((group) => group.videoGeneration.status === "error" && group.videoGeneration.taskId && group.videoGeneration.error === LEGACY_VIDEO_TIMING_ERROR);
+    if (!candidates.length) return project;
+    const recovered = new Map<string, RemakeRangeGroup["videoGeneration"]>();
+    await Promise.all(candidates.map(async (group) => {
+        if (group.imageGeneration.status !== "completed" || !group.imageGeneration.result?.url || !group.videoPrompt.trim()) return;
+        try {
+            const generation = await authoritativeRemakeVideoGeneration({
+                userId, projectId: project.id, group, requested: group.videoGeneration,
+                timing: remakePersonGroupTiming(project, group.id), selectedModel: project.modelSelection.video,
+                videoSettings: normalizeRemakeVideoSettings(project.videoSettings),
+            });
+            if (generation.status === "completed") recovered.set(group.id, generation);
+        } catch (error) {
+            // Missing/expired tasks and changed inputs must never revive an old result.
+            if (!(error instanceof RemakeProjectServiceError)) throw error;
+        }
+    }));
+    if (!recovered.size) return project;
+    const saved = await mutateRemakeProject(userId, project.id, (current) => {
+        // A new generation or edit may have happened while the tasks were read.
+        if (current.revision !== project.revision) return null;
+        const normalized = normalizeRemakeProjectWorkflow(current);
+        return withRevision(current, { groups: normalized.groups.map((group) => recovered.has(group.id) ? { ...group, videoGeneration: recovered.get(group.id)! } : group) });
+    });
+    if (!saved) throw new RemakeProjectServiceError("复刻项目不存在", 404);
+    return normalizeRemakeProjectWorkflow(saved);
 }
 
 export async function createRemakeProjectForUser(userId: string, value: unknown) {
@@ -726,8 +757,17 @@ async function authoritativeRemakeVideoGeneration(input: {
     if (task.status !== "success") throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务状态无效`, 409);
     const result = normalizeRemakeMediaAsset(task.result);
     if (!result?.url) throw new RemakeProjectServiceError(`分镜 ${input.group.id} 的视频任务没有持久化结果`, 409);
-    if (!input.timing || !remakePersonTaskTimingMatches(input.timing, task) || Math.abs((result.durationMs || 0) - input.timing.durationMs) > 70) {
-        return { status: "error", taskId: task.id, model, attemptNo, error: "此视频使用了旧时长，请按原片时长重新生成 Prompt 和视频" };
+    if (!input.timing) {
+        return { status: "error", taskId: task.id, model, attemptNo, error: "原视频分镜时间轴不完整，无法校验视频时长，请重新分析" };
+    }
+    if (!remakePersonTaskTimingMatches(input.timing, task)) {
+        return { status: "error", taskId: task.id, model, attemptNo, error: "此视频任务的时间轴与当前分镜不一致，请按当前分镜重新生成视频" };
+    }
+    if (!remakePersonResultMatches(input.timing, result)) {
+        const error = result.durationMs
+            ? `本组应为 ${remakePersonSeconds(input.timing.durationMs)} 秒，视频结果为 ${remakePersonSeconds(result.durationMs)} 秒，请重新生成本组视频`
+            : "视频结果缺少实际时长，无法校验，请重新生成本组视频";
+        return { status: "error", taskId: task.id, model, attemptNo, error };
     }
     return { status: "completed", taskId: task.id, model, attemptNo, result: { ...result, originalName: `remake-person-${input.group.id}-${remakePersonSeconds(input.timing.durationMs)}s.mp4` } };
 }

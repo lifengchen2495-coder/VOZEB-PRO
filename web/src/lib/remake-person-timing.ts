@@ -48,7 +48,20 @@ export function remakePersonGroupTiming(project: RemakePersonTimelineInput, grou
 }
 
 export function remakePersonTimingKey(timing?: RemakePersonTiming) {
-    return timing ? JSON.stringify(timing) : "";
+    if (!timing) return "";
+    // PostgreSQL jsonb reorders object keys. Keep the original computed key format
+    // while comparing persisted snapshots by their timing values.
+    return JSON.stringify({
+        version: timing.version,
+        ...(timing.frameOrdinals !== undefined ? { frameOrdinals: timing.frameOrdinals } : {}),
+        groupId: timing.groupId,
+        sourceDurationMs: timing.sourceDurationMs,
+        startMs: timing.startMs,
+        endMs: timing.endMs,
+        durationMs: timing.durationMs,
+        outputFrames: timing.outputFrames,
+        requestSeconds: timing.requestSeconds,
+    });
 }
 
 export function remakePersonSeconds(durationMs: number) {
