@@ -1,5 +1,6 @@
 import { remakePersonFrameGroups, remakePersonCopyFrameGroups, REMAKE_PERSON_MAX_FRAMES, REMAKE_PERSON_ANALYSIS_FRAMES } from "@/lib/remake-person-layout";
 import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
+import type { RemakePersonVideoTimingMode } from "@/lib/remake-person-timing";
 
 export const REMAKE_FRAME_COUNT = REMAKE_PERSON_ANALYSIS_FRAMES;
 export const REMAKE_COPY_BLOCK_COUNT = 16;
@@ -196,6 +197,7 @@ export type RemakeProjectAnalysis = {
 };
 
 export type RemakeProject = {
+    videoTimingMode?: RemakePersonVideoTimingMode;
     id: string;
     title: string;
     status: RemakeProjectStatus;

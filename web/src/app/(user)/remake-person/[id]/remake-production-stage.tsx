@@ -1,6 +1,6 @@
 "use client";
 
-import { remakePersonGroupTiming, remakePersonTimings, remakePersonSeconds, remakePersonTimingKey, remakePersonPromptDurationError, remakePersonResultMatches, type RemakePersonTiming } from "@/lib/remake-person-timing";
+import { remakePersonGroupTiming, remakePersonTimings, remakePersonSeconds, remakePersonOutputSeconds, remakePersonTimingKey, remakePersonPromptDurationError, remakePersonResultMatches, type RemakePersonTiming } from "@/lib/remake-person-timing";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Image, Input, Segmented, Select, Switch, Tag, Tooltip } from "antd";
@@ -72,8 +72,10 @@ export function RemakeProductionStage({
     );
     const timings = remakePersonTimings(project);
     const sourceDuration = project.sourceVideo?.durationMs || timings[0]?.sourceDurationMs || 0;
-    const durationLabel = sourceDuration ? `${remakePersonSeconds(sourceDuration)} 秒` : "待解析";
-    const mergedReady = Boolean(project.mergedVideo?.url && sourceDuration && Math.abs((project.mergedVideo.durationMs || 0) - sourceDuration) < 70);
+    const outputDuration = timings.reduce((sum, timing) => sum + remakePersonOutputSeconds(timing) * 1000, 0);
+    const durationLabel = outputDuration ? `${remakePersonSeconds(outputDuration)} 秒` : "待解析";
+    const feishuTiming = project.videoTimingMode === "feishu-15s";
+    const mergedReady = Boolean(project.mergedVideo?.url && outputDuration && Math.abs((project.mergedVideo.durationMs || 0) - outputDuration) < 70);
     const latestProjectRef = useRef(project);
     latestProjectRef.current = project;
     const activeTasksRef = useRef(new Map<string, AbortController>());
@@ -436,7 +438,7 @@ export function RemakeProductionStage({
             const current = getCurrentProject?.() || latestProjectRef.current;
             const saved = await mergeRemakeVideos(current.id, current.revision);
             onMerged(saved);
-            message.success("全部分组视频已按原视频时长合并");
+            message.success("全部分组视频已按顺序合并");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "视频合并失败");
         } finally {
@@ -466,7 +468,7 @@ export function RemakeProductionStage({
                     <div className="min-w-0">
                         <div className="text-xs font-medium text-muted-foreground">阶段 03</div>
                         <h2 className="mt-1 text-lg font-semibold">Prompt 与独立视频</h2>
-                        <p className="mt-1 text-sm text-muted-foreground">{project.frames.length} 个分镜 · {project.groups.length} 组竖屏视频 · 总时长 {durationLabel}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{project.frames.length} 个分镜 · {project.groups.length} 组竖屏视频 · 成片 {durationLabel}{sourceDuration ? ` · 原片 ${remakePersonSeconds(sourceDuration)} 秒` : ""}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-end gap-2">
                         <ModelControl label="Prompt 文本模型">
@@ -492,13 +494,13 @@ export function RemakeProductionStage({
                         <ModelControl label="分辨率">
                             <Select aria-label="视频分辨率" className="min-w-32" disabled={sharedBusy} value={resolutionSupported ? videoSettings.vquality : undefined} placeholder="请选择分辨率" status={resolutionSupported ? undefined : "error"} options={resolutionOptions} onChange={(vquality) => changeVideoSettings({ vquality })} />
                         </ModelControl>
-                        <ModelControl label="每段时长"><Input className="!w-28" value="按原分镜时间" readOnly aria-label="每段视频时长" /></ModelControl>
+                        <ModelControl label="每段时长"><Input className="!w-28" value={feishuTiming ? "15 秒（固定）" : "按原分镜时间"} readOnly aria-label="每段视频时长" /></ModelControl>
                         <ModelControl label="画面比例"><Input className="!w-32" value="9:16 竖屏（固定）" readOnly aria-label="视频画面比例" /></ModelControl>
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="生成声音" disabled={sharedBusy} checked={videoSettings.videoGenerateAudio === "true"} onChange={(checked) => changeVideoSettings({ videoGenerateAudio: checked ? "true" : "false" })} />生成声音</label>
                         <label className="flex h-8 items-center gap-2 text-sm"><Switch aria-label="添加水印" disabled={sharedBusy} checked={videoSettings.videoWatermark === "true"} onChange={(checked) => changeVideoSettings({ videoWatermark: checked ? "true" : "false" })} />添加水印</label>
                     </div>
                     {!resolutionSupported ? <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">已保存的 {remakeVideoQualityLabel(videoSettings.vquality)} 不适用于当前模型，请重新选择分辨率。</p> : null}
-                    <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成全部分组视频。每组时长按原分镜时间计算，总时长与原视频一致，比例 9:16；合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
+                    <p className="text-xs leading-5 text-muted-foreground">设置自动保存，修改后需重新生成全部分组视频。{feishuTiming ? "飞书原版：48 个镜头按原片真实时间抽帧，每 12 镜生成 15 秒视频，四组合计 60 秒。" : "当前项目沿用原片时长；重新分析后恢复飞书原版，每组 15 秒、四组合计 60 秒。"}比例 9:16，合并视频使用所选分辨率。声音、水印及分辨率支持范围以所选模型为准。</p>
                 </section>
 
                 <div className="grid gap-4 border-b border-border py-4 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -601,7 +603,7 @@ export function RemakeProductionStage({
                 {mergedReady ? <section className="mb-4 rounded-lg border border-border p-3" aria-label="换人不换品成片"><h3 className="mb-3 text-sm font-semibold">换人不换品成片</h3><video className="mx-auto max-h-[560px] max-w-full rounded-md bg-black" src={browserReadableMediaUrl(project.mergedVideo!.url)} controls playsInline preload="metadata" /></section> : null}
                 <div className="flex items-center gap-2 border-t border-border pt-4 text-xs text-muted-foreground">
                     {productionReady ? <Check className="size-4 text-emerald-600" /> : <Sparkles className="size-4" />}
-                    {productionReady ? `全部 ${project.groups.length} 条视频及生产素材已就绪` : `按原片时长生成 ${project.groups.length} 组视频后，可下载视频及完整生产包`}
+                    {productionReady ? `全部 ${project.groups.length} 条视频及生产素材已就绪` : `完成 ${project.groups.length} 组视频后，可下载视频及完整生产包`}
                 </div>
             </div>
         </section>
@@ -643,7 +645,7 @@ function VideoGroupCard({ group, resolution, timing, instructionValue, editingDi
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">第 {group.ordinal} 条 · 分镜 {group.id}</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · {group.frameOrdinals.length} 个连续镜头 · 9:16 · {remakeVideoQualityLabel(resolution)} · 独立文件</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{timing ? `生成 ${remakePersonSeconds(timing.durationMs)} 秒 · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : "时间轴待解析"} · {group.frameOrdinals.length} 个连续镜头 · 9:16 · {remakeVideoQualityLabel(resolution)} · 独立文件</p>
                 </div>
                 <div className="flex max-w-full flex-wrap items-center gap-1.5">
                     <VideoGenerationTag generation={generation} />

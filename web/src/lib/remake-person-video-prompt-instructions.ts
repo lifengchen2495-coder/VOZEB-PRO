@@ -19,5 +19,7 @@ export function remakeVideoPromptSystemInstructions(groupId: string, _value: str
     void _voice;
     if (timing?.version === 2) return remakePersonSegmentVideoPrompt(timing);
     const original = remakeVideoPromptInstructions(groupId);
-    return timing ? original.replace(/15\s*秒/gu, `${remakePersonSeconds(timing.durationMs)}秒`) : original;
+    // Version 1 is retained only for existing projects. Restored Feishu projects
+    // send the archived field verbatim, including its fixed 15-second duration.
+    return timing?.version === 1 ? original.replace(/15\s*秒/gu, `${remakePersonSeconds(timing.durationMs)}秒`) : original;
 }

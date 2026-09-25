@@ -26,7 +26,7 @@ export async function POST(request: Request, context: Context) {
     return streamLongOperation(request, async () => {
         try {
             const project = await mergeRemakeVideosForUser({ userId: user.id, projectId: (await context.params).id, expectedRevision: revision, origin: resolveInternalOrigin(new URL(request.url).origin), cookie: request.headers.get("cookie") || "" });
-            return NextResponse.json({ code: 0, msg: "视频已按原片时长合并", data: { project } });
+            return NextResponse.json({ code: 0, msg: "全部分组视频已按顺序合并", data: { project } });
         } catch (error) {
             const status = error instanceof RemakeProjectServiceError ? error.status : 502;
             return NextResponse.json({ code: status, msg: toSafeGenerationErrorMessage(error, "视频合并失败，请稍后重试"), data: null }, { status });

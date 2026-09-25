@@ -157,7 +157,7 @@ export async function POST(request: Request) {
                         remakePersonTiming = remakePersonGroupTiming(project, group.id);
                         const timingError = remakePersonPromptDurationError(prompt, remakePersonTiming);
                         if (timingError) return NextResponse.json({ error: timingError }, { status: 409 });
-                        if (body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== remakePersonTiming!.requestSeconds) return NextResponse.json({ error: "生成时长与原视频分镜时间轴不一致，请刷新后重试" }, { status: 409 });
+                        if (body.config?.videoSeconds !== undefined && Number(body.config.videoSeconds) !== remakePersonTiming!.requestSeconds) return NextResponse.json({ error: "生成时长与本组视频时长设置不一致，请刷新后重试" }, { status: 409 });
                     }
                     workflowDuration = remakePersonTiming?.requestSeconds ?? 15;
                 }

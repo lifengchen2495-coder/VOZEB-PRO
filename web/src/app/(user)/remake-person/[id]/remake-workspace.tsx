@@ -648,8 +648,8 @@ export function RemakeWorkspace() {
 
             <RemakeFlowNavigation stage={flowStage} analysisReady={analysisReady} imagesReady={imagesReady} productionReady={productionReady} onChange={changeFlowStage} />
 
-            {project.frames.length > 0 && !isOriginalRemakePersonLayout(project.frames) ? (
-                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">当前结果使用了旧的镜头分组。请点击“重新分析”，恢复 48 个分镜、四组各 12 镜和 16 个文案区间；重新分析后需重新生成分镜图和视频。</p>
+            {project.frames.length > 0 && (!isOriginalRemakePersonLayout(project.frames) || project.videoTimingMode !== "feishu-15s") ? (
+                <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">当前项目沿用旧的分组或生成时长。点击“重新分析”可恢复飞书原版：48 镜、四组各 12 镜、每组生成 15 秒。原片取帧时间保持真实；重新分析会重建分镜，之后需重新生成分镜图和视频。</p>
             ) : null}
 
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">

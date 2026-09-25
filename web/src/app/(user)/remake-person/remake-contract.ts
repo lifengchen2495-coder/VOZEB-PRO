@@ -1,4 +1,5 @@
 import { remakePersonFrameGroups } from "@/lib/remake-person-layout";
+import type { RemakePersonVideoTimingMode } from "@/lib/remake-person-timing";
 import { normalizeRemakeVideoSettings, type RemakeVideoSettings } from "@/lib/remake-person-video-settings";
 
 export type RemakeCopyStrategy = "keep" | "manual";
@@ -165,6 +166,7 @@ export type RemakeSemanticCopy = {
 };
 
 export type RemakeProject = {
+    videoTimingMode?: RemakePersonVideoTimingMode;
     id: string;
     title: string;
     status: "active" | "archived";
@@ -612,6 +614,7 @@ export function normalizeRemakeProject(value: unknown): RemakeProject {
         status: project.status === "archived" ? "archived" : "active",
         revision: Math.max(0, Math.round(numberValue(firstDefined(project.revision, project.version), 0))),
         sourceVideo,
+        videoTimingMode: project.videoTimingMode === "feishu-15s" ? "feishu-15s" : undefined,
         sourceCopy: stringValue(firstDefined(project.sourceCopy, project.source_copy, project.sourceTranscript, project.source_transcript, project.originalCopy, project.original_copy, project.transcript)),
         productInfo: "",
         mergedVideo: normalizeMediaAsset(project.mergedVideo),

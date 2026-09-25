@@ -470,7 +470,7 @@ function RemakeGroupCard({ project, group, disabled, onGenerate }: { project: Re
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold">分镜 {group.id} · 分镜拼图</h3>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{group.frameOrdinals.length} 个镜头{timing ? ` · ${remakePersonSeconds(timing.durationMs)} 秒` : ""} · {remakePersonGridLayout(group.frameOrdinals.length).columns} 列 × {remakePersonGridLayout(group.frameOrdinals.length).rows} 行 · 9:16</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{group.frameOrdinals.length} 个镜头{timing ? ` · 原片 ${remakePersonSeconds(timing.startMs)}–${remakePersonSeconds(timing.endMs)} 秒` : ""} · {remakePersonGridLayout(group.frameOrdinals.length).columns} 列 × {remakePersonGridLayout(group.frameOrdinals.length).rows} 行 · 9:16</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
                     <GenerationTag group={group} />

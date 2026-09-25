@@ -61,8 +61,8 @@ async function mergeAndPersist(input: MergeRequest, project: HydratedRemakeProje
         const totalSeconds = timings.reduce((sum, timing) => sum + timing.outputFrames, 0) / 30;
         await runFfmpeg(["-y", "-f", "concat", "-safe", "1", "-i", "segments.txt", "-vf", remakeVideoTimingFilter(), "-af", "asetpts=PTS-STARTPTS,apad", "-t", String(totalSeconds), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", output], { cwd: workDirectory, timeoutMs: 10 * 60_000 });
         const delivered = await probeRemakeVideo(output);
-        if (Math.abs(delivered.duration - totalSeconds) > 0.002) throw new RemakeProjectServiceError("合并视频时长与原视频不一致，请重试", 422);
-        const originalName = `${project.title}-${remakePersonSeconds(timings[0].sourceDurationMs)}秒.mp4`;
+        if (Math.abs(delivered.duration - totalSeconds) > 0.002) throw new RemakeProjectServiceError("合并视频时长与各组生成时长之和不一致，请重试", 422);
+        const originalName = `${project.title}-${remakePersonSeconds(totalSeconds * 1000)}秒.mp4`;
         if ((await stat(output)).size > 200 * 1024 * 1024) throw new RemakeProjectServiceError("合并视频超过文件大小上限", 413);
         const asset = await writeAssetBytes(await readFile(output), "video/mp4", "video", { ownerUserId: input.userId, source: "remake-person-merge", taskId: `${project.id}:merged`, originalName });
         created = { url: asset.serverUrl || asset.url, storageKey: localMediaStorageKeyFromValue(asset.serverUrl || asset.url), mimeType: "video/mp4", originalName, bytes: asset.bytes, durationMs: Math.round(delivered.duration * 1000), width: delivered.width, height: delivered.height };
@@ -82,7 +82,7 @@ async function mergeAndPersist(input: MergeRequest, project: HydratedRemakeProje
 
 export function assertMergeReady(project: HydratedRemakeProject) {
     if (!remakePersonTimings(project).length) throw new RemakeProjectServiceError("原视频时间轴不完整，请重新分析", 409);
-    if (!project.groups.length || project.groups.length !== remakePersonTimings(project).length || project.groups.some((group, index) => group.ordinal !== index + 1 || group.videoGeneration.status !== "completed" || !group.videoGeneration.taskId || !group.videoGeneration.result?.url)) throw new RemakeProjectServiceError("请先按原视频时长完成全部分组视频", 409);
+    if (!project.groups.length || project.groups.length !== remakePersonTimings(project).length || project.groups.some((group, index) => group.ordinal !== index + 1 || group.videoGeneration.status !== "completed" || !group.videoGeneration.taskId || !group.videoGeneration.result?.url)) throw new RemakeProjectServiceError("请先完成全部分组视频", 409);
 }
 
 export function remakeMergeNormalizationArgs(source: string, output: string, hasAudio: boolean, settings: RemakeVideoSettings | undefined, timing: RemakePersonTiming, sourceDimensions?: RemakeVideoDimensions) {

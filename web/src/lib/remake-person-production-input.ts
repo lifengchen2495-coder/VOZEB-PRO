@@ -1,4 +1,5 @@
 import { REMAKE_PERSON_PROMPT_VERSION } from "./remake-person-feishu-prompts";
+import type { RemakePersonVideoTimingMode } from "./remake-person-timing";
 
 type MediaInput = {
     url: string;
@@ -20,6 +21,7 @@ type GenerationInput = {
 };
 
 export type RemakeProductionInputProject = {
+    videoTimingMode?: RemakePersonVideoTimingMode;
     id: string;
     sourceVideo?: MediaInput & { durationMs?: number };
     sourceCopy: string;
@@ -52,7 +54,7 @@ export function remakeProductionInputSnapshot(project: RemakeProductionInputProj
     const selected = groupIds === undefined ? undefined : new Set(groupIds);
     return JSON.stringify({
         promptVersion: REMAKE_PERSON_PROMPT_VERSION,
-        timingVersion: project.frames.some((frame) => frame.segmentIndex !== undefined) ? 2 : 1,
+        timingVersion: project.videoTimingMode === "feishu-15s" ? 3 : project.frames.some((frame) => frame.segmentIndex !== undefined) ? 2 : 1,
         id: project.id,
         sourceVideo: { asset: mediaInput(project.sourceVideo), durationMs: project.sourceVideo?.durationMs ?? null },
         sourceCopy: project.sourceCopy,

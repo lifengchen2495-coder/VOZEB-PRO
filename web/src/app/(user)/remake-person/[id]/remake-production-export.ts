@@ -167,7 +167,7 @@ function assertCompleteProductionBundle(project: RemakeProject) {
                 !group.videoGeneration.result?.url,
         )
     ) {
-        missing.push("来源分镜拼图、全部分组换人生图、视频 Prompt 和按原片时长生成的视频");
+        missing.push("来源分镜拼图、全部分组换人生图、视频 Prompt 和符合分组时长的视频");
     }
     if (!remakeVideosReady(project)) missing.push("与原片时间轴一致的视频");
     if (missing.length) throw new Error(`生产包不完整：缺少${Array.from(new Set(missing)).join("、")}，请补齐或重新生成后再下载`);

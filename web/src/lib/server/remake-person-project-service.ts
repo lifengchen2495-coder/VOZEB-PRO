@@ -147,6 +147,7 @@ export async function createRemakeProjectForUser(userId: string, value: unknown)
     const analysis = idleRemakeAnalysis();
     const project: RemakeProject = {
         id: `remake-person-${nanoid()}`,
+        videoTimingMode: "feishu-15s",
         title: cleanText(input.title, 120) || "未命名复刻",
         status: normalizeStatus(input.status),
         revision: 1,
@@ -224,7 +225,7 @@ export async function updateRemakeProjectForUser(userId: string, id: string, val
         : referencesChanged || imageModelChanged || productInfoChanged || hasOwn(input, "frames")
           ? invalidateRemakeImages(current.groups)
           : hasOwn(input, "groups")
-            ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, sourceVideo, modelSelection, productInfo, videoSettings: normalizeRemakeVideoSettings(current.videoSettings) })
+            ? await normalizeEditableRemakeGroups({ userId, projectId: current.id, value: input.groups, current: current.groups, references, frames, sourceVideo, videoTimingMode: current.videoTimingMode, modelSelection, productInfo, videoSettings: normalizeRemakeVideoSettings(current.videoSettings) })
             : current.groups;
     // 指令属于项目设置；上游重置也保留，修改时仅清对应组的视频下游。
     const instructionGroups = normalizeRemakeRangeGroups(input.groups, current.groups);
@@ -398,6 +399,7 @@ export async function completeRemakeProjectAnalysis(input: {
         previous = normalized;
         return withRevision(normalized, {
             sourceVideo: input.sourceVideo,
+            videoTimingMode: "feishu-15s",
             sourceCopy,
             frames,
             copyBlocks,
@@ -562,6 +564,7 @@ export async function assertRemakeImageGenerationsForUser(userId: string, projec
 }
 
 async function normalizeEditableRemakeGroups(input: {
+    videoTimingMode?: RemakeProject["videoTimingMode"];
     userId: string;
     projectId: string;
     value: unknown;

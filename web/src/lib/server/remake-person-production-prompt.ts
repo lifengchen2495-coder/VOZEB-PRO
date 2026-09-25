@@ -108,14 +108,14 @@ export function remakeProductionMessages(input: RemakeProductionPromptInput, gro
                     visualBoardOrdinal: 2,
                     ...input.visualBoards[1]?.layout.find((item) => item.groupOrdinal === groupOrdinal),
                 },
-                "本组时间轴": {
+                ...(timing.version !== 3 ? { "本组时间轴": {
                     原视频总时长秒: remakePersonSeconds(timing.sourceDurationMs),
                     原视频起点秒: remakePersonSeconds(timing.startMs),
                     原视频终点秒: remakePersonSeconds(timing.endMs),
                     本组视频时长秒: remakePersonSeconds(timing.durationMs),
                     要求: "按本组实际时长编排全部画面与口播，在本组终点前完成。时间从本组 0 秒开始；若生成接口要求更长时长，仅在末尾保持结束画面，不在额外尾段安排内容。",
                     分镜: input.frames.filter((frame) => frame.ordinal >= Number(groupId.split("-")[0]) && frame.ordinal <= Number(groupId.split("-")[1])).map((frame) => ({ 分镜: frame.ordinal, 起点秒: remakePersonSeconds(Math.round(frame.time * 1000) - timing.startMs), 终点秒: remakePersonSeconds(Math.round(frame.endTime * 1000) - timing.startMs) })),
-                },
+                } } : {}),
                 "镜头解析": input.frames,
                 "文案预处理": {
                     [`第${chineseOrdinal(groupOrdinal)}部分：分镜${groupId}`]: blocks.map((block) => ({

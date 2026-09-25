@@ -1,19 +1,24 @@
 import { remakePersonFrameGroups } from "./remake-person-layout";
 export const REMAKE_PERSON_OUTPUT_FPS = 30;
+export const REMAKE_PERSON_FEISHU_VIDEO_SECONDS = 15;
+export type RemakePersonVideoTimingMode = "feishu-15s";
 
 export type RemakePersonTiming = {
-    version: 1 | 2;
+    version: 1 | 2 | 3;
     frameOrdinals?: number[];
     groupId: string;
     sourceDurationMs: number;
     startMs: number;
     endMs: number;
+    // Generated video duration; startMs/endMs always refer to the source video.
     durationMs: number;
     outputFrames: number;
     requestSeconds: number;
 };
 
 export type RemakePersonTimelineInput = {
+    // Missing on existing projects: preserve their original output contract.
+    videoTimingMode?: RemakePersonVideoTimingMode;
     sourceVideo?: { durationMs?: number };
     frames: Array<{ ordinal: number; time: number; endTime: number; segmentIndex?: number }>;
 };
@@ -22,6 +27,9 @@ export function remakePersonTimings(project: RemakePersonTimelineInput): RemakeP
     const frames = [...project.frames].sort((left, right) => left.ordinal - right.ordinal);
     const groups = remakePersonFrameGroups(frames);
     if (!groups.length) return [];
+    const feishu = project.videoTimingMode === "feishu-15s";
+    const segmented = frames[0].segmentIndex !== undefined;
+    if (feishu && segmented) return [];
     const durationMs = Math.round(project.sourceVideo?.durationMs || frames.at(-1)!.endTime * 1000);
     if (!Number.isSafeInteger(durationMs) || durationMs <= 0) return [];
     let previousEnd = 0;
@@ -36,9 +44,9 @@ export function remakePersonTimings(project: RemakePersonTimelineInput): RemakeP
         const first = group.startFrame - 1;
         const startMs = index === 0 ? 0 : Math.round(frames[first].time * 1000);
         const endMs = index === groups.length - 1 ? durationMs : Math.round(frames[group.endFrame].time * 1000);
-        const outputFrames = Math.max(1, Math.round(endMs * REMAKE_PERSON_OUTPUT_FPS / 1000) - Math.round(startMs * REMAKE_PERSON_OUTPUT_FPS / 1000));
-        const segmented = frames[0].segmentIndex !== undefined;
-        return { version: segmented ? 2 : 1, ...(segmented ? { frameOrdinals: frames.slice(first, group.endFrame).map((frame) => frame.ordinal) } : {}), groupId: group.id, sourceDurationMs: durationMs, startMs, endMs, durationMs: endMs - startMs, outputFrames, requestSeconds: Math.max(1, Math.ceil((endMs - startMs) / 1000)) };
+        const outputDurationMs = feishu ? REMAKE_PERSON_FEISHU_VIDEO_SECONDS * 1000 : endMs - startMs;
+        const outputFrames = feishu ? REMAKE_PERSON_FEISHU_VIDEO_SECONDS * REMAKE_PERSON_OUTPUT_FPS : Math.max(1, Math.round(endMs * REMAKE_PERSON_OUTPUT_FPS / 1000) - Math.round(startMs * REMAKE_PERSON_OUTPUT_FPS / 1000));
+        return { version: feishu ? 3 : segmented ? 2 : 1, ...(segmented ? { frameOrdinals: frames.slice(first, group.endFrame).map((frame) => frame.ordinal) } : {}), groupId: group.id, sourceDurationMs: durationMs, startMs, endMs, durationMs: outputDurationMs, outputFrames, requestSeconds: Math.max(1, Math.ceil(outputDurationMs / 1000)) };
     });
     return timings.every((timing) => timing.outputFrames > 0) ? timings : [];
 }
@@ -81,7 +89,8 @@ export function remakePersonPromptDurationError(prompt: string, timing?: RemakeP
     const declared = prompt.match(/(\d+(?:\.\d+)?)\s*秒\s*(?:的)?(?:抖音)?(?:短)?视频/u)
         || prompt.match(/(?:总时长|视频时长)\s*[:：为]?\s*(\d+(?:\.\d+)?)\s*秒/u);
     if (declared && Math.abs(Number(declared[1]) * 1000 - timing.durationMs) > 2) {
-        return `本组对应原视频 ${remakePersonSeconds(timing.durationMs)} 秒，当前 Prompt 仍写 ${declared[1]} 秒，请编辑时长或重新生成 Prompt`;
+        const expected = timing.version === 3 ? "本组按飞书流程生成 15 秒视频" : `本组对应原视频 ${remakePersonSeconds(timing.durationMs)} 秒`;
+        return `${expected}，当前 Prompt 仍写 ${declared[1]} 秒，请编辑时长或重新生成 Prompt`;
     }
     return "";
 }
