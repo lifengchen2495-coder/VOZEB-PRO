@@ -1,6 +1,6 @@
 "use client";
 
-import { isOriginalRemakePersonLayout, remakePersonCopyFrameGroups } from "@/lib/remake-person-layout";
+import { isOriginalRemakePersonLayout } from "@/lib/remake-person-layout";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Drawer, Dropdown, Input, Modal, Skeleton, Tag, Tooltip } from "antd";
@@ -457,7 +457,8 @@ export function RemakeWorkspace() {
             setSaveState(savingPromiseRef.current ? "saving" : hasRemakePatch(pendingPatchRef.current) ? "pending" : "saved");
             message.success(groupId ? `分镜 ${groupId} 的 Prompt 已生成` : "分组视频提示词已生成");
         } catch (reason) {
-            if (reason instanceof RemakeConflictError || (reason instanceof RemakeRequestError && reason.status === 409 && reason.message === "本组提示词或生成素材已变化，请刷新后重试")) {
+            // 文案可能已经独立保存；即使后续 Prompt 失败也读取最新结果供重试复用。
+            if (reason instanceof RemakeConflictError || reason instanceof RemakeRequestError) {
                 try {
                     const remote = await getRemakeProject(projectId);
                     applyConcurrentProject(remote);
@@ -578,12 +579,6 @@ export function RemakeWorkspace() {
         project.analysis.mode === "video" &&
         isOriginalRemakePersonLayout(project.frames) &&
         project.frames.every((frame) => frame.analysisStatus === "available") &&
-        project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
-        project.copy.status === "completed" &&
-        project.copy.checks.sequential &&
-        project.copy.checks.noDuplicates &&
-        project.copy.checks.noSkips &&
-        project.copyBlocks.every((block) => (noNarration ? !block.sourceText.trim() && !block.text.trim() : Boolean(block.sourceText.trim()) === Boolean(block.text.trim()))) &&
         (noNarration || Boolean(project.references.audio?.url)) &&
         project.groups.every((group) => group.sourceContactSheet?.url);
     const imagesReady = analysisReady && remakeImagesReady(project);

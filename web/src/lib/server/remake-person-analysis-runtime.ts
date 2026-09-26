@@ -169,18 +169,7 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
         await updateRemakeAnalysisTaskProgress(task, { stage: "contact-sheets", progress: 76 });
         const contactSheets = await createAndPersistContactSheets({ frames, task, onAsset: (storageKey) => writtenStorageKeys.add(storageKey) });
 
-        await updateRemakeAnalysisTaskProgress(task, { stage: "copy-planning", progress: 88 });
-        const copyPlan = await planSemanticCopy({
-            sourceCopy,
-            frames,
-            candidates: models.copyCandidates,
-            model: models.copyModel,
-            origin: input.origin,
-            credential,
-            task,
-            onCharge: (headers: Headers) => trackAnalysisCharge(pendingRefunds, task, models.copyModel, "copy-planning", headers),
-        });
-
+        // 文案预处理属于生图后的生产阶段；不能让文本模型失败撤销已完成的抽帧。
         await updateRemakeAnalysisTaskProgress(task, { stage: "saving", progress: 97 });
         const sourceVideo: RemakeSourceVideo = {
             ...project.sourceVideo,
@@ -204,8 +193,6 @@ export async function runRemakeAnalysisTask(input: { task: RemakeAnalysisTask; o
             analysisRaw: analysisRaw ?? renderFeishuVideoAnalysis(understanding.frames),
             timestamps: understanding.frames.map((frame) => frame.time),
             contactSheets,
-            copyBlocks: copyPlan.blocks,
-            copy: copyPlan.copy,
             audio,
         });
         committed = true;
@@ -230,9 +217,7 @@ function isStrictAnalysisComplete(project: Awaited<ReturnType<typeof markRemakeP
         project.analysis.mode === "video" &&
         isOriginalRemakePersonLayout(project.frames) &&
         remakePersonFrameGroups(project.frames).length > 0 &&
-        project.copyBlocks.length === remakePersonCopyFrameGroups(project.frames).length &&
         project.groups?.filter((group) => group.sourceContactSheet?.url).length === remakePersonFrameGroups(project.frames).length &&
-        project.copy?.status === "completed" &&
         (isRemakeNoNarrationCopy(project.sourceCopy) || Boolean(project.references?.audio?.url))
     );
 }
@@ -271,10 +256,7 @@ async function resolveAnalysisModels() {
     );
     if (!videoCandidates.length) throw new Error(`后台尚未配置可用的 ${DOUBAO_VIDEO_UNDERSTANDING_MODEL} 文本模型渠道`);
 
-    const copyModel = settings.defaultModels.textModel || videoCandidates[0].logicalModelId;
-    const copyCandidates = rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", copyModel));
-    if (!copyCandidates.length) throw new Error("后台尚未配置可用的 Prompt 文本模型");
-    return { copyModel, copyCandidates, videoModel: videoCandidates[0].logicalModelId, videoCandidates };
+    return { videoModel: videoCandidates[0].logicalModelId, videoCandidates };
 }
 
 async function transcodeAnalysisVideo(input: { sourcePath: string; workDirectory: string; probe: ProbeResult }): Promise<Buffer> {
@@ -695,14 +677,14 @@ async function createContactSheet(batch: ExtractedFrame[]) {
         .toBuffer();
 }
 
-async function planSemanticCopy(input: {
+export async function planRemakePersonCopy(input: {
     sourceCopy: string;
-    frames: ExtractedFrame[];
+    frames: RemakeFrame[];
     candidates: ResolvedLogicalModel[];
     model: string;
     origin: string;
     credential: string;
-    task: RemakeAnalysisTask;
+    task: Pick<RemakeAnalysisTask, "id" | "userId">;
     onCharge: (headers: Headers) => void;
 }): Promise<CopyPlan> {
     if (!input.sourceCopy.trim()) return buildCopyPlan(emptyCopySegmentation(remakePersonCopyFrameGroups(input.frames).length), input.frames);
@@ -722,6 +704,7 @@ async function planSemanticCopy(input: {
                 boards: [],
                 allowTextOnly: true,
                 maxOutputTokens: 24_000,
+                defaultTimeoutMs: 10 * 60_000,
                 headers: planningHeaders(input.model, candidate, baseKey, workerHeaders),
             });
             let plan: CopyPlan;
@@ -738,7 +721,7 @@ async function planSemanticCopy(input: {
             latestError = error;
         }
     }
-    throw new Error(`原文案切分失败：${toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的语义切分")}`);
+    throw new RemakeProductionVisionError(`文案预处理失败：${toSafeGenerationErrorMessage(latestError, "文案模型未返回完整的语义切分")}。镜头和分镜图已保留，可重试文案预处理。`, latestError instanceof RemakeProductionVisionError ? latestError.status : 422);
 }
 
 function planningHeaders(model: string, candidate: ResolvedLogicalModel, idempotencyKey: string, workerHeaders: Record<string, string>) {

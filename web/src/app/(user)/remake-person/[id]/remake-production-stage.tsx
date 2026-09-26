@@ -24,7 +24,6 @@ import { downloadRemakeProductionBundle } from "./remake-production-export";
 import { remakeImagesReady, remakeProductionReady, remakeVideoAudioReferences, remakeVideoReferenceImages } from "./remake-production-utils";
 import type { RemakeGroupPatch } from "./remake-image-stage";
 import { mergeRemakeVideos } from "../remake-api";
-import { isRemakeCopyPlanReady } from "./remake-workspace-state";
 
 type PromptBuildError = { message: string; model: string };
 
@@ -550,7 +549,7 @@ export function RemakeProductionStage({
                                 </Tooltip>
                             </div>
                         </div>
-                        <div className="p-3">{building && !reportReady ? <ProductionLoading text="正在生成文案预处理输出" /> : <Input.TextArea readOnly value={project.copy.rawReport} placeholder="生成后显示完整文案预处理报告。" autoSize={{ minRows: 24, maxRows: 42 }} />}</div>
+                        <div className="p-3">{(building || buildingGroupIds.length > 0) && !reportReady ? <ProductionLoading text="正在进行文案预处理，完成后生成视频 Prompt" /> : <Input.TextArea readOnly value={project.copy.rawReport} placeholder="分镜图完成后，点击生成视频 Prompt，会先按飞书原文执行文案预处理。" autoSize={{ minRows: 24, maxRows: 42 }} />}</div>
                     </section>
 
                     <section className="min-w-0" aria-label="Seedance 视频提示词与视频">
@@ -748,7 +747,6 @@ function productionPrerequisites(project: RemakeProject) {
     const noNarration = isRemakeNoNarrationCopy(project.sourceCopy);
     if (!project.sourceVideo?.url || project.analysis.status !== "completed" || project.analysis.mode !== "video" || !project.frames.length || project.frames.some((frame) => frame.analysisStatus !== "available" || !frame.frameUrl)) missing.push("完整视频理解与 镜头解析");
     if (!remakePersonTimings(project).length) missing.push("连续完整的原视频时间轴");
-    if (!isRemakeCopyPlanReady(project)) missing.push(noNarration ? "无口播分镜预处理" : "全部语义文案区间");
     if (!project.references.background) missing.push("背景图");
     if (!noNarration && !project.references.audio) missing.push("原视频音频");
     if (!remakeImagesReady(project)) missing.push("全部分组分镜图");

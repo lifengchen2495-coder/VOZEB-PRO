@@ -2,13 +2,14 @@ import { isOriginalRemakePersonLayout, remakePersonCopyFrameGroups } from "@/lib
 import { remakePersonTimings } from "@/lib/remake-person-timing";
 import { getAuthSettings, refundUserPoints } from "@/lib/auth/store";
 import { toSafeGenerationErrorMessage } from "@/lib/server/generation-errors";
-import { resolveLogicalModelCandidates } from "@/lib/server/logical-model-router";
-import { isRemakeNoNarrationCopy } from "@/lib/server/remake-person-project-contract";
+import { resolveLogicalModelCandidates, type ResolvedLogicalModel } from "@/lib/server/logical-model-router";
+import { isRemakeNoNarrationCopy, normalizeRemakeProjectWorkflow } from "@/lib/server/remake-person-project-contract";
 import { assertRemakeVideoPrompt, remakeProductionMessages, renderRemakeCopyReport, type RemakeProductionPromptInput } from "@/lib/server/remake-person-production-prompt";
 import { assertRemakeImageGenerationsForUser, completeRemakeProductionForUser, getRemakeProjectForUser, remakeProductionInputVersion, RemakeProjectServiceError } from "@/lib/server/remake-person-project-service";
 import { buildRemakeProductionVisualBoards, RemakeProductionVisionError, requestRemakeProductionVisionPrompt, resolveRemakeProductionVisionProtocol } from "@/lib/server/remake-person-production-vision-runtime";
 import { hasSystemAiCharge, readSystemAiBilling, systemAiBillingHeaders, systemAiIdempotencyKey } from "@/lib/server/system-ai-billing";
 import { rankTextPlanningCandidates } from "@/lib/server/text-planning-runtime";
+import { planRemakePersonCopy } from "./remake-person-analysis-runtime";
 
 export class RemakeProductionError extends Error {
     constructor(
@@ -22,7 +23,12 @@ export class RemakeProductionError extends Error {
 
 type RemakeProductionRequest = { userId: string; projectId: string; origin: string; cookie: string; expectedRevision?: number; groupId?: string; inputVersion?: string };
 type PendingProduction = { key: string; promise: ReturnType<typeof generateRemakeProduction> };
-const runtime = globalThis as typeof globalThis & { __vozebProRemakePersonProductions?: Map<string, PendingProduction> };
+type ProductionProject = Awaited<ReturnType<typeof getRemakeProjectForUser>>;
+type PendingCopy = { key: string; promise: Promise<ProductionProject> };
+const runtime = globalThis as typeof globalThis & {
+    __vozebProRemakePersonProductions?: Map<string, PendingProduction>;
+    __vozebProRemakePersonCopyPlans?: Map<string, PendingCopy>;
+};
 
 export async function buildRemakeProductionForUser(input: RemakeProductionRequest) {
     const project = await getRemakeProjectForUser(input.userId, input.projectId);
@@ -65,6 +71,14 @@ async function generateRemakeProduction(input: RemakeProductionRequest, project:
     const candidates = model ? rankTextPlanningCandidates(resolveLogicalModelCandidates(settings, "text", model)).filter((candidate) => resolveRemakeProductionVisionProtocol(candidate) !== null) : [];
     if (!model) throw new RemakeProductionError("请先选择可用的 Prompt 文本模型", 503);
     if (!candidates.length) throw new RemakeProductionError("所选 Prompt 文本模型没有启用参考图片能力，或未使用 Chat、Responses、Gemini 多模态协议", 503);
+
+    // Copy is shared by all four groups and persisted before any Prompt request.
+    // A later Prompt failure must not discard it or repeat its model charge.
+    if (!hasValidProductionCopy(project)) {
+        project = await prepareProductionCopy(input, project, model, candidates);
+        expectedInputVersion = remakeProductionInputVersion(project, selectedGroups);
+    }
+    assertProductionCopyReady(project);
 
     let visualBoards: Awaited<ReturnType<typeof buildRemakeProductionVisualBoards>>;
     try {
@@ -212,6 +226,19 @@ async function assertProductionReady(userId: string, project: Awaited<ReturnType
         throw new RemakeProductionError("请先使用视频理解完成全部镜头解析", 409);
     }
     const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
+    if (!project.references.background) {
+        throw new RemakeProductionError("请先上传背景图", 409);
+    }
+    if (hasNarration && !project.references.audio) throw new RemakeProductionError("原视频音频尚未提取，请重新执行视频理解", 409);
+    if (hasNarration && project.voice !== "female" && project.voice !== "male") throw new RemakeProductionError("请选择男性配音或女性配音", 409);
+    if (project.groups.length !== remakePersonTimings(project).length || project.groups.some((group) => !group.sourceContactSheet || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
+        throw new RemakeProductionError("请先完成全部分组保留产品的换人分镜拼图", 409);
+    }
+    await assertRemakeImageGenerationsForUser(userId, project);
+}
+
+function assertProductionCopyReady(project: ProductionProject) {
+    const hasNarration = !isRemakeNoNarrationCopy(project.sourceCopy);
     if (project.copyBlocks.length !== remakePersonCopyFrameGroups(project.frames).length || project.copyBlocks.some((block, index) => block.ordinal !== index + 1 || (hasNarration ? Boolean(block.sourceText.trim()) !== Boolean(block.text.trim()) : Boolean(block.sourceText.trim() || block.text.trim())))) {
         throw new RemakeProductionError("请先完成全部语义文案区间", 409);
     }
@@ -232,15 +259,54 @@ async function assertProductionReady(userId: string, project: Awaited<ReturnType
     } catch (error) {
         throw new RemakeProductionError(error instanceof Error ? error.message : "全部文案区间未完整覆盖原文案", 409);
     }
-    if (!project.references.background) {
-        throw new RemakeProductionError("请先上传背景图", 409);
+}
+
+function hasValidProductionCopy(project: ProductionProject) {
+    try { assertProductionCopyReady(project); return true; }
+    catch { return false; }
+}
+
+async function prepareProductionCopy(input: RemakeProductionRequest, project: ProductionProject, model: string, candidates: ResolvedLogicalModel[]) {
+    const pending = runtime.__vozebProRemakePersonCopyPlans ??= new Map();
+    const slot = JSON.stringify([input.userId, project.id]);
+    const key = remakeProductionInputVersion(project);
+    const existing = pending.get(slot);
+    if (existing) {
+        if (existing.key !== key) throw new RemakeProductionError("文案预处理正在执行，请等待完成后重试", 409);
+        return existing.promise;
     }
-    if (hasNarration && !project.references.audio) throw new RemakeProductionError("原视频音频尚未提取，请重新执行视频理解", 409);
-    if (hasNarration && project.voice !== "female" && project.voice !== "male") throw new RemakeProductionError("请选择男性配音或女性配音", 409);
-    if (project.groups.length !== remakePersonTimings(project).length || project.groups.some((group) => !group.sourceContactSheet || group.imageGeneration.status !== "completed" || !group.imageGeneration.result)) {
-        throw new RemakeProductionError("请先完成全部分组保留产品的换人分镜拼图", 409);
+    const operation: PendingCopy = {
+        key,
+        promise: generateProductionCopy(input, project, model, candidates, key).finally(() => {
+            if (pending.get(slot) === operation) pending.delete(slot);
+        }),
+    };
+    pending.set(slot, operation);
+    return operation.promise;
+}
+
+async function generateProductionCopy(input: RemakeProductionRequest, project: ProductionProject, model: string, candidates: ResolvedLogicalModel[], inputVersion: string): Promise<ProductionProject> {
+    let chargedHeaders: Headers | undefined;
+    try {
+        const plan = await planRemakePersonCopy({
+            sourceCopy: project.sourceCopy,
+            frames: project.frames,
+            candidates, model, origin: input.origin, credential: input.cookie,
+            task: { userId: input.userId, id: `${project.id}:${inputVersion}` },
+            onCharge: (headers) => { chargedHeaders = headers; },
+        });
+        const saved = await completeRemakeProductionForUser(input.userId, project.id, {
+            expectedInputVersion: inputVersion,
+            copyOnly: true,
+            copy: plan.copy,
+            copyBlocks: plan.blocks,
+        });
+        return normalizeRemakeProjectWorkflow(saved);
+    } catch (error) {
+        if (chargedHeaders) await refundInvalidResponse(input.userId, model, chargedHeaders, `remake-person-copy:${project.id}:${inputVersion}:refund`);
+        if (error instanceof RemakeProjectServiceError || error instanceof RemakeProductionError) throw error;
+        throw new RemakeProductionError(toSafeGenerationErrorMessage(error, "文案预处理失败，镜头和分镜图已保留，请重试"), error instanceof RemakeProductionVisionError ? error.status : 422);
     }
-    await assertRemakeImageGenerationsForUser(userId, project);
 }
 
 async function refundInvalidResponse(userId: string, model: string, headers: Headers, idempotencyKey?: string) {

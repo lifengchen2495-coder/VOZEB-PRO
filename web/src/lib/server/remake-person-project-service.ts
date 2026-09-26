@@ -87,6 +87,7 @@ export class RemakeAnalysisSupersededError extends Error {
 
 export type RemakeVideoPromptInput = { groupOrdinal: number; prompt: string };
 export type RemakeProductionCompletionInput = {
+    copyOnly?: boolean;
     expectedRevision?: number;
     expectedInputVersion?: string;
     groupId?: string;
@@ -385,17 +386,19 @@ export async function completeRemakeProjectAnalysis(input: {
         const timestamps = input.timestamps === undefined ? frames.map((frame) => frame.time) : normalizeRemakeTimestamps(input.timestamps);
         if (timestamps.length !== frames.length) throw new RemakeProjectServiceError("视频分析必须返回全部抽帧时间点", 400);
         const sourceCopy = normalized.sourceCopy.trim() || cleanText(input.sourceCopy, MAX_SOURCE_COPY_LENGTH);
-        const copy = normalizeRemakeCopyState(input.copy, normalized.copy);
+        const copy = normalizeRemakeCopyState(input.copy, emptyRemakeCopyState());
+        if (normalized.copy.optionRaw === REMAKE_NO_NARRATION_TEXT) copy.optionRaw = REMAKE_NO_NARRATION_TEXT;
         const copyBlocks = input.copyBlocks
             ? normalizeRemakeCopyBlocks(input.copyBlocks, { frames, sourceCopy, strategy: normalized.copyStrategy, mappings: copy.mappings, requireComplete: true })
-            : buildRemakeCopyBlocks({ frames, sourceCopy, strategy: normalized.copyStrategy, existing: normalized.copyBlocks, mappings: copy.mappings });
+            : buildRemakeCopyBlocks({ frames, sourceCopy, strategy: normalized.copyStrategy, mappings: copy.mappings });
         if (copyBlocks.length !== remakePersonCopyFrameGroups(frames).length) throw new RemakeProjectServiceError("视频分析必须返回完整的语义文案区间", 400);
         const groups = mergeRemakeContactSheets(emptyRemakeRangeGroups(frames).map((group, index) => ({ ...group, videoPromptInstructions: normalized.groups[index]?.videoPromptInstructions || "" })), input.contactSheets);
         if (input.contactSheets && groups.some((group) => !group.sourceContactSheet)) throw new RemakeProjectServiceError("视频分析必须返回全部分组分镜拼图，每组 1 张", 400);
         const audio = input.audio === undefined ? normalized.references.audio : normalizeRemakeMediaAsset(input.audio);
         if (input.audio && !audio) throw new RemakeProjectServiceError("原视频参考音频信息不完整", 400);
         let pipeline = withPipelineStep(normalized.pipeline, "analysis", "completed", "references", input.task.id);
-        if (input.copyBlocks || copy.status === "completed") pipeline = withPipelineStep(pipeline, "copy", "completed", "references", copy.taskId);
+        pipeline = withPipelineStep(pipeline, "copy", copy.status === "completed" ? "completed" : "pending", "references", copy.taskId);
+        pipeline = withPipelineStep(pipeline, "prompts", "pending", "references");
         previous = normalized;
         return withRevision(normalized, {
             sourceVideo: input.sourceVideo,
@@ -453,6 +456,17 @@ export async function completeRemakeProductionForUser(userId: string, id: string
                   requireComplete: true,
               });
         if (copyBlocks.length !== remakePersonCopyFrameGroups(normalized.frames).length) throw new RemakeProjectServiceError("请提交完整的语义文案区间", 400);
+        if (input.copyOnly) {
+            if (input.groupId !== undefined || input.videoPrompts !== undefined) throw new RemakeProjectServiceError("文案预处理不能同时提交视频提示词", 400);
+            if (copy.status !== "completed" || !copy.checks.sequential || !copy.checks.noDuplicates || !copy.checks.noSkips) throw new RemakeProjectServiceError("文案预处理尚未通过完整性检查", 409);
+            if (normalized.groups.some((group) => group.videoGeneration.status === "queued" || group.videoGeneration.status === "running")) throw new RemakeProjectServiceError("视频任务运行期间不能重做文案预处理", 409);
+            const rawReport = renderRemakeCopyReport({ sourceCopy: normalized.sourceCopy, blocks: copyBlocks, ...copy });
+            const groups = normalized.groups.map((group) => ({ ...group, videoPrompt: "", videoGeneration: { status: "idle" as const } }));
+            let pipeline = withPipelineStep(normalized.pipeline, "copy", "completed", "prompts", copy.taskId);
+            pipeline = withPipelineStep(pipeline, "prompts", "pending", "prompts");
+            previous = normalized;
+            return withRevision(normalized, { copy: { ...copy, rawReport }, copyBlocks, groups, pipeline });
+        }
         const promptPatches = normalizeVideoPromptPatches(input.videoPrompts);
         if (input.groupId !== undefined) {
             const target = normalized.groups.find((group) => group.id === input.groupId);
