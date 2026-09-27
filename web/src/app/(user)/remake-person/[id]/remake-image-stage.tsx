@@ -64,7 +64,7 @@ export function RemakeImageStage({
     onReferenceChange: (key: ReferenceKey, asset?: RemakeMediaAsset) => void;
     onModelChange: (model: string) => void;
     onGroupChange: (groupId: string, patch: RemakeGroupPatch) => void;
-    onFlush: () => Promise<boolean>;
+    onFlush: () => Promise<RemakeProject | null>;
     onContinue: () => void;
 }) {
     const { message } = App.useApp();
@@ -220,34 +220,48 @@ export function RemakeImageStage({
                 openConfigDialog(true);
                 return message.warning("请先配置可用的生图模型");
             }
-            if (!current.modelSelection.image) emitModelChange(model);
-            const prompt = buildRemakeImagePrompt(current, group);
-            const references = remakeGroupReferenceImages(group, current.references);
-            const inputVersion = remakeGroupInputVersion(group, current.references, stage, current.productInfo);
-            const clientRequestId = remakeImageClientRequestId(current.id, group, current.references, stage, { model, prompt, quality: imageConfig.quality });
-            const previousAttempt = generation.attemptNo ?? 0;
-            const attemptNo = generation.status === "error" || generation.status === "completed" ? previousAttempt + 1 : previousAttempt;
             const controller = new AbortController();
             startingStagesRef.current.add(key);
             creationControllersRef.current.set(key, controller);
-            const queued = { status: "queued" as const, taskId: null, attemptNo, model, prompt, result: null, error: null };
-            emitGroupChange(
-                group.id,
-                { imageGeneration: queued, videoPrompt: "", videoGeneration: { status: "idle", taskId: null, model: null, result: null, error: null } },
-            );
+            let queued: RemakeRangeGroup["imageGeneration"] | undefined;
+            let inputVersion: string | undefined;
+            let reservationRejected = false;
             try {
-                if (!(await onFlush())) {
-                    const blocked = { ...queued, status: "error" as const, error: "项目尚未保存，生图请求未提交。请先处理保存错误后重试。" };
-                    emitGroupChange(group.id, { imageGeneration: blocked });
-                    return;
+                // 模型或素材变更会清空图片任务，必须先保存这些设置，再单独登记新任务。
+                if (!current.modelSelection.image) emitModelChange(model);
+                const prepared = await onFlush();
+                if (controller.signal.aborted) return;
+                if (!prepared) throw new Error("项目尚未保存，生图请求未提交。请先处理保存错误后重试。");
+                latestProjectRef.current = prepared;
+                const preparedGroup = prepared.groups.find((item) => item.id === groupId);
+                if (!preparedGroup?.sourceContactSheet?.url || !remakeReferencesReady(prepared)) throw new Error("来源分镜拼图或背景图已变化，请准备完成后重试");
+                if (prepared.modelSelection.image !== model) throw new Error("生图模型已变化，请确认所选模型后重试");
+                const preparedGeneration = stageGeneration(preparedGroup);
+                if (isGenerationActive(preparedGeneration) && preparedGeneration.taskId) return;
+                const prompt = buildRemakeImagePrompt(prepared, preparedGroup);
+                const references = remakeGroupReferenceImages(preparedGroup, prepared.references);
+                inputVersion = remakeGroupInputVersion(preparedGroup, prepared.references, stage, prepared.productInfo);
+                const clientRequestId = remakeImageClientRequestId(prepared.id, preparedGroup, prepared.references, stage, { model, prompt, quality: imageConfig.quality });
+                const previousAttempt = preparedGeneration.attemptNo ?? 0;
+                const attemptNo = preparedGeneration.status === "error" || preparedGeneration.status === "completed" ? previousAttempt + 1 : previousAttempt;
+                queued = { status: "queued", taskId: null, attemptNo, model, prompt, result: null, error: null };
+                emitGroupChange(group.id, { imageGeneration: queued, videoPrompt: "", videoGeneration: { status: "idle", taskId: null, model: null, result: null, error: null } });
+                const reserved = await onFlush();
+                if (controller.signal.aborted) return;
+                if (!reserved) throw new Error("图片任务尚未保存，生图请求未提交。请先处理保存错误后重试。");
+                latestProjectRef.current = reserved;
+                const reservation = reserved.groups.find((item) => item.id === groupId)?.imageGeneration;
+                if (!isRemakeImageInputCurrent(reserved, group.id, inputVersion, stage) || reserved.modelSelection.image !== model ||
+                    reservation?.status !== "queued" || reservation.taskId || reservation.result || reservation.prompt !== prompt || reservation.model !== model || (reservation.attemptNo ?? 0) !== attemptNo) {
+                    reservationRejected = true;
+                    throw new Error("图片任务设置在保存时发生变化，生图请求未提交，请确认后重试");
                 }
-                if (controller.signal.aborted || !isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage)) return;
                 const taskConfig = { ...imageConfig, model, imageModel: model };
                 const task = await createImageGenerationTask(taskConfig, prompt, references, undefined, {
                     signal: controller.signal,
                     logSource: "image-workbench",
-                    logTitle: `${current.title} · 分镜 ${group.id} · 保留产品换人`,
-                    projectId: current.id,
+                    logTitle: `${prepared.title} · 分镜 ${group.id} · 保留产品换人`,
+                    projectId: prepared.id,
                     clientRequestId,
                     ...(attemptNo > 0 ? { attemptNo } : {}),
                     generationSlotId: remakeImageGenerationSlotId(group.id, stage),
@@ -260,21 +274,17 @@ export function RemakeImageStage({
                 await onFlush();
                 void waitForGroupTask(stage, group.id, task.id, prompt, inputVersion, model, announce);
             } catch (reason) {
-                if (controller.signal.aborted || !isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage)) return;
+                if (controller.signal.aborted) return;
                 const disposition = remakeImageCreationFailureDisposition(reason);
                 if (disposition === "aborted") return;
                 const detail = friendlyAgentError(reason, "分镜拼图任务创建失败，请稍后重试");
-                if (disposition === "deferred") {
-                    // 创建请求超时后无法确认上游是否已经受理，不能自动创建第二个任务。
-                    const failed = { status: "error" as const, taskId: null, attemptNo, model, prompt, result: null, error: detail };
+                if (queued && inputVersion && !reservationRejected) {
+                    if (!isRemakeImageInputCurrent(latestProjectRef.current, group.id, inputVersion, stage)) return;
+                    // 创建超时也只记录失败，不能自动创建第二个任务。
+                    const failed = { ...queued, status: "error" as const, error: detail };
                     emitGroupChange(group.id, { imageGeneration: failed });
                     await onFlush();
-                    if (announce) message.error({ key: "remake-image-error", content: `分镜 ${group.id}：${detail}` });
-                    return;
                 }
-                const failed = { status: "error" as const, taskId: null, attemptNo, model, prompt, result: null, error: detail };
-                emitGroupChange(group.id, { imageGeneration: failed });
-                await onFlush();
                 if (announce) message.error({ key: "remake-image-error", content: `分镜 ${group.id}：${detail}` });
             } finally {
                 if (creationControllersRef.current.get(key) === controller) creationControllersRef.current.delete(key);

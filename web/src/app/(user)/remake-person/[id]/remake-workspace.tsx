@@ -223,6 +223,12 @@ export function RemakeWorkspace() {
     }, [applyConcurrentProject, message]);
     flushSaveRef.current = flushSave;
 
+    const flushImageSave = useCallback(async () => {
+        if (!(await flushSave())) return null;
+        // 返回最新保存结果，生图提交不能依赖下一次 React 渲染才更新的 props。
+        return projectRef.current;
+    }, [flushSave]);
+
     const queuePatch = useCallback((patch: RemakeWorkspacePatch, videoProgress = false) => {
         if (editingLockedRef.current && !videoProgress) return;
         const current = projectRef.current;
@@ -688,7 +694,7 @@ export function RemakeWorkspace() {
                         onReferenceChange={updateReference}
                         onModelChange={(model) => updateModelSelection("image", model)}
                         onGroupChange={updateGroup}
-                        onFlush={flushSave}
+                        onFlush={flushImageSave}
                         onContinue={() => changeFlowStage("production")}
                     />
                 ) : null}
