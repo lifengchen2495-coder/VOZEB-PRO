@@ -123,7 +123,7 @@ export function MessageItem({ item, request }: { item: Message; request?: Messag
     if (item.role === "user") {
         const summary = paramSummary(item.mode, item.params);
         return (
-            <div className="flex justify-end gap-3">
+            <div className="flex justify-end gap-3 pl-11">
                 <div className="flex min-w-0 flex-col items-end gap-1.5">
                     {!!item.attachments?.length && (
                         <div className="flex flex-wrap justify-end gap-2">
@@ -184,7 +184,7 @@ export function MessageItem({ item, request }: { item: Message; request?: Messag
                 )}
                 {item.status === "failed" && (
                     <div className="mt-1 flex flex-col items-start gap-2">
-                        <div className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-600 dark:text-rose-300">{item.error || "生成失败"}</div>
+                        <div className="rounded-xl border border-[var(--coral)]/30 bg-[var(--coral-soft)] px-3 py-2 text-sm text-[var(--coral)]">{item.error || "生成失败"}</div>
                         <Button size="small" icon={<RotateCcw size={14} />} onClick={() => workbench.retry(item.id)}>
                             直接重试
                         </Button>

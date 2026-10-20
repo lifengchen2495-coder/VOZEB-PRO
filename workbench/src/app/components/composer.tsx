@@ -2,6 +2,7 @@
 
 import { Button, Input, Popover, Tooltip } from "antd";
 import { ArrowUp, Check, Clapperboard, ImagePlus, Image as ImageIcon, MessageCircle, Orbit, SlidersHorizontal, Wand2, X } from "lucide-react";
+import Link from "next/link";
 import { useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import type { Mode } from "@/lib/types";
 import { referenceLimit, useWorkbench, workbench } from "@/stores/workbench";
@@ -208,17 +209,9 @@ export function Composer({ placement }: { placement: "top" | "bottom" }) {
                                         {item === model && <Check size={16} className="text-[var(--accent)]" />}
                                     </button>
                                 ))}
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setOpen("");
-                                        workbench.toggle("settingsOpen", true);
-                                    }}
-                                    className="mt-1 rounded-lg border-t px-2 pt-2 text-left text-xs text-[var(--text-2)] hover:text-[var(--accent)]"
-                                    style={{ borderColor: "var(--line)" }}
-                                >
-                                    在设置里管理模型
-                                </button>
+                                <Link href="/settings" onClick={() => setOpen("")} className="mt-1 border-t border-[var(--line)] px-2 pt-2 text-xs text-[var(--text-2)] hover:text-[var(--accent)]">
+                                    在模型设置里管理
+                                </Link>
                             </div>
                         }
                     />

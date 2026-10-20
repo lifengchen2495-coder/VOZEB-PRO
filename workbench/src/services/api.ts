@@ -1,4 +1,4 @@
-import type { ApiResult, Conversation, ConversationSummary, Media, Mode, PublicSettings, SendBody, Settings } from "@/lib/types";
+import type { ApiResult, Conversation, ConversationSummary, Media, Mode, PublicSettings, SendBody, Settings, Workspace } from "@/lib/types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, init);
@@ -13,6 +13,7 @@ export const api = {
     settings: () => request<PublicSettings>("/api/settings"),
     saveSettings: (patch: Partial<Settings>) => request<PublicSettings>("/api/settings", json("PATCH", patch)),
     models: () => request<string[]>("/api/settings/models"),
+    workspace: () => request<Workspace>("/api/workspace"),
     conversations: () => request<ConversationSummary[]>("/api/conversations"),
     createConversation: () => request<Conversation>("/api/conversations", { method: "POST" }),
     conversation: (id: string) => request<Conversation>(`/api/conversations/${id}`),

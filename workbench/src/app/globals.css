@@ -1,30 +1,46 @@
 @import "tailwindcss";
 
 :root {
-    --bg: #f6f6f9;
+    --bg: #f2f4f1;
     --panel: #ffffff;
-    --sidebar: #fbfbfd;
-    --line: rgba(15, 23, 42, 0.08);
-    --line-strong: rgba(15, 23, 42, 0.18);
-    --text-2: rgba(15, 23, 42, 0.56);
-    --hover: rgba(15, 23, 42, 0.05);
-    --bubble: #efeeff;
-    --accent: #6d5efc;
-    --accent-soft: rgba(109, 94, 252, 0.12);
+    --panel-2: #f6f8f5;
+    --sidebar: #ffffff;
+    --line: #e3e7e2;
+    --line-strong: #cdd4cc;
+    --text: #1c231f;
+    --text-2: #69726b;
+    --text-3: #9aa29c;
+    --hover: rgba(28, 35, 31, 0.045);
+    --bubble: #e9f3ec;
+    --accent: #2f8a5f;
+    --accent-soft: #e5f2ea;
+    --coral: #e8715a;
+    --coral-soft: #fcece7;
+    --blue: #2f6fb8;
+    --blue-soft: #e8f0fa;
+    --shadow: 0 1px 2px rgba(28, 35, 31, 0.04), 0 8px 24px rgba(28, 35, 31, 0.05);
 }
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg: #0e0f13;
-        --panel: #17181e;
-        --sidebar: #131419;
-        --line: rgba(255, 255, 255, 0.08);
-        --line-strong: rgba(255, 255, 255, 0.2);
-        --text-2: rgba(255, 255, 255, 0.58);
-        --hover: rgba(255, 255, 255, 0.07);
-        --bubble: #29254a;
-        --accent: #9b8fff;
-        --accent-soft: rgba(155, 143, 255, 0.16);
+        --bg: #111312;
+        --panel: #191c1a;
+        --panel-2: #1f2320;
+        --sidebar: #191c1a;
+        --line: #2b302c;
+        --line-strong: #3b423d;
+        --text: #e5ebe7;
+        --text-2: #9ba59e;
+        --text-3: #6c766f;
+        --hover: rgba(255, 255, 255, 0.06);
+        --bubble: #1f2c25;
+        --accent: #5fbf8f;
+        --accent-soft: rgba(95, 191, 143, 0.14);
+        --coral: #f08a74;
+        --coral-soft: rgba(240, 138, 116, 0.14);
+        --blue: #7fb0ea;
+        --blue-soft: rgba(127, 176, 234, 0.14);
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
     }
 }
 
@@ -34,7 +50,10 @@ body {
     margin: 0;
     overflow: hidden;
     background: var(--bg);
+    color: var(--text);
     color-scheme: light dark;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
 }
 
 /* 隐藏原生滚动条，保留滚轮、触控和键盘滚动 */

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Conversation, ConversationSummary, Media, Mode, PublicSettings, Settings } from "@/lib/types";
+import type { Asset, Conversation, ConversationSummary, Media, Mode, PublicSettings, Settings, Task, Workspace } from "@/lib/types";
 
 const root = path.resolve(process.env.WORKBENCH_DATA_DIR || ".data");
 const dirs = { conversations: path.join(root, "conversations"), media: path.join(root, "media") };
@@ -48,7 +48,7 @@ export async function getSettings(): Promise<Settings> {
 }
 
 export function toPublicSettings({ apiKey, ...rest }: Settings): PublicSettings {
-    return { ...rest, hasApiKey: Boolean(apiKey) };
+    return { ...rest, hasApiKey: Boolean(apiKey), dataDir: root };
 }
 
 export async function saveSettings(patch: Partial<Settings>) {
@@ -81,14 +81,55 @@ const conversationFile = (id: string) => {
 
 export const getConversation = (id: string) => readJson<Conversation>(conversationFile(id));
 
-export async function listConversations(): Promise<ConversationSummary[]> {
+async function allConversations() {
     await mkdir(dirs.conversations, { recursive: true });
     const files = (await readdir(dirs.conversations)).filter((name) => name.endsWith(".json"));
     const items = await Promise.all(files.map((name) => readJson<Conversation>(path.join(dirs.conversations, name))));
-    return items
-        .filter((item): item is Conversation => Boolean(item))
+    return items.filter((item): item is Conversation => Boolean(item));
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+    return (await allConversations())
         .map(({ messages, ...rest }) => ({ ...rest, count: messages.length, pending: messages.some((m) => m.status === "pending") }))
         .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+// 单用户本地数据量有限，直接汇总全部对话生成素材库、任务列表和统计
+export async function getWorkspace(): Promise<Workspace> {
+    const conversations = await allConversations();
+    // 同一文件被多次引用时素材库只保留一份，生成结果优先于参考图
+    const assetMap = new Map<string, Asset>();
+    const addAsset = (asset: Asset) => {
+        const prev = assetMap.get(asset.id);
+        if (!prev || (prev.source === "reference" && asset.source === "result")) assetMap.set(asset.id, asset);
+    };
+    const tasks: Task[] = [];
+    for (const c of conversations) {
+        const base = { conversationId: c.id, conversationTitle: c.title };
+        c.messages.forEach((message, index) => {
+            const request = message.role === "assistant" ? c.messages[index - 1] : message;
+            const prompt = request?.content || "";
+            const createdAt = message.finishedAt || message.createdAt;
+            for (const media of message.attachments || []) addAsset({ ...media, ...base, source: "reference", mode: message.mode, prompt, messageId: message.id, createdAt });
+            for (const media of message.results || []) addAsset({ ...media, ...base, source: "result", mode: message.mode, prompt, model: message.model, messageId: message.id, createdAt });
+            if (message.role !== "assistant" || message.mode === "chat") return;
+            const { id, mode, model, status, error, results, finishedAt } = message;
+            tasks.push({ id, mode, model, status, error, results, createdAt: message.createdAt, finishedAt, prompt, params: request?.params, ...base });
+        });
+    }
+    const assets = [...assetMap.values()];
+    const results = assets.filter((a) => a.source === "result");
+    return {
+        assets: assets.sort((a, b) => b.createdAt - a.createdAt),
+        tasks: tasks.sort((a, b) => b.createdAt - a.createdAt),
+        stats: {
+            conversations: conversations.length,
+            images: results.filter((a) => a.kind === "image").length,
+            videos: results.filter((a) => a.kind === "video").length,
+            running: tasks.filter((t) => t.status === "pending").length,
+            failed: tasks.filter((t) => t.status === "failed").length,
+        },
+    };
 }
 
 export async function createConversation(title = "新对话") {

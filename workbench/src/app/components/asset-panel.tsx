@@ -27,13 +27,13 @@ export function AssetPanel({ onClose }: { onClose: () => void }) {
     const [video, setVideo] = useState<Media | null>(null);
 
     return (
-        <div className="flex h-full flex-col bg-[var(--sidebar)]">
-            <div className="flex h-12 shrink-0 items-center gap-2 px-4">
+        <div className="flex h-full flex-col bg-[var(--panel)]">
+            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--line)] px-4">
                 <span className="text-sm font-medium">当前对话素材</span>
                 <span className="text-xs text-[var(--text-2)]">{assets.length}</span>
                 <Button type="text" size="small" icon={<X size={16} />} onClick={onClose} aria-label="关闭素材面板" className="ml-auto" />
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
                 {!assets.length && <p className="pt-10 text-center text-xs leading-6 text-[var(--text-2)]">这里会显示本次对话上传的参考图和生成的图片、视频，点击「引用」可以继续创作。</p>}
                 <Image.PreviewGroup>
                     <div className="grid grid-cols-4 gap-x-2 gap-y-3">

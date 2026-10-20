@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { Conversation, ConversationSummary, Media, Mode, PublicSettings } from "@/lib/types";
+import type { Conversation, ConversationSummary, Media, Mode, PublicSettings, Workspace } from "@/lib/types";
 import { api, retryMessage, sendMessage } from "@/services/api";
 
 // 发送前的参考素材只保存在内存里：本地文件发送时才上传，已有素材直接复用 ID
@@ -25,7 +25,8 @@ type State = {
     prompt: string;
     attachments: DraftItem[];
     optimizing: boolean;
-    settingsOpen: boolean;
+    workspace: Workspace | null;
+    paletteOpen: boolean;
     menuOpen: boolean;
     assetsOpen: boolean;
 };
@@ -43,7 +44,8 @@ const initial: State = {
     prompt: "",
     attachments: [],
     optimizing: false,
-    settingsOpen: false,
+    workspace: null,
+    paletteOpen: false,
     menuOpen: false,
     assetsOpen: true,
 };
@@ -66,15 +68,26 @@ export const workbench = {
     setMode: (mode: Mode) => set((s) => ({ mode, attachments: s.attachments.slice(0, referenceLimit(mode)) })),
     setModel: (mode: Mode, model: string) => set((s) => ({ models: { ...s.models, [mode]: model } })),
     setParam: (key: string, value: string) => set((s) => ({ params: { ...s.params, [s.mode]: { ...s.params[s.mode], [key]: value } } })),
-    toggle: (key: "settingsOpen" | "menuOpen" | "assetsOpen", value?: boolean) => set((s) => ({ [key]: value ?? !s[key] })),
+    toggle: (key: "paletteOpen" | "menuOpen" | "assetsOpen", value?: boolean) => set((s) => ({ [key]: value ?? !s[key] })),
 
-    async loadSettings() {
+    loadSettings: () => api.settings().then((settings) => set({ settings }), fail),
+    loadWorkspace: () => api.workspace().then((workspace) => set({ workspace }), fail),
+
+    // 从总览或素材库进入创作：新开对话并预设创作类型或参考图
+    startNew(mode?: Mode, media?: Media) {
+        void workbench.open(null);
+        if (mode) workbench.setMode(mode);
+        if (media) workbench.reference(media);
+    },
+
+    async retryTask(conversationId: string, messageId: string) {
         try {
-            const settings = await api.settings();
-            set({ settings, settingsOpen: get().settingsOpen || !settings.hasApiKey });
+            await retryMessage(conversationId, messageId, () => undefined);
         } catch (error) {
             fail(error);
         }
+        if (get().conversation?.id === conversationId) await workbench.open(conversationId);
+        await workbench.loadWorkspace();
     },
 
     refreshList: () => api.conversations().then((list) => set({ list }), fail),
@@ -148,6 +161,7 @@ export const workbench = {
             if (activeId === conversationId) await workbench.open(conversationId);
             set({ stream: {}, busy: false });
             void workbench.refreshList();
+            void workbench.loadWorkspace();
         }
     },
 
@@ -209,7 +223,7 @@ export const workbench = {
         try {
             await Promise.all(ids.map((id) => api.deleteConversation(id)));
             if (activeId && ids.includes(activeId)) await workbench.open(null);
-            await workbench.refreshList();
+            await Promise.all([workbench.refreshList(), workbench.loadWorkspace()]);
         } catch (error) {
             fail(error);
         }

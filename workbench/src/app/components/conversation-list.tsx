@@ -1,7 +1,7 @@
 "use client";
 
 import { App, Button, Checkbox, Input, Tooltip } from "antd";
-import { Check, ListChecks, Pencil, Plus, Search, Settings, Trash2, X } from "lucide-react";
+import { Check, ListChecks, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ConversationSummary } from "@/lib/types";
 import { useWorkbench, workbench } from "@/stores/workbench";
@@ -14,7 +14,7 @@ function groupOf(updatedAt: number) {
     return "更早";
 }
 
-export function Sidebar() {
+export function ConversationList({ onOpen }: { onOpen: (id: string | null) => void }) {
     const { modal } = App.useApp();
     const list = useWorkbench((s) => s.list);
     const activeId = useWorkbench((s) => s.conversation?.id);
@@ -50,15 +50,15 @@ export function Sidebar() {
     };
 
     return (
-        <div className="flex h-full flex-col bg-[var(--sidebar)]">
+        <div className="flex h-full flex-col">
             <div className="flex flex-col gap-3 p-3 pb-2">
-                <div className="flex items-center gap-2 px-1 py-1">
-                    <img src="/logo.svg" alt="VOZEB" className="h-7 w-7" />
-                    <span className="flex-1 font-semibold">VOZEB 本地工作台</span>
+                <div className="flex items-center gap-2 pl-1">
+                    <span className="flex-1 text-sm font-semibold">创作对话</span>
+                    <span className="text-xs text-[var(--text-3)]">{list.length}</span>
+                    <Tooltip title="新建对话">
+                        <Button size="small" type="text" icon={<Plus size={16} />} onClick={() => onOpen(null)} aria-label="新建对话" />
+                    </Tooltip>
                 </div>
-                <Button type="primary" icon={<Plus size={16} />} onClick={() => void workbench.open(null)} block>
-                    新建对话
-                </Button>
                 <div className="flex items-center gap-1">
                     <Input allowClear size="small" prefix={<Search size={14} className="opacity-50" />} placeholder="搜索对话" value={keyword} onChange={(event) => setKeyword(event.target.value)} variant="filled" />
                     <Tooltip title={managing ? "退出管理" : "批量管理"}>
@@ -102,9 +102,9 @@ export function Sidebar() {
                                     role="button"
                                     tabIndex={0}
                                     data-conversation={item.id}
-                                    onClick={() => (managing ? setSelected((s) => (s.includes(item.id) ? s.filter((id) => id !== item.id) : [...s, item.id])) : void workbench.open(item.id))}
+                                    onClick={() => (managing ? setSelected((s) => (s.includes(item.id) ? s.filter((id) => id !== item.id) : [...s, item.id])) : onOpen(item.id))}
                                     onKeyDown={(event) => event.key === "Enter" && event.currentTarget.click()}
-                                    className={`group/row mb-0.5 flex h-9 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm transition-colors hover:bg-[var(--hover)] ${activeId === item.id && !managing ? "bg-[var(--hover)] font-medium" : ""}`}
+                                    className={`group/row mb-0.5 flex h-9 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm transition-colors hover:bg-[var(--hover)] ${activeId === item.id && !managing ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]" : ""}`}
                                 >
                                     {managing && <Checkbox checked={selected.includes(item.id)} aria-label={`选择 ${item.title}`} />}
                                     <span className="min-w-0 flex-1 truncate">{item.title}</span>
@@ -139,26 +139,20 @@ export function Sidebar() {
                     </div>
                 ))}
             </div>
-            <div className="border-t p-3" style={{ borderColor: "var(--line)" }}>
-                {managing ? (
-                    <div className="flex items-center gap-2">
-                        <Checkbox
-                            checked={!!filtered.length && selected.length === filtered.length}
-                            indeterminate={selected.length > 0 && selected.length < filtered.length}
-                            onChange={(event) => setSelected(event.target.checked ? filtered.map((item) => item.id) : [])}
-                        >
-                            全选
-                        </Checkbox>
-                        <Button danger size="small" className="ml-auto" disabled={!selected.length} onClick={() => confirmDelete(selected, `选中的 ${selected.length} 个对话`)}>
-                            删除所选
-                        </Button>
-                    </div>
-                ) : (
-                    <Button type="text" icon={<Settings size={16} />} onClick={() => workbench.toggle("settingsOpen", true)} className="!justify-start" block>
-                        设置
+            {managing && (
+                <div className="flex items-center gap-2 border-t border-[var(--line)] p-3">
+                    <Checkbox
+                        checked={!!filtered.length && selected.length === filtered.length}
+                        indeterminate={selected.length > 0 && selected.length < filtered.length}
+                        onChange={(event) => setSelected(event.target.checked ? filtered.map((item) => item.id) : [])}
+                    >
+                        全选
+                    </Checkbox>
+                    <Button danger size="small" className="ml-auto" disabled={!selected.length} onClick={() => confirmDelete(selected, `选中的 ${selected.length} 个对话`)}>
+                        删除所选
                     </Button>
-                )}
-            </div>
+                </div>
+            )}
         </div>
     );
 }
