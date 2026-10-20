@@ -1,9 +1,9 @@
 "use client";
 
-import { Button, Drawer, Tooltip } from "antd";
-import { PanelLeft, PanelRight } from "lucide-react";
+import { Button } from "antd";
+import { PanelRight } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { brand } from "@/lib/brand";
 import type { Mode } from "@/lib/types";
 import { useWorkbench, workbench } from "@/stores/workbench";
@@ -22,17 +22,13 @@ const suggestions: { mode: Mode; text: string }[] = [
     { mode: "chat", text: "给我 5 个适合做成短视频的创意选题" },
 ];
 
-const wide = () => window.matchMedia("(min-width: 1280px)").matches;
-
 function Studio() {
     const router = useRouter();
     const target = useSearchParams().get("c");
     const conversation = useWorkbench((s) => s.conversation);
-    const menuOpen = useWorkbench((s) => s.menuOpen);
     const assetsOpen = useWorkbench((s) => s.assetsOpen);
     const streamLength = useWorkbench((s) => Object.values(s.stream).join("").length);
     const assets = useConversationAssets();
-    const [assetsDrawer, setAssetsDrawer] = useState(false);
     const scroller = useRef<HTMLDivElement>(null);
     const lastId = useRef<string | undefined>(undefined);
     const messages = conversation?.messages || [];
@@ -66,40 +62,33 @@ function Studio() {
         void workbench.open(id);
         router.replace(id ? `/studio?c=${id}` : "/studio");
     };
-    const toggleAssets = () => (wide() ? workbench.toggle("assetsOpen") : setAssetsDrawer(true));
 
     return (
         <div className="flex h-full gap-3">
-            <aside className={`${card} hidden w-[260px] shrink-0 overflow-hidden lg:block`}>
+            <aside className={`${card} w-[260px] shrink-0 overflow-hidden`}>
                 <ConversationList onOpen={openConversation} />
             </aside>
-            <Drawer open={menuOpen} onClose={() => workbench.toggle("menuOpen", false)} placement="left" size="min(300px, 86vw)" closable={false} styles={{ body: { padding: 0 } }}>
-                <ConversationList onOpen={openConversation} />
-            </Drawer>
             <section className={`${card} flex min-w-0 flex-1 flex-col overflow-hidden`}>
                 <header className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--line)] px-3">
-                    <Tooltip title="对话列表">
-                        <Button type="text" size="small" icon={<PanelLeft size={17} />} onClick={() => workbench.toggle("menuOpen", true)} className="lg:!hidden" aria-label="对话列表" />
-                    </Tooltip>
                     <span className="min-w-0 flex-1 truncate pl-1 text-sm font-medium">{empty ? "新对话" : conversation?.title}</span>
                     {!empty && (
-                        <Button type="text" size="small" icon={<PanelRight size={16} />} onClick={toggleAssets} aria-label="当前对话素材" className={assetsOpen ? "xl:!text-[var(--accent)]" : ""}>
-                            <span className="hidden sm:inline">素材 {assets.length}</span>
+                        <Button type="text" size="small" icon={<PanelRight size={16} />} onClick={() => workbench.toggle("assetsOpen")} aria-label="当前对话素材" className={assetsOpen ? "!text-[var(--accent)]" : ""}>
+                            素材 {assets.length}
                         </Button>
                     )}
                 </header>
                 {empty ? (
                     <div className="min-h-0 flex-1 overflow-y-auto">
-                        <div className="mx-auto flex max-w-[760px] flex-col items-center gap-5 px-4 pb-10 pt-[6vh] sm:pt-[10vh]">
+                        <div className="mx-auto flex max-w-[760px] flex-col items-center gap-5 px-4 pb-10 pt-[10vh]">
                             <img src="/logo.svg" alt="" className="h-12 w-12" />
                             <div className="text-center">
-                                <h1 className="text-[22px] font-semibold sm:text-[26px]">今天想创作点什么？</h1>
+                                <h1 className="text-[26px] font-semibold">今天想创作点什么？</h1>
                                 <p className="mt-2 text-sm text-[var(--text-2)]">{brand.slogan}</p>
                             </div>
                             <div className="w-full">
                                 <Composer placement="bottom" />
                             </div>
-                            <div className="grid w-full gap-2 sm:grid-cols-2">
+                            <div className="grid w-full grid-cols-2 gap-2">
                                 {suggestions.map((item) => {
                                     const mode = modes.find((m) => m.value === item.mode)!;
                                     return (
@@ -129,20 +118,17 @@ function Studio() {
                                 ))}
                             </div>
                         </div>
-                        <div className="mx-auto w-full max-w-[820px] px-3 pb-3 sm:px-4">
+                        <div className="mx-auto w-full max-w-[820px] px-4 pb-3">
                             <Composer placement="top" />
                         </div>
                     </>
                 )}
             </section>
             {!empty && assetsOpen && (
-                <aside className={`${card} hidden w-[300px] shrink-0 overflow-hidden xl:block`}>
+                <aside className={`${card} w-[300px] shrink-0 overflow-hidden`}>
                     <AssetPanel onClose={() => workbench.toggle("assetsOpen", false)} />
                 </aside>
             )}
-            <Drawer open={assetsDrawer} onClose={() => setAssetsDrawer(false)} placement="right" size="min(360px, 92vw)" closable={false} styles={{ body: { padding: 0 } }}>
-                <AssetPanel onClose={() => setAssetsDrawer(false)} />
-            </Drawer>
         </div>
     );
 }

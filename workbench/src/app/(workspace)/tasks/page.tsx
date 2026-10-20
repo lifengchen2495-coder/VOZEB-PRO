@@ -72,7 +72,7 @@ export default function TasksPage() {
                                 </div>
                                 {task.status === "failed" && task.error && <div className="mt-1 truncate text-xs text-[var(--coral)]">{task.error}</div>}
                             </div>
-                            <div className="flex shrink-0 flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+                            <div className="flex shrink-0 items-center gap-3">
                                 <StatusTag status={task.status} />
                                 <div className="flex gap-1">
                                     {task.status === "failed" && (

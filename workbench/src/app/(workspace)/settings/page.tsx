@@ -65,7 +65,7 @@ export default function SettingsPage() {
 
     return (
         <div className="h-full overflow-y-auto">
-            <div className="mx-auto grid max-w-[1120px] gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="mx-auto grid max-w-[1120px] grid-cols-[minmax(0,1fr)_320px] gap-3">
                 <Form form={form} layout="vertical" requiredMark={false} className={`${card} min-w-0`}>
                     <div className="flex items-center gap-3 border-b border-[var(--line)] px-5 py-4">
                         <div className="min-w-0 flex-1">
@@ -77,7 +77,7 @@ export default function SettingsPage() {
                         </Button>
                     </div>
                     <Block title="模型服务" desc="接口地址已内置，不能修改。填写你的 API Key 后点「获取模型」即可开始使用。">
-                        <div className="grid gap-x-4 sm:grid-cols-2">
+                        <div className="grid grid-cols-2 gap-x-4">
                             <div className="mb-6">
                                 <div className="pb-2 text-sm">接口地址</div>
                                 <div className="flex h-8 items-center gap-2 rounded-[10px] bg-[var(--panel-2)] px-3 text-sm text-[var(--text-2)]">
@@ -95,7 +95,7 @@ export default function SettingsPage() {
                         </Button>
                     </Block>
                     <Block title="模型" desc="获取到的模型已按类型自动归类，每类第一个是默认模型；可以在这里增删，创作时在输入框的「模型」入口选择。">
-                        <div className="grid gap-x-4 md:grid-cols-3">
+                        <div className="grid grid-cols-3 gap-x-4">
                             {modelFields.map(({ mode, label, hint }) => (
                                 <Form.Item key={mode} name={["models", mode]} label={label} extra={hint}>
                                     <Select mode="multiple" disabled={!catalog.length} options={catalog.map((value) => ({ value }))} placeholder={catalog.length ? "选择模型" : "先获取模型"} aria-label={label} />

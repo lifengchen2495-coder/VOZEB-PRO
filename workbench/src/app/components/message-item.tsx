@@ -52,7 +52,7 @@ function MediaResult({ message, request }: { message: Message; request?: Message
     const referenced = attachments.some((item) => item.media?.id === main.id);
     return (
         <div className="flex w-fit max-w-full flex-col gap-2">
-            <div className="flex max-w-full flex-col gap-2 sm:flex-row sm:items-start">
+            <div className="flex max-w-full items-start gap-2">
                 <div className="overflow-hidden rounded-2xl border" style={{ ...box, maxWidth: "100%", borderColor: "var(--line)" }}>
                     {main.kind === "video" ? (
                         <video
@@ -76,7 +76,7 @@ function MediaResult({ message, request }: { message: Message; request?: Message
                     )}
                 </div>
                 {results.length > 1 && (
-                    <div className="flex gap-2 sm:flex-col">
+                    <div className="flex flex-col gap-2">
                         {results.map((media, i) => (
                             <button
                                 key={media.id}
@@ -132,7 +132,7 @@ export function MessageItem({ item, request }: { item: Message; request?: Messag
                             ))}
                         </div>
                     )}
-                    <div className="max-w-full whitespace-pre-wrap break-words rounded-2xl rounded-tr-md bg-[var(--bubble)] px-4 py-2.5 leading-7 sm:max-w-[560px]">{item.content}</div>
+                    <div className="max-w-full whitespace-pre-wrap break-words rounded-2xl rounded-tr-md bg-[var(--bubble)] px-4 py-2.5 leading-7 max-w-[560px]">{item.content}</div>
                     <div className="flex items-center gap-2 text-xs text-[var(--text-2)]">
                         {item.mode !== "chat" && <span>{[mode.label, summary].filter(Boolean).join(" · ")}</span>}
                         <span>{clock(item.createdAt)}</span>

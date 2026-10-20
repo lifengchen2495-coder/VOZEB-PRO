@@ -110,7 +110,7 @@ export function ConversationList({ onOpen }: { onOpen: (id: string | null) => vo
                                     <span className="min-w-0 flex-1 truncate">{item.title}</span>
                                     {item.pending && <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" title="生成中" />}
                                     {!managing && (
-                                        <span className="flex shrink-0 gap-0.5 md:hidden md:group-hover/row:flex md:group-focus-within/row:flex">
+                                        <span className="hidden shrink-0 gap-0.5 group-hover/row:flex group-focus-within/row:flex">
                                             <Button
                                                 size="small"
                                                 type="text"

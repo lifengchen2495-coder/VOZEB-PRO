@@ -51,13 +51,13 @@ export default function OverviewPage() {
     return (
         <div className="h-full overflow-y-auto">
             <div className="flex flex-col gap-3">
-                <section className={`${card} flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:gap-4 sm:p-5`}>
+                <section className={`${card} flex items-center gap-4 p-5`}>
                     <div className="min-w-0 flex-1">
-                        <h1 className="text-lg font-semibold sm:text-xl">{greeting()}，欢迎回到{brand.name}</h1>
+                        <h1 className="text-xl font-semibold">{greeting()}，欢迎回到{brand.name}</h1>
                         <p className="mt-1 text-[13px] text-[var(--text-2)]">{brand.slogan}。所有对话和作品都保存在你的电脑上。</p>
                     </div>
                     {settings && (
-                        <Link href="/settings" className="flex shrink-0 items-center gap-2 self-start rounded-xl border border-[var(--line)] bg-[var(--panel-2)] px-3 py-2 text-xs text-[var(--text-2)] hover:border-[var(--line-strong)] sm:self-auto">
+                        <Link href="/settings" className="flex shrink-0 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel-2)] px-3 py-2 text-xs text-[var(--text-2)] hover:border-[var(--line-strong)]">
                             <span className={`h-2 w-2 rounded-full ${models ? "bg-[var(--accent)]" : "bg-[var(--coral)]"}`} />
                             {models ? `已连接 · ${models} 个模型` : "还没有获取模型"}
                             <ArrowUpRight size={13} />
@@ -65,40 +65,40 @@ export default function OverviewPage() {
                     )}
                 </section>
 
-                <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                <div className="grid grid-cols-3 gap-3">
                     {quick.map(({ mode, title, desc, icon: Icon, tone }) => (
-                        <button key={mode} type="button" onClick={() => start(mode)} className={`${card} group flex flex-col items-center gap-2 p-3 text-center transition-shadow hover:shadow-[var(--shadow)] md:flex-row md:gap-3 md:p-4 md:text-left`}>
+                        <button key={mode} type="button" onClick={() => start(mode)} className={`${card} group flex items-center gap-3 p-4 text-left transition-shadow hover:shadow-[var(--shadow)]`}>
                             <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${tone}`}>
                                 <Icon size={20} />
                             </span>
                             <span className="min-w-0 flex-1">
-                                <span className="block text-[13px] font-semibold md:text-[15px]">{title}</span>
-                                <span className="hidden truncate text-xs text-[var(--text-2)] md:block">{desc}</span>
+                                <span className="block text-[15px] font-semibold">{title}</span>
+                                <span className="block truncate text-xs text-[var(--text-2)]">{desc}</span>
                             </span>
-                            <ArrowRight size={16} className="hidden text-[var(--text-3)] transition-transform md:block group-hover:translate-x-0.5 group-hover:text-[var(--accent)]" />
+                            <ArrowRight size={16} className="text-[var(--text-3)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--accent)]" />
                         </button>
                     ))}
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+                <div className="grid grid-cols-4 gap-3">
                     {[
                         { label: "创作对话", value: stats?.conversations, hint: "全部对话" },
                         { label: "生成图片", value: stats?.images, hint: "已保存到本地" },
                         { label: "生成视频", value: stats?.videos, hint: "已保存到本地" },
                         { label: "进行中任务", value: stats?.running, hint: stats?.failed ? `${stats.failed} 个失败待重试` : "暂无失败任务" },
                     ].map((item) => (
-                        <div key={item.label} className={`${card} p-3 sm:p-4`}>
+                        <div key={item.label} className={`${card} p-4`}>
                             <div className="text-xs text-[var(--text-2)]">{item.label}</div>
-                            <div className="mt-1.5 text-[22px] font-semibold leading-none tabular-nums sm:text-[26px]">{item.value ?? "–"}</div>
-                            <div className="mt-1.5 truncate text-xs text-[var(--text-3)] sm:mt-2">{item.hint}</div>
+                            <div className="mt-1.5 text-[26px] font-semibold leading-none tabular-nums">{item.value ?? "–"}</div>
+                            <div className="mt-2 truncate text-xs text-[var(--text-3)]">{item.hint}</div>
                         </div>
                     ))}
                 </div>
 
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_380px]">
+                <div className="grid grid-cols-[minmax(0,1fr)_380px] gap-3">
                     <Section title="最近作品" href="/library">
                         {works.length ? (
-                            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 xl:grid-cols-6">
+                            <div className="grid grid-cols-4 gap-2 xl:grid-cols-6">
                                 {works.map((asset) => (
                                     <Link key={asset.id} href={`/studio?c=${asset.conversationId}`} className="group relative aspect-square overflow-hidden rounded-xl bg-[var(--panel-2)]" title={asset.prompt}>
                                         {asset.kind === "video" ? <video src={asset.url} muted preload="metadata" className="h-full w-full object-cover" /> : <img src={asset.url} alt={asset.prompt} className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />}

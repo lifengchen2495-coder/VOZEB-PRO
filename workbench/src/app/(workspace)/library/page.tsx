@@ -47,8 +47,8 @@ export default function LibraryPage() {
                             素材库 <span className="text-sm font-normal text-[var(--accent)]">{all.length}</span>
                         </h1>
                     </div>
-                    <div className="flex w-full gap-2 sm:w-auto">
-                        <Input allowClear prefix={<Search size={15} className="opacity-50" />} placeholder="搜索提示词、对话或模型" value={keyword} onChange={(event) => setKeyword(event.target.value)} className="min-w-0 flex-1 sm:!w-64" aria-label="搜索素材" />
+                    <div className="flex gap-2">
+                        <Input allowClear prefix={<Search size={15} className="opacity-50" />} placeholder="搜索提示词、对话或模型" value={keyword} onChange={(event) => setKeyword(event.target.value)} className="!w-64" aria-label="搜索素材" />
                         <Select value={order} onChange={setOrder} options={[{ value: "new", label: "最新优先" }, { value: "old", label: "最早优先" }]} className="w-28 shrink-0" aria-label="排序" />
                     </div>
                 </div>
@@ -73,7 +73,7 @@ export default function LibraryPage() {
                     </div>
                 )}
                 <Image.PreviewGroup>
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 2xl:grid-cols-6">
+                    <div className="grid grid-cols-5 gap-3 2xl:grid-cols-6">
                         {shown.map((asset) => (
                             <article key={`${asset.messageId}-${asset.id}`} className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] transition-shadow hover:shadow-[var(--shadow)]" data-asset={asset.id}>
                                 <div className="relative aspect-square overflow-hidden bg-[var(--panel-2)]">

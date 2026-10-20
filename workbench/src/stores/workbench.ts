@@ -27,7 +27,6 @@ type State = {
     optimizing: boolean;
     workspace: Workspace | null;
     paletteOpen: boolean;
-    menuOpen: boolean;
     assetsOpen: boolean;
 };
 
@@ -46,7 +45,6 @@ const initial: State = {
     optimizing: false,
     workspace: null,
     paletteOpen: false,
-    menuOpen: false,
     assetsOpen: true,
 };
 
@@ -68,7 +66,7 @@ export const workbench = {
     setMode: (mode: Mode) => set((s) => ({ mode, attachments: s.attachments.slice(0, referenceLimit(mode)) })),
     setModel: (mode: Mode, model: string) => set((s) => ({ models: { ...s.models, [mode]: model } })),
     setParam: (key: string, value: string) => set((s) => ({ params: { ...s.params, [s.mode]: { ...s.params[s.mode], [key]: value } } })),
-    toggle: (key: "paletteOpen" | "menuOpen" | "assetsOpen", value?: boolean) => set((s) => ({ [key]: value ?? !s[key] })),
+    toggle: (key: "paletteOpen" | "assetsOpen", value?: boolean) => set((s) => ({ [key]: value ?? !s[key] })),
 
     loadSettings: () => api.settings().then((settings) => set({ settings }), fail),
     loadWorkspace: () => api.workspace().then((workspace) => set({ workspace }), fail),
@@ -99,7 +97,6 @@ export const workbench = {
             set({ attachments: [], prompt: "" });
         }
         activeId = id;
-        set({ menuOpen: false });
         if (!id) return set({ conversation: null });
         try {
             const conversation = await api.conversation(id);

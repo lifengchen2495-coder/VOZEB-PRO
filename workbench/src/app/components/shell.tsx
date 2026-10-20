@@ -62,22 +62,24 @@ export function Shell({ children }: { children: ReactNode }) {
     };
 
     return (
-        <div className="flex h-full flex-col">
-            <header className="flex h-14 shrink-0 items-center gap-3 px-3 sm:px-5">
+        // 只面向电脑端：窗口窄于最小宽度时整体横向滚动，不切换成手机布局
+        <div className="h-full overflow-x-auto">
+        <div className="flex h-full min-w-[1200px] flex-col">
+            <header className="flex h-14 shrink-0 items-center gap-3 px-5">
                 <Link href="/" className="flex shrink-0 items-center gap-2">
                     <img src="/logo.svg" alt="" className="h-8 w-8" />
                     <span className="text-[15px] font-semibold tracking-wide">{brand.name}</span>
-                    <span className="hidden rounded-md bg-[var(--accent-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--accent)] sm:inline">AI 工作台</span>
+                    <span className="rounded-md bg-[var(--accent-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--accent)]">AI 工作台</span>
                 </Link>
                 <button
                     type="button"
                     onClick={() => workbench.toggle("paletteOpen", true)}
                     aria-label="搜索"
-                    className="ml-auto flex h-9 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-3 text-[13px] text-[var(--text-3)] transition-colors hover:border-[var(--line-strong)] md:mx-auto md:ml-6 md:w-full md:max-w-[480px]"
+                    className="mx-auto ml-6 flex h-9 w-full max-w-[480px] items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-3 text-[13px] text-[var(--text-3)] transition-colors hover:border-[var(--line-strong)]"
                 >
                     <Search size={16} />
-                    <span className="hidden flex-1 text-left md:inline">搜索对话、素材和操作…</span>
-                    <kbd className="hidden rounded-md border border-[var(--line)] px-1.5 font-sans text-[11px] md:inline">⌘ K</kbd>
+                    <span className="flex-1 text-left">搜索对话、素材和操作…</span>
+                    <kbd className="rounded-md border border-[var(--line)] px-1.5 font-sans text-[11px]">⌘ K</kbd>
                 </button>
                 <div className="flex shrink-0 items-center gap-1.5">
                     <Tooltip title="新建创作">
@@ -94,7 +96,7 @@ export function Shell({ children }: { children: ReactNode }) {
                     </Tooltip>
                 </div>
             </header>
-            <nav className="mx-3 flex shrink-0 items-center gap-1 overflow-x-auto rounded-2xl border border-[var(--line)] bg-[var(--panel)] p-1.5 sm:mx-5" aria-label="工作台模块">
+            <nav className="mx-5 flex shrink-0 items-center gap-1 rounded-2xl border border-[var(--line)] bg-[var(--panel)] p-1.5" aria-label="工作台模块">
                 {tabs.map(({ href, label, icon: Icon }) => {
                     const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
                     return (
@@ -102,7 +104,7 @@ export function Shell({ children }: { children: ReactNode }) {
                             key={href}
                             href={href}
                             aria-current={active ? "page" : undefined}
-                            className={`flex h-9 shrink-0 items-center gap-1.5 rounded-xl px-2.5 text-[13px] sm:px-3.5 transition-colors ${active ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]" : "text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text)]"}`}
+                            className={`flex h-9 shrink-0 items-center gap-1.5 rounded-xl px-3.5 text-[13px] transition-colors ${active ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]" : "text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text)]"}`}
                         >
                             <Icon size={15} />
                             {label}
@@ -111,15 +113,16 @@ export function Shell({ children }: { children: ReactNode }) {
                 })}
             </nav>
             {settings && !settings.catalog.length && pathname !== "/settings" && (
-                <div className="mx-3 mt-3 flex items-center gap-3 rounded-xl border border-[var(--coral)]/25 bg-[var(--coral-soft)] px-4 py-2.5 text-[13px] sm:mx-5">
+                <div className="mx-5 mt-3 flex items-center gap-3 rounded-xl border border-[var(--coral)]/25 bg-[var(--coral-soft)] px-4 py-2.5 text-[13px]">
                     <span className="min-w-0 flex-1">还没有可用的模型，填写 API Key 并获取模型后就能开始创作。</span>
                     <Button size="small" onClick={() => router.push("/settings")}>
                         去设置
                     </Button>
                 </div>
             )}
-            <div className="min-h-0 flex-1 px-3 pb-3 pt-3 sm:px-5 sm:pb-5">{children}</div>
+            <div className="min-h-0 flex-1 px-5 pb-5 pt-3">{children}</div>
             <CommandPalette />
+        </div>
         </div>
     );
 }
