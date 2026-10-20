@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+:root {
+    --bg: #f7f7fb;
+    --panel: #ffffff;
+    --line: rgba(15, 23, 42, 0.08);
+    --muted: rgba(15, 23, 42, 0.55);
+    --bubble: #ecebff;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0f1015;
+        --panel: #17181f;
+        --line: rgba(255, 255, 255, 0.08);
+        --muted: rgba(255, 255, 255, 0.55);
+        --bubble: #2a2650;
+    }
+}
+
+html,
+body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color-scheme: light dark;
+}
+
+.markdown > :first-child {
+    margin-top: 0;
+}
+.markdown > :last-child {
+    margin-bottom: 0;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre,
+.markdown table {
+    margin: 0.6em 0;
+}
+.markdown ul,
+.markdown ol {
+    padding-left: 1.4em;
+}
+.markdown ul {
+    list-style: disc;
+}
+.markdown ol {
+    list-style: decimal;
+}
+.markdown pre {
+    overflow-x: auto;
+    padding: 12px;
+    border-radius: 8px;
+    background: rgba(127, 127, 127, 0.12);
+}
+.markdown code {
+    font-size: 0.9em;
+}
+.markdown a {
+    color: #6d5efc;
+}
+.markdown table {
+    border-collapse: collapse;
+}
+.markdown th,
+.markdown td {
+    border: 1px solid var(--line);
+    padding: 4px 8px;
+}
