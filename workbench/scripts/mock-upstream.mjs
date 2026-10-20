@@ -39,11 +39,12 @@ createServer(async (req, res) => {
     if (!req.headers.authorization?.startsWith("Bearer ")) return send(res, 401, { error: { message: "missing api key" } });
     if (url.pathname === "/v1/models") return send(res, 200, { object: "list", data: ["mock-chat", "mock-image", "mock-video"].map((id) => ({ id, object: "model", created: 0, owned_by: "mock" })) });
     if (url.pathname === "/v1/chat/completions") {
-        const { messages } = JSON.parse(body.toString("utf8"));
+        const { messages, stream } = JSON.parse(body.toString("utf8"));
         const last = messages.at(-1).content;
         const text = typeof last === "string" ? last : last.find((p) => p.type === "text").text;
         const images = typeof last === "string" ? 0 : last.filter((p) => p.type === "image_url").length;
         const answer = `收到：**${text}**\n\n- 历史消息 ${messages.length} 条\n- 附带图片 ${images} 张`;
+        if (!stream) return send(res, 200, { id: "c1", object: "chat.completion", created: 0, model: "mock-chat", choices: [{ index: 0, message: { role: "assistant", content: `优化后：${text}，细节丰富，光影柔和` }, finish_reason: "stop" }] });
         res.writeHead(200, { "content-type": "text/event-stream" });
         for (const piece of answer.match(/.{1,4}/gsu)) res.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 0, model: "mock-chat", choices: [{ index: 0, delta: { content: piece }, finish_reason: null }] })}\n\n`);
         return res.end("data: [DONE]\n\n");

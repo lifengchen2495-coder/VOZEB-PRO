@@ -22,17 +22,11 @@ export type Conversation = { id: string; title: string; createdAt: number; updat
 
 export type ConversationSummary = Omit<Conversation, "messages"> & { count: number; pending: boolean };
 
-export type Settings = {
-    baseUrl: string;
-    apiKey: string;
-    textModel: string;
-    imageModel: string;
-    videoModel: string;
-    systemPrompt: string;
-};
+// 每种创作类型可配置多个模型，第一个为默认模型
+export type Settings = { baseUrl: string; apiKey: string; systemPrompt: string; models: Record<Mode, string[]> };
 
 export type PublicSettings = Omit<Settings, "apiKey"> & { hasApiKey: boolean };
 
-export type SendBody = { mode: Mode; prompt: string; attachmentIds?: string[]; params?: Record<string, string> };
+export type SendBody = { mode: Mode; prompt: string; model?: string; attachmentIds?: string[]; params?: Record<string, string> };
 
 export type ApiResult<T> = { code: number; data: T; msg: string };

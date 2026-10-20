@@ -1,20 +1,30 @@
 @import "tailwindcss";
 
 :root {
-    --bg: #f7f7fb;
+    --bg: #f6f6f9;
     --panel: #ffffff;
+    --sidebar: #fbfbfd;
     --line: rgba(15, 23, 42, 0.08);
-    --muted: rgba(15, 23, 42, 0.55);
-    --bubble: #ecebff;
+    --line-strong: rgba(15, 23, 42, 0.18);
+    --text-2: rgba(15, 23, 42, 0.56);
+    --hover: rgba(15, 23, 42, 0.05);
+    --bubble: #efeeff;
+    --accent: #6d5efc;
+    --accent-soft: rgba(109, 94, 252, 0.12);
 }
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --bg: #0f1015;
-        --panel: #17181f;
+        --bg: #0e0f13;
+        --panel: #17181e;
+        --sidebar: #131419;
         --line: rgba(255, 255, 255, 0.08);
-        --muted: rgba(255, 255, 255, 0.55);
-        --bubble: #2a2650;
+        --line-strong: rgba(255, 255, 255, 0.2);
+        --text-2: rgba(255, 255, 255, 0.58);
+        --hover: rgba(255, 255, 255, 0.07);
+        --bubble: #29254a;
+        --accent: #9b8fff;
+        --accent-soft: rgba(155, 143, 255, 0.16);
     }
 }
 
@@ -25,6 +35,31 @@ body {
     overflow: hidden;
     background: var(--bg);
     color-scheme: light dark;
+}
+
+/* 隐藏原生滚动条，保留滚轮、触控和键盘滚动 */
+* {
+    scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+    display: none;
+}
+
+/* 生成中占位：单层渐变纹理只做 transform 位移 */
+@keyframes wb-flow {
+    from {
+        transform: translateX(-50%);
+    }
+    to {
+        transform: translateX(0);
+    }
+}
+.wb-flow {
+    position: absolute;
+    inset: 0 -100% 0 0;
+    background: linear-gradient(100deg, transparent 20%, var(--accent-soft) 40%, rgba(56, 189, 248, 0.14) 50%, var(--accent-soft) 60%, transparent 80%);
+    background-size: 50% 100%;
+    animation: wb-flow 2.4s linear infinite;
 }
 
 .markdown > :first-child {
@@ -54,15 +89,17 @@ body {
     overflow-x: auto;
     padding: 12px;
     border-radius: 8px;
-    background: rgba(127, 127, 127, 0.12);
+    background: var(--hover);
 }
 .markdown code {
     font-size: 0.9em;
 }
 .markdown a {
-    color: #6d5efc;
+    color: var(--accent);
 }
 .markdown table {
+    display: block;
+    overflow-x: auto;
     border-collapse: collapse;
 }
 .markdown th,

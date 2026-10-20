@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Conversation, ConversationSummary, Media, PublicSettings, Settings } from "@/lib/types";
+import type { Conversation, ConversationSummary, Media, Mode, PublicSettings, Settings } from "@/lib/types";
 
 const root = path.resolve(process.env.WORKBENCH_DATA_DIR || ".data");
 const dirs = { conversations: path.join(root, "conversations"), media: path.join(root, "media") };
@@ -26,15 +26,24 @@ async function readJson<T>(file: string): Promise<T | null> {
     }
 }
 
+const modeLabels: Record<Mode, string> = { chat: "对话", image: "图片", video: "视频" };
+const envModels: Record<Mode, string | undefined> = { chat: process.env.TEXT_MODELS, image: process.env.IMAGE_MODELS, video: process.env.VIDEO_MODELS };
+const defaultModels: Record<Mode, string> = { chat: "gpt-4o-mini", image: "gpt-image-1", video: "sora-2" };
+const modelList = (value: unknown) => [...new Set((Array.isArray(value) ? value : String(value || "").split(",")).map((m) => String(m).trim()).filter(Boolean))];
+
 export async function getSettings(): Promise<Settings> {
     const saved = (await readJson<Partial<Settings>>(settingsFile)) || {};
+    const models = Object.fromEntries(
+        (Object.keys(modeLabels) as Mode[]).map((mode) => {
+            const list = modelList(saved.models?.[mode] ?? envModels[mode]);
+            return [mode, list.length ? list : [defaultModels[mode]]];
+        }),
+    ) as Record<Mode, string[]>;
     return {
         baseUrl: saved.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
         apiKey: saved.apiKey || process.env.OPENAI_API_KEY || "",
-        textModel: saved.textModel || process.env.TEXT_MODEL || "gpt-4o-mini",
-        imageModel: saved.imageModel || process.env.IMAGE_MODEL || "gpt-image-1",
-        videoModel: saved.videoModel || process.env.VIDEO_MODEL || "sora-2",
         systemPrompt: saved.systemPrompt ?? "",
+        models,
     };
 }
 
@@ -45,12 +54,21 @@ export function toPublicSettings({ apiKey, ...rest }: Settings): PublicSettings 
 export async function saveSettings(patch: Partial<Settings>) {
     const saved = (await readJson<Partial<Settings>>(settingsFile)) || {};
     const next = { ...saved };
-    for (const key of ["baseUrl", "apiKey", "textModel", "imageModel", "videoModel", "systemPrompt"] as const) {
+    for (const key of ["baseUrl", "apiKey", "systemPrompt"] as const) {
         const value = patch[key];
         if (typeof value !== "string") continue;
         // 空密钥表示保持原值，避免设置页回显时清掉已保存的 Key
         if (key === "apiKey" && !value.trim()) continue;
         next[key] = value.trim();
+    }
+    if (patch.models) {
+        const models = { ...(await getSettings()).models };
+        for (const mode of Object.keys(modeLabels) as Mode[]) {
+            if (!patch.models[mode]) continue;
+            models[mode] = modelList(patch.models[mode]);
+            if (!models[mode].length) throw new Error(`请至少填写一个${modeLabels[mode]}模型`);
+        }
+        next.models = models;
     }
     await writeJson(settingsFile, next);
     return getSettings();
@@ -96,12 +114,16 @@ export function updateConversation(id: string, mutate: (conversation: Conversati
     return run;
 }
 
+const mediaIdsOf = (conversation: Conversation) => conversation.messages.flatMap((m) => [...(m.attachments || []), ...(m.results || [])]).map((m) => m.id);
+
+// 删除会话时一并删除媒体文件，但保留仍被其他会话引用的素材
 export async function deleteConversation(id: string) {
     const conversation = await getConversation(id);
     if (!conversation) return;
     await rm(conversationFile(id), { force: true });
-    const ids = conversation.messages.flatMap((m) => [...(m.attachments || []), ...(m.results || [])]).map((m) => m.id);
-    await Promise.all(ids.map((mediaId) => rm(mediaPath(mediaId), { force: true })));
+    const others = await Promise.all((await readdir(dirs.conversations)).filter((name) => name.endsWith(".json")).map((name) => readJson<Conversation>(path.join(dirs.conversations, name))));
+    const used = new Set(others.flatMap((c) => (c ? mediaIdsOf(c) : [])));
+    await Promise.all(mediaIdsOf(conversation).filter((mediaId) => !used.has(mediaId)).map((mediaId) => rm(mediaPath(mediaId), { force: true })));
 }
 
 export function mediaPath(id: string) {

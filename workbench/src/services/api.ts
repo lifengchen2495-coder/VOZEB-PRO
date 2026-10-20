@@ -1,4 +1,4 @@
-import type { ApiResult, Conversation, ConversationSummary, Media, PublicSettings, SendBody, Settings } from "@/lib/types";
+import type { ApiResult, Conversation, ConversationSummary, Media, Mode, PublicSettings, SendBody, Settings } from "@/lib/types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await fetch(url, init);
@@ -18,6 +18,7 @@ export const api = {
     conversation: (id: string) => request<Conversation>(`/api/conversations/${id}`),
     renameConversation: (id: string, title: string) => request<{ id: string; title: string }>(`/api/conversations/${id}`, json("PATCH", { title })),
     deleteConversation: (id: string) => request<null>(`/api/conversations/${id}`, { method: "DELETE" }),
+    optimizePrompt: (mode: Mode, prompt: string) => request<string>("/api/optimize-prompt", json("POST", { mode, prompt })),
     upload: (file: File) => {
         const form = new FormData();
         form.append("file", file);

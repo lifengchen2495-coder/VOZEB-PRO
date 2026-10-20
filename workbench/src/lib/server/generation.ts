@@ -29,17 +29,17 @@ async function runMedia(conversationId: string, assistantId: string) {
         const conversation = await getConversation(conversationId);
         if (!conversation) return;
         const assistant = conversation.messages.find((m) => m.id === assistantId);
-        if (assistant?.status !== "pending") return;
+        if (assistant?.status !== "pending" || !assistant.model) return;
         const user = requestOf(conversation, assistantId);
         const params = user.params || {};
         if (assistant.mode === "image") {
-            const results = await generateImages(settings, user.content, user.attachments || [], params);
+            const results = await generateImages(settings, assistant.model, user.content, user.attachments || [], params);
             await finish(conversationId, assistantId, { status: "done", results });
             return;
         }
         let taskId = assistant.upstreamTaskId;
         if (!taskId) {
-            taskId = await createVideo(settings, user.content, user.attachments || [], params);
+            taskId = await createVideo(settings, assistant.model, user.content, user.attachments || [], params);
             await updateConversation(conversationId, (c) => {
                 const message = c.messages.find((m) => m.id === assistantId);
                 if (message) message.upstreamTaskId = taskId;
@@ -60,8 +60,9 @@ async function* runChat(conversationId: string, assistantId: string) {
     try {
         const settings = await getSettings();
         const conversation = await getConversation(conversationId);
-        if (!conversation) return;
-        for await (const text of streamChat(settings, conversation, assistantId)) {
+        const model = conversation?.messages.find((m) => m.id === assistantId)?.model;
+        if (!conversation || !model) return;
+        for await (const text of streamChat(settings, model, conversation, assistantId)) {
             content += text;
             yield text;
         }
@@ -87,9 +88,11 @@ export async function sendMessage(conversationId: string, body: SendBody) {
     if (!prompt) throw new Error("请输入内容");
     const attachments: Media[] = (body.attachmentIds || []).map((id) => ({ id, url: `/api/media/${id}`, kind: "image", mime: mediaMime(id) }));
     if (attachments.some((m) => !m.mime.startsWith("image/"))) throw new Error("参考素材只支持图片");
+    const models = (await getSettings()).models[body.mode];
+    if (body.model && !models.includes(body.model)) throw new Error("所选模型不在设置的模型列表中");
     const now = Date.now();
     const user: Message = { id: randomUUID(), role: "user", mode: body.mode, content: prompt, attachments, params: body.params, status: "done", createdAt: now };
-    const assistant: Message = { id: randomUUID(), role: "assistant", mode: body.mode, content: "", model: await modelOf(body.mode), status: "pending", createdAt: now };
+    const assistant: Message = { id: randomUUID(), role: "assistant", mode: body.mode, content: "", model: body.model || models[0], status: "pending", createdAt: now };
     await updateConversation(conversationId, (conversation) => {
         if (!conversation.messages.length) conversation.title = prompt.slice(0, 30);
         conversation.messages.push(user, assistant);
@@ -97,23 +100,14 @@ export async function sendMessage(conversationId: string, body: SendBody) {
     return { assistantId: assistant.id, stream: start(conversationId, assistant) };
 }
 
-async function modelOf(mode: Message["mode"]) {
-    const settings = await getSettings();
-    return { chat: settings.textModel, image: settings.imageModel, video: settings.videoModel }[mode];
-}
-
 export async function retryMessage(conversationId: string, assistantId: string) {
     if (running.has(assistantId)) throw new Error("该任务仍在执行");
-    const conversation = await getConversation(conversationId);
-    const mode = conversation?.messages.find((m) => m.id === assistantId)?.mode;
-    if (!mode) throw new Error("找不到要重试的结果");
-    const model = await modelOf(mode);
     let target: Message | undefined;
     await updateConversation(conversationId, (c) => {
         target = c.messages.find((m) => m.id === assistantId && m.role === "assistant");
         if (!target || target.status !== "failed") throw new Error("只能重试失败的结果");
-        // 重试会新建一次上游请求，不复用旧任务 ID
-        Object.assign(target, { status: "pending", model, error: undefined, content: "", results: undefined, upstreamTaskId: undefined, createdAt: Date.now(), finishedAt: undefined });
+        // 重试沿用原模型和原请求，但新建一次上游请求，不复用旧任务 ID
+        Object.assign(target, { status: "pending", error: undefined, content: "", results: undefined, upstreamTaskId: undefined, createdAt: Date.now(), finishedAt: undefined });
     });
     return { assistantId, stream: start(conversationId, target!) };
 }

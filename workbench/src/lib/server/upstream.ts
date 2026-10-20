@@ -3,7 +3,7 @@ import type { ChatCompletionContentPart, ChatCompletionMessageParam } from "open
 import type { ImageEditParams, ImageGenerateParams } from "openai/resources/images";
 import type { VideoCreateParams } from "openai/resources/videos";
 import { readMedia, saveMedia } from "@/lib/server/store";
-import type { Conversation, Media, Settings } from "@/lib/types";
+import type { Conversation, Media, Mode, Settings } from "@/lib/types";
 
 // 生成类请求不自动重试，避免上游重复创建任务和重复计费
 export function createClient(settings: Settings) {
@@ -39,9 +39,9 @@ async function historyMessages(settings: Settings, conversation: Conversation, u
     return messages;
 }
 
-export async function* streamChat(settings: Settings, conversation: Conversation, assistantId: string) {
+export async function* streamChat(settings: Settings, model: string, conversation: Conversation, assistantId: string) {
     const stream = await createClient(settings).chat.completions.create({
-        model: settings.textModel,
+        model,
         messages: await historyMessages(settings, conversation, assistantId),
         stream: true,
     });
@@ -53,9 +53,9 @@ export async function* streamChat(settings: Settings, conversation: Conversation
 
 const fixed = (value?: string) => (value && value !== "auto" ? value : undefined);
 
-export async function generateImages(settings: Settings, prompt: string, attachments: Media[], params: Record<string, string>) {
+export async function generateImages(settings: Settings, model: string, prompt: string, attachments: Media[], params: Record<string, string>) {
     const client = createClient(settings);
-    const common = { model: settings.imageModel, prompt, n: Number(params.n) || 1, size: fixed(params.size), quality: fixed(params.quality) };
+    const common = { model, prompt, n: Number(params.n) || 1, size: fixed(params.size), quality: fixed(params.quality) };
     const images = attachments.filter((m) => m.kind === "image");
     const response = images.length
         ? await client.images.edit({ ...common, image: await Promise.all(images.map(fileOf)) } as ImageEditParams & { stream?: false })
@@ -74,10 +74,10 @@ export async function generateImages(settings: Settings, prompt: string, attachm
     return results;
 }
 
-export async function createVideo(settings: Settings, prompt: string, attachments: Media[], params: Record<string, string>) {
+export async function createVideo(settings: Settings, model: string, prompt: string, attachments: Media[], params: Record<string, string>) {
     const image = attachments.find((m) => m.kind === "image");
     const body: VideoCreateParams = {
-        model: settings.videoModel,
+        model,
         prompt,
         seconds: fixed(params.seconds) as VideoCreateParams["seconds"],
         size: fixed(params.size) as VideoCreateParams["size"],
@@ -99,4 +99,24 @@ export async function waitVideo(settings: Settings, taskId: string) {
     }
     const content = await client.videos.downloadContent(taskId);
     return saveMedia(new Uint8Array(await content.arrayBuffer()), "video/mp4");
+}
+
+const optimizeInstructions: Record<Mode, string> = {
+    chat: "把用户的问题改写得更清晰、具体、便于回答，保留原意和语言。只输出改写后的问题本身。",
+    image: "你是图片生成提示词优化助手。把用户的想法改写成一段可直接交给图像生成模型的提示词，补充主体、构图、光线、色彩、风格和细节，保留用户明确提出的要求和语言。只输出提示词本身。",
+    video: "你是视频生成提示词优化助手。把用户的想法改写成一段可直接交给视频生成模型的提示词，补充主体动作、场景、镜头运动、节奏、光线和风格，保留用户明确提出的要求和语言。只输出提示词本身。",
+};
+
+// 使用默认对话模型改写提示词，结果只回填为草稿，不会自动发送
+export async function optimizePrompt(settings: Settings, mode: Mode, prompt: string) {
+    const response = await createClient(settings).chat.completions.create({
+        model: settings.models.chat[0],
+        messages: [
+            { role: "system", content: optimizeInstructions[mode] },
+            { role: "user", content: prompt },
+        ],
+    });
+    const text = response.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error("模型没有返回优化结果");
+    return text;
 }
