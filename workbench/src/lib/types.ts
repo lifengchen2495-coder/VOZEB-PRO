@@ -22,10 +22,11 @@ export type Conversation = { id: string; title: string; createdAt: number; updat
 
 export type ConversationSummary = Omit<Conversation, "messages"> & { count: number; pending: boolean };
 
-// 每种创作类型可配置多个模型，第一个为默认模型
-export type Settings = { baseUrl: string; apiKey: string; systemPrompt: string; models: Record<Mode, string[]> };
+// 接口地址内置，用户只填写密钥；catalog 是从接口读取的全部模型，models 是各创作类型可选的模型，第一个为默认
+export type Settings = { baseUrl: string; apiKey: string; systemPrompt: string; catalog: string[]; models: Record<Mode, string[]> };
 
 export type PublicSettings = Omit<Settings, "apiKey"> & { hasApiKey: boolean; dataDir: string };
+export type SettingsPatch = { apiKey?: string; systemPrompt?: string; models?: Partial<Record<Mode, string[]>> };
 
 // 工作台汇总：所有对话中的素材与图片/视频任务
 export type Asset = Media & { source: "result" | "reference"; mode: Mode; prompt: string; model?: string; conversationId: string; conversationTitle: string; messageId: string; createdAt: number };

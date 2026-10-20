@@ -400,7 +400,7 @@ VOZEB PRO 调用外部 AI 模型，不要求 GPU。服务器主要承担 Web、P
 
 ### 灵匠 AI 工作台（单用户，无需数据库）
 
-只想在自己电脑上用对话、图片和视频创作，可以运行 [灵匠 AI 工作台](workbench/README.md)：`cd workbench && npm install && npm run dev`，打开 `http://127.0.0.1:3100` 后在「模型设置」里填写 OpenAI 兼容接口即可。
+只想在自己电脑上用对话、图片和视频创作，可以运行 [灵匠 AI 工作台](workbench/README.md)：`cd workbench && npm install && npm run dev`，打开 `http://127.0.0.1:3100` 后在「模型设置」里填写 API Key 并获取模型即可。
 
 ### Docker Compose
 

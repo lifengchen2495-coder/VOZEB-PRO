@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Asset, Conversation, ConversationSummary, Media, Mode, PublicSettings, Settings, Task, Workspace } from "@/lib/types";
+import type { Asset, Conversation, ConversationSummary, Media, Mode, PublicSettings, Settings, SettingsPatch, Task, Workspace } from "@/lib/types";
 
 const root = path.resolve(process.env.WORKBENCH_DATA_DIR || ".data");
 const dirs = { conversations: path.join(root, "conversations"), media: path.join(root, "media") };
@@ -26,24 +26,24 @@ async function readJson<T>(file: string): Promise<T | null> {
     }
 }
 
-const modeLabels: Record<Mode, string> = { chat: "对话", image: "图片", video: "视频" };
-const envModels: Record<Mode, string | undefined> = { chat: process.env.TEXT_MODELS, image: process.env.IMAGE_MODELS, video: process.env.VIDEO_MODELS };
-const defaultModels: Record<Mode, string> = { chat: "gpt-4o-mini", image: "gpt-image-1", video: "sora-2" };
-const modelList = (value: unknown) => [...new Set((Array.isArray(value) ? value : String(value || "").split(",")).map((m) => String(m).trim()).filter(Boolean))];
+const modeLabels: Record<Mode, string> = { chat: "文本", image: "图片", video: "视频" };
+const modes = Object.keys(modeLabels) as Mode[];
+// 接口地址内置，页面不能修改；WORKBENCH_BASE_URL 只用于本地开发和测试
+export const baseUrl = process.env.WORKBENCH_BASE_URL || "https://api.happyouai.org/v1";
+const modelList = (value: unknown) => [...new Set((Array.isArray(value) ? value : []).map((m) => String(m).trim()).filter(Boolean))];
+
+type Saved = { apiKey?: string; systemPrompt?: string; catalog?: string[]; models?: Partial<Record<Mode, string[]>> };
+const loadSaved = async () => (await readJson<Saved>(settingsFile)) || {};
 
 export async function getSettings(): Promise<Settings> {
-    const saved = (await readJson<Partial<Settings>>(settingsFile)) || {};
-    const models = Object.fromEntries(
-        (Object.keys(modeLabels) as Mode[]).map((mode) => {
-            const list = modelList(saved.models?.[mode] ?? envModels[mode]);
-            return [mode, list.length ? list : [defaultModels[mode]]];
-        }),
-    ) as Record<Mode, string[]>;
+    const saved = await loadSaved();
+    const catalog = modelList(saved.catalog);
     return {
-        baseUrl: saved.baseUrl || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-        apiKey: saved.apiKey || process.env.OPENAI_API_KEY || "",
+        baseUrl,
+        apiKey: saved.apiKey || "",
         systemPrompt: saved.systemPrompt ?? "",
-        models,
+        catalog,
+        models: Object.fromEntries(modes.map((mode) => [mode, modelList(saved.models?.[mode]).filter((m) => catalog.includes(m))])) as Record<Mode, string[]>,
     };
 }
 
@@ -51,26 +51,29 @@ export function toPublicSettings({ apiKey, ...rest }: Settings): PublicSettings 
     return { ...rest, hasApiKey: Boolean(apiKey), dataDir: root };
 }
 
-export async function saveSettings(patch: Partial<Settings>) {
-    const saved = (await readJson<Partial<Settings>>(settingsFile)) || {};
-    const next = { ...saved };
-    for (const key of ["baseUrl", "apiKey", "systemPrompt"] as const) {
-        const value = patch[key];
-        if (typeof value !== "string") continue;
-        // 空密钥表示保持原值，避免设置页回显时清掉已保存的 Key
-        if (key === "apiKey" && !value.trim()) continue;
-        next[key] = value.trim();
+// 用户只能修改密钥、对话提示词和各类型选用的模型；模型必须来自已获取的模型列表
+export async function saveSettings(patch: SettingsPatch) {
+    const saved = await loadSaved();
+    if (typeof patch.apiKey === "string" && patch.apiKey.trim()) saved.apiKey = patch.apiKey.trim();
+    if (typeof patch.systemPrompt === "string") saved.systemPrompt = patch.systemPrompt.trim();
+    for (const mode of modes) {
+        if (!patch.models?.[mode]) continue;
+        const list = modelList(patch.models[mode]);
+        if (list.some((m) => !saved.catalog?.includes(m))) throw new Error(`${modeLabels[mode]}模型必须从已获取的模型中选择`);
+        saved.models = { ...saved.models, [mode]: list };
     }
-    if (patch.models) {
-        const models = { ...(await getSettings()).models };
-        for (const mode of Object.keys(modeLabels) as Mode[]) {
-            if (!patch.models[mode]) continue;
-            models[mode] = modelList(patch.models[mode]);
-            if (!models[mode].length) throw new Error(`请至少填写一个${modeLabels[mode]}模型`);
-        }
-        next.models = models;
-    }
-    await writeJson(settingsFile, next);
+    await writeJson(settingsFile, saved);
+    return getSettings();
+}
+
+// 获取模型成功后保存密钥和模型列表：已选的模型继续保留，新出现的模型按类型自动加入
+export async function saveCatalog(apiKey: string, catalog: string[], classify: (id: string) => Mode | null) {
+    const saved = await loadSaved();
+    const known = saved.catalog || [];
+    const models = Object.fromEntries(
+        modes.map((mode) => [mode, [...modelList(saved.models?.[mode]).filter((m) => catalog.includes(m)), ...catalog.filter((m) => !known.includes(m) && classify(m) === mode)]]),
+    ) as Record<Mode, string[]>;
+    await writeJson(settingsFile, { ...saved, apiKey, catalog, models });
     return getSettings();
 }
 

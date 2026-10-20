@@ -94,6 +94,7 @@ export function Composer({ placement }: { placement: "top" | "bottom" }) {
     const fileInput = useRef<HTMLInputElement>(null);
     const current = modes.find((m) => m.value === mode)!;
     const modelList = settings?.models[mode] || [];
+    const kind = mode === "chat" ? "文本" : current.label;
     const model = models[mode] && modelList.includes(models[mode]!) ? models[mode]! : modelList[0];
     const full = attachments.length >= referenceLimit(mode);
     const summary = paramSummary(mode, params[mode]);
@@ -191,10 +192,11 @@ export function Composer({ placement }: { placement: "top" | "bottom" }) {
                         id="model"
                         title="模型"
                         icon={<Orbit size={16} />}
-                        label={model || (settings ? "未配置模型" : "模型")}
+                        label={model || (settings ? "暂无模型" : "模型")}
                         content={
                             <div className="flex w-60 flex-col gap-1">
-                                <div className="px-2 pb-1 text-xs text-[var(--text-2)]">{current.label}模型</div>
+                                <div className="px-2 pb-1 text-xs text-[var(--text-2)]">{kind}模型</div>
+                                {!modelList.length && <div className="px-2 py-2 text-sm text-[var(--text-3)]">还没有可用的{kind}模型</div>}
                                 {modelList.map((item) => (
                                     <button
                                         key={item}

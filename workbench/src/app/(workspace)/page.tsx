@@ -41,10 +41,7 @@ export default function OverviewPage() {
     const stats = workspace?.stats;
     const works = (workspace?.assets || []).filter((a) => a.source === "result").slice(0, 12);
     const tasks = (workspace?.tasks || []).slice(0, 5);
-    let host = "";
-    try {
-        host = settings ? new URL(settings.baseUrl).host : "";
-    } catch {}
+    const models = settings?.catalog.length || 0;
 
     const start = (mode: Mode) => {
         workbench.startNew(mode);
@@ -61,8 +58,8 @@ export default function OverviewPage() {
                     </div>
                     {settings && (
                         <Link href="/settings" className="flex shrink-0 items-center gap-2 self-start rounded-xl border border-[var(--line)] bg-[var(--panel-2)] px-3 py-2 text-xs text-[var(--text-2)] hover:border-[var(--line-strong)] sm:self-auto">
-                            <span className={`h-2 w-2 rounded-full ${settings.hasApiKey ? "bg-[var(--accent)]" : "bg-[var(--coral)]"}`} />
-                            {settings.hasApiKey ? `已连接 ${host}` : "未配置模型接口"}
+                            <span className={`h-2 w-2 rounded-full ${models ? "bg-[var(--accent)]" : "bg-[var(--coral)]"}`} />
+                            {models ? `已连接 · ${models} 个模型` : "还没有获取模型"}
                             <ArrowUpRight size={13} />
                         </Link>
                     )}

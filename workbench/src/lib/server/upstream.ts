@@ -7,7 +7,7 @@ import type { Conversation, Media, Mode, Settings } from "@/lib/types";
 
 // 生成类请求不自动重试，避免上游重复创建任务和重复计费
 export function createClient(settings: Settings) {
-    if (!settings.apiKey) throw new Error("请先在「设置」里填写 API Key");
+    if (!settings.apiKey) throw new Error("请先在「模型设置」里填写 API Key");
     return new OpenAI({ baseURL: settings.baseUrl, apiKey: settings.apiKey, maxRetries: 0 });
 }
 
@@ -107,8 +107,20 @@ const optimizeInstructions: Record<Mode, string> = {
     video: "你是视频生成提示词优化助手。把用户的想法改写成一段可直接交给视频生成模型的提示词，补充主体动作、场景、镜头运动、节奏、光线和风格，保留用户明确提出的要求和语言。只输出提示词本身。",
 };
 
-// 使用默认对话模型改写提示词，结果只回填为草稿，不会自动发送
+// 接口返回 supported_endpoint_types 时按类型归类，否则按模型名称归类；向量、语音等模型不归入任何创作类型，可在设置里手动加入
+export function classifyModel(id: string, types: string[] = []): Mode | null {
+    if (types.some((t) => t.includes("video"))) return "video";
+    if (types.includes("image-generation")) return "image";
+    if (types.length) return types.some((t) => /embedding|rerank/.test(t)) ? null : "chat";
+    if (/embed|tts|whisper|moderation|rerank|transcri|speech|audio/i.test(id)) return null;
+    if (/sora|veo|kling|video|runway|hailuo|seedance|vidu|pika|luma/i.test(id)) return "video";
+    if (/image|dall-e|flux|midjourney|stable-diffusion|sdxl|seedream|imagen|ideogram|recraft|kolors|banana/i.test(id)) return "image";
+    return "chat";
+}
+
+// 使用默认文本模型改写提示词，结果只回填为草稿，不会自动发送
 export async function optimizePrompt(settings: Settings, mode: Mode, prompt: string) {
+    if (!settings.models.chat.length) throw new Error("还没有可用的文本模型，请先在「模型设置」里获取模型");
     const response = await createClient(settings).chat.completions.create({
         model: settings.models.chat[0],
         messages: [

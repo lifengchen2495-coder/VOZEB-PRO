@@ -1,18 +1,18 @@
 "use client";
 
 import { App, Button, Form, Input, Select } from "antd";
-import { CheckCircle2, CircleAlert, FolderOpen, PlugZap } from "lucide-react";
+import { CheckCircle2, CircleAlert, ExternalLink, FolderOpen, Lock, RefreshCw } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { brand } from "@/lib/brand";
-import type { Mode, Settings } from "@/lib/types";
+import type { Mode, SettingsPatch } from "@/lib/types";
 import { api } from "@/services/api";
 import { useWorkbench } from "@/stores/workbench";
 import { card } from "../../components/ui";
 
 const modelFields: { mode: Mode; label: string; hint: string }[] = [
-    { mode: "chat", label: "对话模型", hint: "也用于优化提示词" },
+    { mode: "chat", label: "文本模型", hint: "AI 对话和优化提示词" },
     { mode: "image", label: "图片模型", hint: "文生图和参考图编辑" },
-    { mode: "video", label: "视频模型", hint: "OpenAI /videos 接口" },
+    { mode: "video", label: "视频模型", hint: "文字或首帧生成视频" },
 ];
 
 function Block({ title, desc, children }: { title: string; desc: string; children: ReactNode }) {
@@ -28,44 +28,40 @@ function Block({ title, desc, children }: { title: string; desc: string; childre
 export default function SettingsPage() {
     const { message } = App.useApp();
     const current = useWorkbench((s) => s.settings);
-    const [form] = Form.useForm<Settings>();
-    const [catalog, setCatalog] = useState<string[]>([]);
+    const [form] = Form.useForm<SettingsPatch>();
     const [saving, setSaving] = useState(false);
-    const [reading, setReading] = useState(false);
+    const [fetching, setFetching] = useState(false);
+    const catalog = current?.catalog || [];
+    const origin = current ? new URL(current.baseUrl).origin : "";
 
     useEffect(() => {
-        if (current) form.setFieldsValue({ ...current, apiKey: "" });
+        if (current) form.setFieldsValue({ apiKey: "", systemPrompt: current.systemPrompt, models: current.models });
     }, [current, form]);
 
-    const save = async () => {
-        setSaving(true);
+    const run = async (action: () => Promise<string>, setBusy: (busy: boolean) => void) => {
+        setBusy(true);
         try {
-            const settings = await api.saveSettings(await form.validateFields());
-            useWorkbench.setState({ settings });
-            message.success("设置已保存");
+            message.success(await action());
         } catch (error) {
             if (error instanceof Error) message.error(error.message);
         } finally {
-            setSaving(false);
+            setBusy(false);
         }
     };
 
-    const loadCatalog = async () => {
-        setReading(true);
-        try {
-            // 先保存当前填写的地址和密钥，模型目录按保存后的配置读取
-            const { baseUrl, apiKey } = await form.validateFields(["baseUrl", "apiKey"]);
-            useWorkbench.setState({ settings: await api.saveSettings({ baseUrl, apiKey }) });
-            form.setFieldValue("apiKey", "");
-            const ids = await api.models();
-            setCatalog(ids);
-            message.success(`连接成功，读取到 ${ids.length} 个模型`);
-        } catch (error) {
-            if (error instanceof Error) message.error(error.message);
-        } finally {
-            setReading(false);
-        }
-    };
+    const save = () =>
+        run(async () => {
+            useWorkbench.setState({ settings: await api.saveSettings(await form.validateFields()) });
+            return "设置已保存";
+        }, setSaving);
+
+    // 获取成功后服务端保存密钥，并把新模型按类型归类
+    const fetchModels = () =>
+        run(async () => {
+            const settings = await api.fetchModels(form.getFieldValue("apiKey") || "");
+            useWorkbench.setState({ settings });
+            return `获取到 ${settings.catalog.length} 个模型`;
+        }, setFetching);
 
     return (
         <div className="h-full overflow-y-auto">
@@ -73,31 +69,36 @@ export default function SettingsPage() {
                 <Form form={form} layout="vertical" requiredMark={false} className={`${card} min-w-0`}>
                     <div className="flex items-center gap-3 border-b border-[var(--line)] px-5 py-4">
                         <div className="min-w-0 flex-1">
-                            <div className="text-xs text-[var(--accent)]">接口与模型</div>
+                            <div className="text-xs text-[var(--accent)]">密钥与模型</div>
                             <h1 className="text-lg font-semibold">模型设置</h1>
                         </div>
                         <Button type="primary" onClick={save} loading={saving}>
                             保存设置
                         </Button>
                     </div>
-                    <Block title="接口连接" desc="支持任意 OpenAI 兼容接口，例如官方地址或你的中转服务。">
+                    <Block title="模型服务" desc="接口地址已内置，不能修改。填写你的 API Key 后点「获取模型」即可开始使用。">
                         <div className="grid gap-x-4 sm:grid-cols-2">
-                            <Form.Item name="baseUrl" label="接口地址" rules={[{ required: true, type: "url", message: "请填写有效的接口地址" }]}>
-                                <Input placeholder="https://api.openai.com/v1" />
-                            </Form.Item>
-                            <Form.Item name="apiKey" label="API Key" extra={current?.hasApiKey ? "已保存，留空表示不修改" : "尚未配置密钥"}>
+                            <div className="mb-6">
+                                <div className="pb-2 text-sm">接口地址</div>
+                                <div className="flex h-8 items-center gap-2 rounded-[10px] bg-[var(--panel-2)] px-3 text-sm text-[var(--text-2)]">
+                                    <Lock size={14} className="shrink-0" />
+                                    <span className="min-w-0 flex-1 truncate">{origin}</span>
+                                    <span className="shrink-0 text-xs text-[var(--text-3)]">内置</span>
+                                </div>
+                            </div>
+                            <Form.Item name="apiKey" label="API Key" extra={current?.hasApiKey ? "已保存，留空表示不修改" : "尚未填写密钥"}>
                                 <Input.Password placeholder={current?.hasApiKey ? "••••••••" : "sk-..."} autoComplete="off" />
                             </Form.Item>
                         </div>
-                        <Button icon={<PlugZap size={15} />} onClick={loadCatalog} loading={reading}>
-                            测试连接并读取模型
+                        <Button icon={<RefreshCw size={15} />} onClick={fetchModels} loading={fetching}>
+                            获取模型
                         </Button>
                     </Block>
-                    <Block title="模型" desc="每类可以填多个模型，第一个作为默认；创作时在输入框的「模型」入口切换。输入后回车即可添加。">
+                    <Block title="模型" desc="获取到的模型已按类型自动归类，每类第一个是默认模型；可以在这里增删，创作时在输入框的「模型」入口选择。">
                         <div className="grid gap-x-4 md:grid-cols-3">
                             {modelFields.map(({ mode, label, hint }) => (
-                                <Form.Item key={mode} name={["models", mode]} label={label} extra={hint} rules={[{ required: true, type: "array", min: 1, message: `请至少填写一个${label}` }]}>
-                                    <Select mode="tags" tokenSeparators={[",", " "]} options={catalog.map((value) => ({ value }))} placeholder="输入或选择模型 ID" aria-label={label} />
+                                <Form.Item key={mode} name={["models", mode]} label={label} extra={hint}>
+                                    <Select mode="multiple" disabled={!catalog.length} options={catalog.map((value) => ({ value }))} placeholder={catalog.length ? "选择模型" : "先获取模型"} aria-label={label} />
                                 </Form.Item>
                             ))}
                         </div>
@@ -111,10 +112,15 @@ export default function SettingsPage() {
                 <aside className="flex flex-col gap-3">
                     <div className={`${card} p-4`}>
                         <div className="flex items-center gap-2 text-sm font-semibold">
-                            {current?.hasApiKey ? <CheckCircle2 size={16} className="text-[var(--accent)]" /> : <CircleAlert size={16} className="text-[var(--coral)]" />}
-                            {current?.hasApiKey ? "接口已配置" : "还没有配置接口"}
+                            {catalog.length ? <CheckCircle2 size={16} className="text-[var(--accent)]" /> : <CircleAlert size={16} className="text-[var(--coral)]" />}
+                            {catalog.length ? `已获取 ${catalog.length} 个模型` : current?.hasApiKey ? "还没有获取模型" : "还没有填写 API Key"}
                         </div>
                         <p className="mt-2 text-xs leading-5 text-[var(--text-2)]">API Key 只保存在本机，不会返回给浏览器。{brand.name}只监听 127.0.0.1，局域网里的其他设备无法访问。</p>
+                        {origin && (
+                            <a href={origin} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--accent)] hover:underline">
+                                前往 {new URL(origin).host} 获取 Key <ExternalLink size={12} />
+                            </a>
+                        )}
                     </div>
                     <div className={`${card} p-4`}>
                         <div className="flex items-center gap-2 text-sm font-semibold">
@@ -123,12 +129,6 @@ export default function SettingsPage() {
                         </div>
                         <p className="mt-2 text-xs leading-5 text-[var(--text-2)]">对话、设置、参考图和生成的图片视频都保存在：</p>
                         <code className="mt-1.5 block break-all rounded-lg bg-[var(--panel-2)] px-2 py-1.5 text-[11px] text-[var(--text-2)]">{current?.dataDir || "…"}</code>
-                    </div>
-                    <div className={`${card} p-4`}>
-                        <div className="text-sm font-semibold">没有 Key 想先体验？</div>
-                        <p className="mt-2 text-xs leading-5 text-[var(--text-2)]">
-                            在项目目录运行 <code className="rounded bg-[var(--panel-2)] px-1">npm run mock</code>，把接口地址填成 <code className="rounded bg-[var(--panel-2)] px-1">http://127.0.0.1:3199/v1</code>，API Key 随便填。
-                        </p>
                     </div>
                 </aside>
             </div>

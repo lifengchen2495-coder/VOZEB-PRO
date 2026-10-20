@@ -37,7 +37,18 @@ createServer(async (req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
     const body = await readBody(req);
     if (!req.headers.authorization?.startsWith("Bearer ")) return send(res, 401, { error: { message: "missing api key" } });
-    if (url.pathname === "/v1/models") return send(res, 200, { object: "list", data: ["mock-chat", "mock-image", "mock-video"].map((id) => ({ id, object: "model", created: 0, owned_by: "mock" })) });
+    if (req.headers.authorization === "Bearer bad-key") return send(res, 401, { error: { message: "无效的令牌" } });
+    // 部分模型带 supported_endpoint_types，其余只有 ID，覆盖两种归类方式
+    if (url.pathname === "/v1/models")
+        return send(res, 200, {
+            object: "list",
+            data: [
+                ...["gpt-4o-mini", "gpt-image-1", "sora-2", "text-embedding-3-small"].map((id) => ({ id })),
+                { id: "mock-chat", supported_endpoint_types: ["openai"] },
+                { id: "mock-painter", supported_endpoint_types: ["image-generation"] },
+                { id: "mock-video", supported_endpoint_types: ["openai-video"] },
+            ].map((model) => ({ object: "model", created: 0, owned_by: "mock", ...model })),
+        });
     if (url.pathname === "/v1/chat/completions") {
         const { messages, stream } = JSON.parse(body.toString("utf8"));
         const last = messages.at(-1).content;

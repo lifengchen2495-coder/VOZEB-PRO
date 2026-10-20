@@ -110,9 +110,9 @@ export function Shell({ children }: { children: ReactNode }) {
                     );
                 })}
             </nav>
-            {settings && !settings.hasApiKey && pathname !== "/settings" && (
+            {settings && !settings.catalog.length && pathname !== "/settings" && (
                 <div className="mx-3 mt-3 flex items-center gap-3 rounded-xl border border-[var(--coral)]/25 bg-[var(--coral-soft)] px-4 py-2.5 text-[13px] sm:mx-5">
-                    <span className="min-w-0 flex-1">还没有连接模型接口，填好接口地址和 API Key 就能开始创作。</span>
+                    <span className="min-w-0 flex-1">还没有可用的模型，填写 API Key 并获取模型后就能开始创作。</span>
                     <Button size="small" onClick={() => router.push("/settings")}>
                         去设置
                     </Button>

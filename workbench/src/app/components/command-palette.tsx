@@ -38,7 +38,7 @@ export function CommandPalette() {
         { key: "video", group: "快捷操作", label: "生成视频", icon: <Clapperboard size={16} />, run: create("video") },
         { key: "library", group: "快捷操作", label: "打开素材库", icon: <Images size={16} />, run: go("/library") },
         { key: "tasks", group: "快捷操作", label: "查看生成任务", icon: <ListTodo size={16} />, run: go("/tasks") },
-        { key: "settings", group: "快捷操作", label: "模型与接口设置", icon: <SlidersHorizontal size={16} />, run: go("/settings") },
+        { key: "settings", group: "快捷操作", label: "API Key 与模型设置", icon: <SlidersHorizontal size={16} />, run: go("/settings") },
     ].filter((item) => match(item.label));
     const conversations: Item[] = list
         .filter((c) => match(c.title))

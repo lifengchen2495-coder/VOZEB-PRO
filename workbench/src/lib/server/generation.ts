@@ -89,7 +89,8 @@ export async function sendMessage(conversationId: string, body: SendBody) {
     const attachments: Media[] = (body.attachmentIds || []).map((id) => ({ id, url: `/api/media/${id}`, kind: "image", mime: mediaMime(id) }));
     if (attachments.some((m) => !m.mime.startsWith("image/"))) throw new Error("参考素材只支持图片");
     const models = (await getSettings()).models[body.mode];
-    if (body.model && !models.includes(body.model)) throw new Error("所选模型不在设置的模型列表中");
+    if (!models.length) throw new Error("还没有可用的模型，请先在「模型设置」里填写 API Key 并获取模型");
+    if (body.model && !models.includes(body.model)) throw new Error("所选模型不在可用模型中");
     const now = Date.now();
     const user: Message = { id: randomUUID(), role: "user", mode: body.mode, content: prompt, attachments, params: body.params, status: "done", createdAt: now };
     const assistant: Message = { id: randomUUID(), role: "assistant", mode: body.mode, content: "", model: body.model || models[0], status: "pending", createdAt: now };
